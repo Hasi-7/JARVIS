@@ -1,0 +1,220 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   BRAIN UI — design tokens
+   Restrained Jarvis-inspired command center.
+   All colors are oklch so hue/chroma are runtime-tweakable.
+   ============================================================ */
+
+:root {
+  --accent-h: 218;
+  --base-h: 255;
+  --base-c: 0.008;
+  --density: 1;
+
+  --bg-0: oklch(0.155 var(--base-c) var(--base-h));
+  --bg-1: oklch(0.185 var(--base-c) var(--base-h));
+  --surface: oklch(0.213 var(--base-c) var(--base-h));
+  --surface-2: oklch(0.245 var(--base-c) var(--base-h));
+  --surface-3: oklch(0.285 var(--base-c) var(--base-h));
+  --line: oklch(0.30 var(--base-c) var(--base-h));
+  --line-soft: oklch(0.255 var(--base-c) var(--base-h));
+  --line-strong: oklch(0.38 var(--base-c) var(--base-h));
+
+  --txt-0: oklch(0.96 0.004 var(--base-h));
+  --txt-1: oklch(0.80 0.006 var(--base-h));
+  --txt-2: oklch(0.635 0.008 var(--base-h));
+  --txt-3: oklch(0.50 0.008 var(--base-h));
+
+  --live: oklch(0.74 0.115 var(--accent-h));
+  --live-dim: oklch(0.60 0.09 var(--accent-h));
+  --live-bg: oklch(0.74 0.115 var(--accent-h) / 0.12);
+  --live-line: oklch(0.74 0.115 var(--accent-h) / 0.34);
+
+  --amber: oklch(0.80 0.125 78);
+  --amber-bg: oklch(0.80 0.125 78 / 0.13);
+  --amber-line: oklch(0.80 0.125 78 / 0.36);
+
+  --red: oklch(0.645 0.195 25);
+  --red-bg: oklch(0.645 0.195 25 / 0.14);
+  --red-line: oklch(0.645 0.195 25 / 0.38);
+
+  --violet: oklch(0.67 0.145 288);
+  --violet-bg: oklch(0.67 0.145 288 / 0.14);
+  --violet-line: oklch(0.67 0.145 288 / 0.36);
+
+  --green: oklch(0.745 0.125 158);
+  --green-bg: oklch(0.745 0.125 158 / 0.13);
+  --green-line: oklch(0.745 0.125 158 / 0.34);
+
+  --grey: oklch(0.62 0.006 var(--base-h));
+
+  --s1: calc(4px * var(--density));
+  --s2: calc(8px * var(--density));
+  --s3: calc(12px * var(--density));
+  --s4: calc(16px * var(--density));
+  --s5: calc(20px * var(--density));
+  --s6: calc(24px * var(--density));
+  --s7: calc(32px * var(--density));
+  --s8: calc(44px * var(--density));
+  --row-h: calc(38px * var(--density));
+
+  --r1: 5px;
+  --r2: 8px;
+  --r3: 12px;
+  --r4: 16px;
+  --r-pill: 999px;
+
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.30);
+  --shadow-2: 0 6px 22px -10px rgb(0 0 0 / 0.55);
+  --shadow-pop: 0 24px 70px -24px rgb(0 0 0 / 0.7);
+
+  --font-ui: 'Schibsted Grotesk', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --fast: 130ms;
+  --med: 240ms;
+}
+
+/* ---- base ---- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; }
+
+body {
+  background: var(--bg-0);
+  color: var(--txt-0);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+::selection { background: var(--live-line); color: var(--txt-0); }
+
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: oklch(0.34 var(--base-c) var(--base-h));
+  border-radius: 99px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.42 var(--base-c) var(--base-h));
+  background-clip: content-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--live);
+  outline-offset: 1px;
+}
+
+/* ---- shared utility classes ---- */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r3);
+}
+.panel-pad { padding: var(--s5); }
+
+.hairline { height: 1px; background: var(--line); border: 0; margin: 0; }
+
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: 'zero' 1;
+}
+
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--txt-2);
+  font-weight: 600;
+}
+
+.kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: var(--r1);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--txt-1);
+  line-height: 1;
+}
+
+.btn {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--txt-1);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  padding: 7px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  cursor: pointer;
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease), color var(--fast) var(--ease);
+  white-space: nowrap;
+}
+.btn:hover { background: var(--surface-3); color: var(--txt-0); border-color: var(--line-strong); }
+
+.btn-primary {
+  background: var(--live-bg);
+  border-color: var(--live-line);
+  color: var(--live);
+}
+.btn-primary:hover { background: oklch(0.74 0.115 var(--accent-h) / 0.2); color: var(--live); }
+
+.btn-ghost { background: transparent; border-color: transparent; }
+.btn-ghost:hover { background: var(--surface-2); }
+
+.btn-sm { padding: 4px 9px; font-size: 12px; }
+
+/* ============================================================
+   AGENT SPHERE — keyframes + animation classes
+   ============================================================ */
+@keyframes sph-breathe {
+  0%, 100% { transform: scale(0.97); opacity: 0.9; }
+  50%       { transform: scale(1.03); opacity: 1; }
+}
+@keyframes sph-spin    { to { transform: rotate(360deg); } }
+@keyframes sph-spin-rev { to { transform: rotate(-360deg); } }
+@keyframes sph-pulse   {
+  0%   { transform: scale(0.82); opacity: 0.7; }
+  70%  { opacity: 0; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+@keyframes sph-wave {
+  0%, 100% { transform: scaleY(0.3); }
+  50%       { transform: scaleY(1); }
+}
+@keyframes sph-flash {
+  0%, 100% { opacity: 0.55; }
+  50%       { opacity: 1; }
+}
+
+.sph-wrap { position: relative; display: grid; place-items: center; }
+.sph-svg  { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+
+.sph-rot      { transform-origin: 50% 50%; animation: sph-spin 14s linear infinite; }
+.sph-rot-fast { transform-origin: 50% 50%; animation: sph-spin 3.4s linear infinite; }
+.sph-rot-rev  { transform-origin: 50% 50%; animation: sph-spin-rev 9s linear infinite; }
+.sph-orbit    { transform-origin: 50% 50%; animation: sph-spin 3.2s linear infinite; }
+.sph-orbit-slow { transform-origin: 50% 50%; animation: sph-spin 6s linear infinite; }
+.sph-pulse    { transform-origin: 50% 50%; animation: sph-pulse 2.6s ease-out infinite; }
+.sph-flash    { animation: sph-flash 1.6s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
