@@ -8,8 +8,8 @@ const STORAGE_KEY = 'brain-ui.settings';
 // Defaults — will be resolved from backend (brain vault-path, app config)
 // once the FastAPI layer is implemented.
 export const DEFAULTS: AppSettings = {
-  vaultPath: 'D:\\Hasnain\\Personal\\OneDrive - University of Toronto\\AI-Command-Center',
-  brainCmd:  'D:\\Hasnain\\Personal\\bin\\brain.cmd',
+  vaultPath: String.raw`D:\Hasnain\Personal\OneDrive - University of Toronto\AI-Command-Center`,
+  brainCmd:  String.raw`D:\Hasnain\Personal\bin\brain.cmd`,
 };
 
 export function loadSettings(): AppSettings {
@@ -28,4 +28,12 @@ export function saveSettings(settings: AppSettings): void {
 
 export function clearSettings(): void {
   localStorage.removeItem(STORAGE_KEY);
+}
+
+export function hasLocalSettings(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
 }

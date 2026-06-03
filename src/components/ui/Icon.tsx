@@ -158,6 +158,13 @@ const PATHS: Record<string, React.ReactNode> = {
       <line x1="6" y1="6" x2="18" y2="18" />
     </>
   ),
+  archive: (
+    <>
+      <polyline points="21 8 21 21 3 21 3 8" />
+      <rect x="1" y="3" width="22" height="5" />
+      <line x1="10" y1="12" x2="14" y2="12" />
+    </>
+  ),
 };
 
 export function Icon({ name, size = 16, style, className }: IconProps) {

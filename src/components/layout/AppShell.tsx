@@ -7,19 +7,36 @@ import { CommandPalette } from '@/components/ui/CommandPalette';
 import { Icon } from '@/components/ui/Icon';
 import { QUICK_ACTIONS } from '@/data/mock';
 
+// brain subcommands that can be executed via backend (mirrors backend allowlist subset)
+const BRAIN_ACTION_MAP: Record<string, string> = {
+  today:     'today',
+  weekly:    'weekly',
+  syncraw:   'sync-raw',
+  calexport: 'calendar-export',
+};
+
 interface AppShellProps {
   children: React.ReactNode;
   scrollable?: boolean;
 }
 
 export function AppShell({ children, scrollable = true }: AppShellProps) {
-  const route       = useAppStore((s) => s.route);
-  const navigate    = useAppStore((s) => s.navigate);
-  const paletteOpen = useAppStore((s) => s.paletteOpen);
-  const openPalette = useAppStore((s) => s.openPalette);
-  const closePalette = useAppStore((s) => s.closePalette);
-  const toast       = useAppStore((s) => s.toast);
-  const showToast   = useAppStore((s) => s.showToast);
+  const route            = useAppStore((s) => s.route);
+  const navigate         = useAppStore((s) => s.navigate);
+  const paletteOpen      = useAppStore((s) => s.paletteOpen);
+  const openPalette      = useAppStore((s) => s.openPalette);
+  const closePalette     = useAppStore((s) => s.closePalette);
+  const toast            = useAppStore((s) => s.toast);
+  const showToast        = useAppStore((s) => s.showToast);
+  const checkBackend     = useAppStore((s) => s.checkBackend);
+  const runBrainCommand  = useAppStore((s) => s.runBrainCommand);
+  const loadStagedCount  = useAppStore((s) => s.loadStagedCount);
+
+  // Check backend availability and load staged count once on mount
+  useEffect(() => {
+    checkBackend();
+    loadStagedCount();
+  }, [checkBackend, loadStagedCount]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -33,13 +50,17 @@ export function AppShell({ children, scrollable = true }: AppShellProps) {
   }, [paletteOpen, openPalette, closePalette]);
 
   const handleCommand = (id: string) => {
-    const action = QUICK_ACTIONS.find((a) => a.id === id);
-    if (!action) return;
-    if (id === 'ask')         { navigate('agent'); return; }
-    if (id === 'research')    { navigate('research'); return; }
+    if (id === 'ask')         { navigate('agent');       return; }
+    if (id === 'research')    { navigate('research');    return; }
     if (id === 'consolidate') { navigate('consolidate'); return; }
-    if (id === 'upload')      { navigate('inbox'); return; }
-    showToast(action.cmd ? `Ran ${action.cmd}` : `Opened ${action.label}`);
+    if (id === 'upload')      { navigate('inbox');       return; }
+    const brainCmd = BRAIN_ACTION_MAP[id];
+    if (brainCmd) {
+      runBrainCommand(brainCmd);
+      return;
+    }
+    const action = QUICK_ACTIONS.find((a) => a.id === id);
+    if (action) showToast(action.cmd ? `${action.cmd} (not wired yet)` : `Opened ${action.label}`);
   };
 
   return (

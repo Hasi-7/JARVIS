@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   TODAY, APPROVALS, SYSTEM, AGENT_STATES, AGENT_MODES,
-  QUICK_ACTIONS, CONSOLIDATED, CMD_LOG,
+  QUICK_ACTIONS, CONSOLIDATED,
 } from '@/data/mock';
 import { useAppStore } from '@/store/useAppStore';
 import { AgentSphere } from '@/components/ui/AgentSphere';
@@ -14,43 +14,84 @@ import { StatusCard } from '@/components/dashboard/StatusCard';
 import { PlanBlock } from '@/components/dashboard/PlanBlock';
 import { ApprovalRow } from '@/components/dashboard/ApprovalRow';
 import { SystemRow } from '@/components/dashboard/SystemRow';
-import type { RouteId } from '@/types';
+import type { RouteId, SystemService } from '@/types';
+
+// brain subcommands wired to the backend (mirrors AppShell mapping)
+const BRAIN_ACTION_MAP: Record<string, string> = {
+  today:     'today',
+  weekly:    'weekly',
+  syncraw:   'sync-raw',
+  calexport: 'calendar-export',
+};
 
 export function DashboardPage() {
-  const agentState = useAppStore((s) => s.agentState);
-  const agentMode  = useAppStore((s) => s.agentMode);
-  const setAgentMode = useAppStore((s) => s.setAgentMode);
-  const navigate   = useAppStore((s) => s.navigate);
-  const showToast  = useAppStore((s) => s.showToast);
+  const agentState      = useAppStore((s) => s.agentState);
+  const agentMode       = useAppStore((s) => s.agentMode);
+  const setAgentMode    = useAppStore((s) => s.setAgentMode);
+  const navigate        = useAppStore((s) => s.navigate);
+  const showToast       = useAppStore((s) => s.showToast);
+  const settings        = useAppStore((s) => s.settings);
+  const backendStatus   = useAppStore((s) => s.backendStatus);
+  const backendConfig   = useAppStore((s) => s.backendConfig);
+  const cmdLog          = useAppStore((s) => s.cmdLog);
+  const runBrainCommand = useAppStore((s) => s.runBrainCommand);
+  const stagedCount            = useAppStore((s) => s.stagedCount);
+  const pendingProposalCount   = useAppStore((s) => s.pendingProposalCount);
+  const agentStatus     = useAppStore((s) => s.agentStatus);
+  const setAgentPrefill = useAppStore((s) => s.setAgentPrefill);
+
   const [ask, setAsk] = useState('');
 
   const meta = AGENT_STATES[agentState];
 
   const runCommand = (id: string) => {
-    const a = QUICK_ACTIONS.find((x) => x.id === id);
-    if (!a) return;
     if (id === 'ask')         return navigate('agent');
     if (id === 'research')    return navigate('research');
     if (id === 'consolidate') return navigate('consolidate');
     if (id === 'upload')      return navigate('inbox');
-    showToast(a.cmd ? `Ran ${a.cmd}` : `Opened ${a.label}`);
+    const brainCmd = BRAIN_ACTION_MAP[id];
+    if (brainCmd) { runBrainCommand(brainCmd); return; }
+    const a = QUICK_ACTIONS.find((x) => x.id === id);
+    if (a) showToast(a.cmd ? `${a.cmd} (not wired yet)` : `Opened ${a.label}`);
   };
 
   const submitAsk = (e: React.FormEvent) => {
     e.preventDefault();
     if (!ask.trim()) return;
+    setAgentPrefill(ask.trim());
     navigate('agent');
     setAsk('');
   };
 
   const counts = [
-    { label: 'Approvals',    value: APPROVALS.length, sub: '2 medium-risk',   tone: 'amber'  as const, nav: 'agent'     as RouteId, accent: true },
-    { label: 'Raw pending',  value: 7,                sub: '2 need review',   tone: 'live'   as const, nav: 'inbox'     as RouteId },
+    { label: 'Approvals',    value: pendingProposalCount, sub: 'file proposals',  tone: 'amber'  as const, nav: 'inbox'     as RouteId, accent: true },
+    { label: 'Raw pending',  value: stagedCount,      sub: 'staged files',    tone: 'live'   as const, nav: 'inbox'     as RouteId },
     { label: 'Escalations',  value: 3,                sub: '1 in progress',   tone: 'violet' as const, nav: 'escalation'as RouteId },
     { label: 'Calendar',     value: 3,                sub: 'candidates',      tone: 'live'   as const, nav: 'calendar'  as RouteId },
     { label: 'Backfill',     value: '34%',            sub: '11 / 32 repos',   icon: 'layers',           nav: 'backfill'  as RouteId },
     { label: 'Resume',       value: 6,                sub: 'evidence rows',   icon: 'doc',              nav: 'resume'    as RouteId },
   ];
+
+  // Dynamic runtime services derived from backend state
+  const backendService: SystemService =
+    backendStatus === 'ok'      ? { state: 'ready',    label: 'Backend',   detail: 'FastAPI · localhost:8000' }
+    : backendStatus === 'error' ? { state: 'blocked',  label: 'Backend',   detail: 'Not connected · start uvicorn' }
+    :                             { state: 'idle',     label: 'Backend',   detail: 'Checking…' };
+
+  const brainService: SystemService =
+    backendStatus === 'ok'
+      ? { state: 'ready',    label: 'Brain CLI', detail: backendConfig?.brainCmd ?? 'Connected' }
+      : { state: 'disabled', label: 'Brain CLI', detail: 'Backend not connected' };
+
+  const localModelService: SystemService =
+    agentStatus === null
+      ? { state: 'idle',     label: 'Local model', detail: 'Checking…' }
+      : agentStatus.available
+        ? { state: 'ready',  label: 'Local model', detail: `${agentStatus.model} · ${agentStatus.provider}` }
+        : { state: 'partial',label: 'Local model', detail: agentStatus.message.slice(0, 52) };
+
+  // Vault path: prefer backend config, fall back to frontend localStorage setting
+  const vaultDisplay = backendConfig?.vaultPath ?? settings.vaultPath;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s5)', maxWidth: 1320, margin: '0 auto' }}>
@@ -153,38 +194,47 @@ export function DashboardPage() {
           {/* two-up: command output + recent AI work */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--s5)' }}>
 
-            {/* command output */}
+            {/* command output — live from backend */}
             <div className="panel panel-pad">
               <PanelHeader icon="cmd" title="Recent command output" />
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
-                {CMD_LOG.map((entry, i) => (
-                  <div key={i} style={{ fontSize: 12 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                      <StatusDot tone={entry.ok ? 'green' : 'red'} />
-                      <span className="mono" style={{ color: 'var(--txt-0)', fontSize: 11.5 }}>
-                        $ {entry.cmd}
-                      </span>
-                      <span className="mono" style={{ marginLeft: 'auto', color: 'var(--txt-3)', fontSize: 10.5 }}>
-                        {entry.at}
-                      </span>
+              {cmdLog.length === 0 ? (
+                <div
+                  className="mono"
+                  style={{ fontSize: 11, color: 'var(--txt-3)', paddingTop: 'var(--s2)' }}
+                >
+                  No commands run yet. Use Quick actions or ⌘K.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
+                  {cmdLog.map((entry, i) => (
+                    <div key={i} style={{ fontSize: 12 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                        <StatusDot tone={entry.ok ? 'green' : 'red'} />
+                        <span className="mono" style={{ color: 'var(--txt-0)', fontSize: 11.5 }}>
+                          $ {entry.cmd}
+                        </span>
+                        <span className="mono" style={{ marginLeft: 'auto', color: 'var(--txt-3)', fontSize: 10.5 }}>
+                          {entry.at}
+                        </span>
+                      </div>
+                      <div
+                        className="mono"
+                        style={{
+                          fontSize: 10.5,
+                          color: 'var(--txt-2)',
+                          paddingLeft: 14,
+                          marginTop: 2,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {entry.out}
+                      </div>
                     </div>
-                    <div
-                      className="mono"
-                      style={{
-                        fontSize: 10.5,
-                        color: 'var(--txt-2)',
-                        paddingLeft: 14,
-                        marginTop: 2,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {entry.out}
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* recent AI work */}
@@ -256,7 +306,6 @@ export function DashboardPage() {
               <ModeBadge mode={agentMode} modes={AGENT_MODES} onSelect={setAgentMode} />
             </div>
 
-            {/* orb — clicking opens the Local Agent cockpit */}
             <div
               onClick={() => navigate('agent')}
               style={{ cursor: 'pointer' }}
@@ -325,6 +374,11 @@ export function DashboardPage() {
                 </button>
               }
             />
+            {/* real: backend + brain CLI + local model (Ollama) */}
+            <SystemRow service={backendService} />
+            <SystemRow service={brainService} />
+            <SystemRow service={localModelService} />
+            {/* mocked: OpenClaw/NemoClaw/browser/computer/MCP */}
             {[SYSTEM.openclaw, SYSTEM.nemoclaw, SYSTEM.browser, SYSTEM.computer, SYSTEM.mcp].map(
               (svc, i) => <SystemRow key={i} service={svc} />
             )}
@@ -347,7 +401,7 @@ export function DashboardPage() {
                   textOverflow: 'ellipsis',
                 }}
               >
-                {SYSTEM.vault}
+                {vaultDisplay}
               </span>
             </div>
           </div>
