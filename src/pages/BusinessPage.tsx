@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
 import type { VaultBusinessItem } from '@/lib/api';
+import { createObsidianOpenUrl } from '@/lib/obsidian';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -40,7 +41,7 @@ export function BusinessPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const vaultPath = backendConfig?.vaultPath ?? '—';
+  const vaultPath = backendConfig?.vaultPath ?? null;
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
@@ -49,7 +50,7 @@ export function BusinessPage() {
         <div>
           <div style={{ fontSize: 18, fontWeight: 700 }}>Business</div>
           <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 3 }}>
-            wiki/business/ · raw/business/ — {vaultPath}
+            wiki/business/ · raw/business/ — {vaultPath ?? '—'}
           </div>
         </div>
         <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
@@ -81,31 +82,56 @@ export function BusinessPage() {
 
       {entities !== null && entities.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 'var(--s4)' }}>
-          {entities.map((e) => (
-            <div key={e.id} className="panel panel-pad" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>{e.name}</div>
-              {e.wikiPath && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <Icon name="doc" size={11} style={{ color: 'var(--live)', flexShrink: 0 }} />
-                  <span className="mono" style={{ fontSize: 10, color: 'var(--live)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.wikiPath}</span>
+          {entities.map((e) => {
+            const obsidianUrl =
+              vaultPath && e.wikiPath
+                ? createObsidianOpenUrl(vaultPath, e.wikiPath)
+                : null;
+
+            return (
+              <div key={e.id} className="panel panel-pad" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>{e.name}</div>
+                {e.wikiPath && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <Icon name="doc" size={11} style={{ color: 'var(--live)', flexShrink: 0 }} />
+                    <span className="mono" style={{ fontSize: 10, color: 'var(--live)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.wikiPath}</span>
+                  </div>
+                )}
+                {e.rawPath && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <Icon name="folder" size={11} style={{ color: 'var(--violet)', flexShrink: 0 }} />
+                    <span className="mono" style={{ fontSize: 10, color: 'var(--violet)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.rawPath}</span>
+                  </div>
+                )}
+                {e.preview && <div style={{ fontSize: 11, color: 'var(--txt-2)', lineHeight: 1.5 }}>{truncate(e.preview)}</div>}
+
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto', paddingTop: 'var(--s2)' }}>
+                  <span style={{ fontSize: 10, color: 'var(--txt-3)' }}>{fmtDate(e.lastModified)}</span>
+
+                  {obsidianUrl ? (
+                    <a
+                      href={obsidianUrl}
+                      className="btn btn-sm btn-ghost"
+                      style={{ fontSize: 10.5, padding: '2px 7px', textDecoration: 'none' }}
+                      title="Open this note in Obsidian"
+                    >
+                      Open note
+                    </a>
+                  ) : e.rawPath && !e.wikiPath ? (
+                    <button className="btn btn-sm btn-ghost" disabled style={{ fontSize: 10.5, padding: '2px 7px', opacity: 0.35 }} title="No wiki note — raw folder only">
+                      Raw folder
+                    </button>
+                  ) : null}
                 </div>
-              )}
-              {e.rawPath && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <Icon name="folder" size={11} style={{ color: 'var(--violet)', flexShrink: 0 }} />
-                  <span className="mono" style={{ fontSize: 10, color: 'var(--violet)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.rawPath}</span>
-                </div>
-              )}
-              {e.preview && <div style={{ fontSize: 11, color: 'var(--txt-2)', lineHeight: 1.5 }}>{truncate(e.preview)}</div>}
-              <div style={{ fontSize: 10, color: 'var(--txt-3)', marginTop: 'auto', paddingTop: 'var(--s2)' }}>{fmtDate(e.lastModified)}</div>
-            </div>
-          ))}
+              </div>
+            );
+          })}
         </div>
       )}
 
       <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
         <Icon name="shield" size={12} />
-        Read-only. Data from <span className="mono">wiki/business/</span> and <span className="mono">raw/business/</span>.
+        Read-only. No vault files are modified. "Open note" links open Obsidian — no writes occur.
       </div>
     </div>
   );

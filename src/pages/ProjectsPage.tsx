@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
 import type { VaultProject } from '@/lib/api';
+import { createObsidianOpenUrl } from '@/lib/obsidian';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -18,7 +19,12 @@ function truncate(text: string | null, n = 180): string {
   return text.length > n ? text.slice(0, n).trimEnd() + '…' : text;
 }
 
-function ProjectCard({ project }: { project: VaultProject }) {
+function ProjectCard({ project, vaultPath }: { project: VaultProject; vaultPath: string | null }) {
+  const obsidianUrl =
+    vaultPath && project.wikiPath
+      ? createObsidianOpenUrl(vaultPath, project.wikiPath)
+      : null;
+
   return (
     <div className="panel panel-pad" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)', minHeight: 120 }}>
       <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--txt-0)', lineHeight: 1.3 }}>
@@ -50,9 +56,21 @@ function ProjectCard({ project }: { project: VaultProject }) {
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto', paddingTop: 'var(--s2)' }}>
         <span style={{ fontSize: 10, color: 'var(--txt-3)' }}>{fmtDate(project.lastModified)}</span>
-        <button className="btn btn-sm btn-ghost" disabled style={{ fontSize: 10.5, padding: '2px 7px', opacity: 0.35 }} title="Open in Obsidian — not yet implemented">
-          Open
-        </button>
+
+        {obsidianUrl ? (
+          <a
+            href={obsidianUrl}
+            className="btn btn-sm btn-ghost"
+            style={{ fontSize: 10.5, padding: '2px 7px', textDecoration: 'none' }}
+            title="Open this note in Obsidian"
+          >
+            Open note
+          </a>
+        ) : project.rawPath && !project.wikiPath ? (
+          <button className="btn btn-sm btn-ghost" disabled style={{ fontSize: 10.5, padding: '2px 7px', opacity: 0.35 }} title="No wiki note — raw folder only">
+            Raw folder
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -80,7 +98,7 @@ export function ProjectsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const vaultPath = backendConfig?.vaultPath ?? '—';
+  const vaultPath = backendConfig?.vaultPath ?? null;
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
@@ -90,7 +108,7 @@ export function ProjectsPage() {
         <div>
           <div style={{ fontSize: 18, fontWeight: 700 }}>Projects</div>
           <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 3 }}>
-            wiki/projects/ · raw/projects/ — {vaultPath}
+            wiki/projects/ · raw/projects/ — {vaultPath ?? '—'}
           </div>
         </div>
         <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
@@ -128,7 +146,7 @@ export function ProjectsPage() {
       {/* cards */}
       {projects !== null && projects.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 'var(--s4)' }}>
-          {projects.map((p) => <ProjectCard key={p.id} project={p} />)}
+          {projects.map((p) => <ProjectCard key={p.id} project={p} vaultPath={vaultPath} />)}
         </div>
       )}
 
@@ -142,7 +160,7 @@ export function ProjectsPage() {
       {/* footer */}
       <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
         <Icon name="shield" size={12} />
-        Read-only. No vault files are modified. Data from <span className="mono">wiki/projects/</span> and <span className="mono">raw/projects/</span>.
+        Read-only. No vault files are modified. "Open note" links open Obsidian — no writes occur.
       </div>
 
     </div>

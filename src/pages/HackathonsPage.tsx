@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
 import type { VaultHackathon } from '@/lib/api';
+import { createObsidianOpenUrl } from '@/lib/obsidian';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -18,7 +19,12 @@ function truncate(text: string | null, n = 180): string {
   return text.length > n ? text.slice(0, n).trimEnd() + '…' : text;
 }
 
-function HackathonCard({ hackathon }: { hackathon: VaultHackathon }) {
+function HackathonCard({ hackathon, vaultPath }: { hackathon: VaultHackathon; vaultPath: string | null }) {
+  const obsidianUrl =
+    vaultPath && hackathon.wikiPath
+      ? createObsidianOpenUrl(vaultPath, hackathon.wikiPath)
+      : null;
+
   return (
     <div className="panel panel-pad" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)', minHeight: 120 }}>
       <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--txt-0)', lineHeight: 1.3 }}>
@@ -50,9 +56,21 @@ function HackathonCard({ hackathon }: { hackathon: VaultHackathon }) {
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto', paddingTop: 'var(--s2)' }}>
         <span style={{ fontSize: 10, color: 'var(--txt-3)' }}>{fmtDate(hackathon.lastModified)}</span>
-        <button className="btn btn-sm btn-ghost" disabled style={{ fontSize: 10.5, padding: '2px 7px', opacity: 0.35 }} title="Open in Obsidian — not yet implemented">
-          Open
-        </button>
+
+        {obsidianUrl ? (
+          <a
+            href={obsidianUrl}
+            className="btn btn-sm btn-ghost"
+            style={{ fontSize: 10.5, padding: '2px 7px', textDecoration: 'none' }}
+            title="Open this note in Obsidian"
+          >
+            Open note
+          </a>
+        ) : hackathon.rawPath && !hackathon.wikiPath ? (
+          <button className="btn btn-sm btn-ghost" disabled style={{ fontSize: 10.5, padding: '2px 7px', opacity: 0.35 }} title="No wiki note — raw folder only">
+            Raw folder
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -80,7 +98,7 @@ export function HackathonsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const vaultPath = backendConfig?.vaultPath ?? '—';
+  const vaultPath = backendConfig?.vaultPath ?? null;
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
@@ -90,7 +108,7 @@ export function HackathonsPage() {
         <div>
           <div style={{ fontSize: 18, fontWeight: 700 }}>Hackathons</div>
           <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 3 }}>
-            wiki/projects/hackathons/ · raw/hackathons/ — {vaultPath}
+            wiki/projects/hackathons/ · raw/hackathons/ — {vaultPath ?? '—'}
           </div>
         </div>
         <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
@@ -128,7 +146,7 @@ export function HackathonsPage() {
       {/* cards */}
       {hackathons !== null && hackathons.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 'var(--s4)' }}>
-          {hackathons.map((h) => <HackathonCard key={h.id} hackathon={h} />)}
+          {hackathons.map((h) => <HackathonCard key={h.id} hackathon={h} vaultPath={vaultPath} />)}
         </div>
       )}
 
@@ -141,7 +159,7 @@ export function HackathonsPage() {
       {/* footer */}
       <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
         <Icon name="shield" size={12} />
-        Read-only. No vault files are modified. Data from <span className="mono">wiki/projects/hackathons/</span> and <span className="mono">raw/hackathons/</span>.
+        Read-only. No vault files are modified. "Open note" links open Obsidian — no writes occur.
       </div>
 
     </div>

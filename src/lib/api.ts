@@ -339,6 +339,17 @@ export interface VaultTasksResponse {
   parseMode: 'markdown-table' | 'checklist' | 'preview-only';
 }
 
+export type TaskStatus = 'todo' | 'in progress' | 'blocked' | 'done';
+
+export const TASK_STATUSES: TaskStatus[] = ['todo', 'in progress', 'blocked', 'done'];
+
+export interface TaskStatusUpdateResponse {
+  ok: boolean;
+  task: VaultTask;
+  path: string;
+  updatedAt: string;
+}
+
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 async function parseError(res: Response): Promise<string> {
@@ -412,6 +423,8 @@ export const api = {
 
   // vault (read-only)
   getVaultTasks:      ()             => get<VaultTasksResponse>('/api/vault/tasks'),
+  updateVaultTaskStatus: (taskId: string, status: TaskStatus) =>
+    fetchWithBody<TaskStatusUpdateResponse>('PATCH', `/api/vault/tasks/${encodeURIComponent(taskId)}/status`, { status }),
   getVaultSummary:    ()             => get<VaultSummary>('/api/vault/summary'),
   getVaultProjects:   ()             => get<VaultProjectsResponse>('/api/vault/projects'),
   getVaultCourses:    ()             => get<VaultCoursesResponse>('/api/vault/courses'),

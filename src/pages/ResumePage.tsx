@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
 import type { VaultOpsFile } from '@/lib/api';
+import { createObsidianOpenUrl } from '@/lib/obsidian';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 
@@ -12,6 +14,7 @@ function fmtDate(iso: string | null): string {
 }
 
 export function ResumePage() {
+  const backendConfig = useAppStore((s) => s.backendConfig);
   const [data,    setData]    = useState<VaultOpsFile | null>(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
@@ -31,6 +34,12 @@ export function ResumePage() {
 
   useEffect(() => { load(); }, [load]);
 
+  const vaultPath = backendConfig?.vaultPath ?? null;
+  const obsidianUrl =
+    vaultPath && data?.exists
+      ? createObsidianOpenUrl(vaultPath, data.path)
+      : null;
+
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
 
@@ -39,10 +48,23 @@ export function ResumePage() {
           <div style={{ fontSize: 18, fontWeight: 700 }}>Resume Pipeline</div>
           <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 3 }}>ops/resume-pipeline.md</div>
         </div>
-        <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
-          <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
-          Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 'var(--s2)', alignItems: 'center' }}>
+          {obsidianUrl && (
+            <a
+              href={obsidianUrl}
+              className="btn btn-sm btn-ghost"
+              style={{ fontSize: 11, textDecoration: 'none' }}
+              title="Open this note in Obsidian"
+            >
+              <Icon name="doc" size={12} style={{ marginRight: 4 }} />
+              Open in Obsidian
+            </a>
+          )}
+          <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
+            <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && (

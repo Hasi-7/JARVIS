@@ -153,9 +153,140 @@ The Tasks page reads `ops/task-db.md` (priority) or `ops/tasks.md` from the vaul
 
 **Client-side filters:** status, area, priority, text search — all filter without a server round-trip.
 
-**Editing is not yet implemented.** Task editing and creation will be added in a later sprint.
+**Status editing** is available for structured tasks (table and checklist formats). See the [Task Status Editing](#task-status-editing) section below.
 
 **Endpoint:** `GET /api/vault/tasks` — returns `{path, exists, lastModified, preview, tasks[], parseMode}`.
+
+---
+
+## Task status editing
+
+Brain UI supports safe, narrow status updates for structured task files.
+
+### Supported formats
+
+| Format | Editing behavior |
+|--------|-----------------|
+| Markdown table | Status dropdown per row (`todo` / `in progress` / `blocked` / `done`) |
+| Checklist | Checkbox toggle per item (done ↔ todo) |
+| Preview-only | No editing — message shown |
+
+### Allowed statuses
+
+`todo` · `in progress` · `blocked` · `done`
+
+Only the status field is editable in this sprint. Title, area, priority, due, and source are read-only.
+
+### Write safety
+
+Every status edit follows this sequence before touching any file:
+
+1. **Re-read** the task file from disk (no stale state).
+2. **Re-parse** to locate the exact target line.
+3. **Conflict check** — verify the task's title still matches the expected value at that line position. If the file changed since the page last loaded, the write is rejected.
+4. **Backup** — create a timestamped copy under `backend/data/backups/tasks/` (e.g. `task-db_20260603_142233_ab12.md`). The write is aborted if the backup fails.
+5. **Write** — replace only the status cell (table) or checkbox marker (checklist). All other content is preserved exactly.
+
+If any step fails, the file is **not modified** and an error is returned to the UI.
+
+### Backups
+
+Backups are stored locally under `backend/data/backups/tasks/`. They are never overwritten (random suffix ensures uniqueness). They are **not** synced to the vault and are excluded from git.
+
+There is no backup manager UI in this sprint. To restore a backup, copy it manually over the task file.
+
+### Confirmation UX
+
+Clicking a status dropdown or checkbox does not write immediately. A confirmation dialog appears showing:
+
+- Task title
+- Old status → new status
+- File path
+- Backup notice
+
+User must click **Apply** to write. **Cancel** discards the change.
+
+### Endpoint
+
+```
+PATCH /api/vault/tasks/{taskId}/status
+Body: { "status": "todo | in progress | blocked | done" }
+Response: { "ok": true, "task": {...}, "path": "ops/...", "updatedAt": "..." }
+```
+
+Errors return HTTP 400 with a descriptive message. The file is never modified on error.
+
+### What is NOT editable yet
+
+- Task title
+- Area, priority, due date, source
+- Adding new tasks
+- Deleting tasks
+- Bulk status changes
+
+---
+
+## Obsidian deep-links
+
+Brain UI generates `obsidian://open` deep-links so you can jump from the UI directly into the canonical Obsidian note. This is **read-only navigation only** — no vault writes occur when you click a link.
+
+### Requirements
+
+- Obsidian must be installed on the machine.
+- The Obsidian URI handler must be registered (Obsidian registers it automatically on Windows/macOS/Linux during installation).
+- The vault must be open in Obsidian (or Obsidian must be set to open the vault on URI activation).
+
+### URI format
+
+```
+obsidian://open?vault=<vaultName>&file=<vault-relative-path>
+```
+
+- `vaultName` is derived automatically from the last path segment of your configured vault root. For example, if your vault path is `D:\...\AI-Command-Center`, the vault name is `AI-Command-Center`.
+- `file` is the vault-relative path to the note (e.g. `wiki/projects/My Project.md`). Backslashes are normalized to forward slashes. Both values are URL-encoded.
+
+**Example:**
+
+```
+Vault path:  D:\Hasnain\...\AI-Command-Center
+Note path:   wiki/projects/JARVIS.md
+
+URI: obsidian://open?vault=AI-Command-Center&file=wiki%2Fprojects%2FJARVIS.md
+```
+
+### Where links appear
+
+| Page | Link shown when |
+|------|----------------|
+| Projects | Card has a `wikiPath` (wiki note exists in vault) |
+| Courses | Card has a `wikiPath` |
+| Hackathons | Card has a `wikiPath` |
+| Business | Card has a `wikiPath` |
+| Resume Pipeline | `ops/resume-pipeline.md` exists in vault |
+| Backfill | `ops/backfill.md` exists in vault |
+| Tasks | `ops/task-db.md` or `ops/tasks.md` exists in vault |
+
+Cards that only have a `rawPath` (raw folder exists but no wiki note) show a disabled **Raw folder** placeholder — no link is generated because Obsidian's URI scheme is for notes, not folders.
+
+### No vault writes
+
+Clicking "Open note" or "Open in Obsidian" does **not** write, modify, or delete any vault files. The link is a browser-level URI handoff to the Obsidian desktop application.
+
+### Frontend utility
+
+Deep-link generation is implemented in `src/lib/obsidian.ts`:
+
+```ts
+// Extracts the vault name from the last path segment
+getVaultNameFromPath(vaultPath: string): string
+
+// Builds a safe obsidian://open URI from a vault-relative file path
+createObsidianOpenUrl(vaultPath: string, relativeFilePath: string): string
+```
+
+Both helpers accept Windows backslashes and forward slashes. Only paths returned by the backend are used — no user input reaches path construction.
+
+---
 
 ## What is real now vs still mocked
 
@@ -182,6 +313,8 @@ The Tasks page reads `ops/task-db.md` (priority) or `ops/tasks.md` from the vaul
 | Local Agent / Ollama status | **Real** — `GET /api/agent/status` probes Ollama |
 | Local Agent — conversation history | **Real** — persisted in `backend/data/conversations/` after successful stream |
 | Dashboard runtime: Local model row | **Real** — reflects Ollama availability |
+| Tasks page — read | **Real** — reads `ops/task-db.md` or `ops/tasks.md`, parses table/checklist |
+| Tasks page — status edit | **Real** — `PATCH /api/vault/tasks/{id}/status`, backup + conflict detection |
 | OpenClaw | Mocked — not wired |
 | NemoClaw / OpenShell | Mocked — not wired |
 | Browser harness | Mocked — not wired |

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
-import type { VaultTask, VaultTasksResponse } from '@/lib/api';
+import type { VaultTask, VaultTasksResponse, TaskStatus } from '@/lib/api';
+import { TASK_STATUSES } from '@/lib/api';
+import { createObsidianOpenUrl } from '@/lib/obsidian';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -21,7 +24,11 @@ function normalize(s: string): string {
   return s.toLowerCase().replace(/[-_\s]+/g, ' ').trim();
 }
 
-// ── status badge ──────────────────────────────────────────────────────────────
+function truncate(s: string, n = 60): string {
+  return s.length > n ? s.slice(0, n).trimEnd() + '…' : s;
+}
+
+// ── status style helpers ──────────────────────────────────────────────────────
 
 function statusStyle(s: string): { color: string; bg: string } {
   const n = normalize(s);
@@ -45,6 +52,17 @@ function priorityStyle(p: string): { color: string } {
   return { color: 'var(--txt-3)' };
 }
 
+function isAllowedStatus(s: string): s is TaskStatus {
+  return (TASK_STATUSES as string[]).includes(s.toLowerCase());
+}
+
+function normalizeToAllowed(s: string): TaskStatus | '' {
+  const lower = s.toLowerCase();
+  return isAllowedStatus(lower) ? (lower as TaskStatus) : '';
+}
+
+// ── small components ──────────────────────────────────────────────────────────
+
 function Pill({ label, color, bg }: { label: string; color: string; bg: string }) {
   return (
     <span style={{
@@ -56,8 +74,6 @@ function Pill({ label, color, bg }: { label: string; color: string; bg: string }
     </span>
   );
 }
-
-// ── parse mode badge ──────────────────────────────────────────────────────────
 
 function ParseModeBadge({ mode }: { mode: string }) {
   const label =
@@ -79,16 +95,245 @@ function ParseModeBadge({ mode }: { mode: string }) {
   );
 }
 
+// ── status select (table mode) ────────────────────────────────────────────────
+
+const SELECT_STYLE: React.CSSProperties = {
+  background: 'var(--surface-2)',
+  border: '1px solid var(--line)',
+  borderRadius: 'var(--r-pill)',
+  padding: '1px 5px',
+  color: 'var(--txt-0)',
+  fontSize: 10.5,
+  fontFamily: 'var(--font-ui)',
+  outline: 'none',
+  cursor: 'pointer',
+  maxWidth: 96,
+};
+
+// ── confirmation modal ────────────────────────────────────────────────────────
+
+interface PendingChange {
+  task: VaultTask;
+  newStatus: TaskStatus;
+}
+
+function ConfirmStatusModal({
+  pending,
+  taskFilePath,
+  updating,
+  error,
+  onConfirm,
+  onCancel,
+}: {
+  pending: PendingChange;
+  taskFilePath: string;
+  updating: boolean;
+  error: string | null;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const oldStyle = statusStyle(pending.task.status);
+  const newStyle = statusStyle(pending.newStatus);
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0,
+        background: 'rgba(0,0,0,0.45)',
+        backdropFilter: 'blur(2px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 1000,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget && !updating) onCancel(); }}
+    >
+      <div
+        className="panel"
+        style={{
+          width: 420, padding: 'var(--s5)',
+          display: 'flex', flexDirection: 'column', gap: 'var(--s3)',
+          boxShadow: 'var(--shadow-pop)',
+        }}
+      >
+        <div style={{ fontWeight: 700, fontSize: 14 }}>Update task status?</div>
+
+        <div style={{ fontSize: 12, color: 'var(--txt-1)', lineHeight: 1.5 }}>
+          {truncate(pending.task.title, 72)}
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s3)', flexWrap: 'wrap' }}>
+          <Pill
+            label={pending.task.status || 'unknown'}
+            color={oldStyle.color}
+            bg={oldStyle.bg}
+          />
+          <span style={{ fontSize: 12, color: 'var(--txt-2)' }}>→</span>
+          <Pill label={pending.newStatus} color={newStyle.color} bg={newStyle.bg} />
+        </div>
+
+        <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-3)' }}>
+          {taskFilePath}
+        </div>
+
+        <div style={{
+          fontSize: 11, color: 'var(--txt-2)',
+          padding: 'var(--s2) var(--s3)',
+          background: 'var(--surface-2)', borderRadius: 'var(--r2)',
+          border: '1px solid var(--line)',
+        }}>
+          A backup will be created before writing.
+        </div>
+
+        {error && (
+          <div style={{
+            fontSize: 11.5, color: 'var(--red)',
+            padding: 'var(--s2) var(--s3)',
+            background: 'var(--red-bg)', borderRadius: 'var(--r2)',
+            border: '1px solid var(--red-line)',
+          }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)', marginTop: 'var(--s1)' }}>
+          <button
+            className="btn btn-sm btn-ghost"
+            onClick={onCancel}
+            disabled={updating}
+          >
+            Cancel
+          </button>
+          <button
+            className="btn btn-sm btn-primary"
+            onClick={onConfirm}
+            disabled={updating}
+          >
+            {updating ? 'Applying…' : 'Apply'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── constants ─────────────────────────────────────────────────────────────────
 
 const COLS = 'minmax(0,1fr) 100px 110px 80px 90px';
 
+// ── task row ──────────────────────────────────────────────────────────────────
+
+function TaskRow({
+  task, last, parseMode, onStatusChange,
+}: {
+  task:           VaultTask;
+  last:           boolean;
+  parseMode:      string;
+  onStatusChange: (task: VaultTask, newStatus: TaskStatus) => void;
+}) {
+  const ss = statusStyle(task.status);
+  const ps = task.priority ? priorityStyle(task.priority) : null;
+
+  const normalizedStatus = normalizeToAllowed(task.status);
+  const hasAllowedStatus = normalizedStatus !== '';
+
+  function handleSelectChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const v = e.target.value;
+    if (v && v !== task.status && v !== normalizedStatus) {
+      onStatusChange(task, v as TaskStatus);
+    } else if (v && v !== task.status) {
+      onStatusChange(task, v as TaskStatus);
+    }
+  }
+
+  function handleCheckboxChange(e: React.ChangeEvent<HTMLInputElement>) {
+    onStatusChange(task, e.target.checked ? 'done' : 'todo');
+  }
+
+  return (
+    <div style={{
+      display: 'grid', gridTemplateColumns: COLS,
+      gap: 'var(--s3)', padding: '9px var(--s5)',
+      alignItems: 'center',
+      borderBottom: last ? 'none' : '1px solid var(--line-soft)',
+    }}>
+      {/* title — for checklist, checkbox precedes text */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
+        {parseMode === 'checklist' && (
+          <input
+            type="checkbox"
+            checked={task.status === 'done'}
+            onChange={handleCheckboxChange}
+            style={{
+              flexShrink: 0,
+              accentColor: 'var(--live)',
+              cursor: 'pointer',
+              width: 14, height: 14,
+            }}
+            title="Toggle done"
+          />
+        )}
+        <span style={{
+          fontSize: 12.5, color: 'var(--txt-0)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }} title={task.title}>
+          {task.title}
+        </span>
+      </div>
+
+      {/* status */}
+      <div>
+        {parseMode === 'markdown-table' ? (
+          <select
+            value={hasAllowedStatus ? normalizedStatus : task.status}
+            onChange={handleSelectChange}
+            style={SELECT_STYLE}
+            title="Change status"
+          >
+            {!hasAllowedStatus && (
+              <option value={task.status} disabled>{task.status || '—'}</option>
+            )}
+            {TASK_STATUSES.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        ) : task.status ? (
+          <Pill label={task.status} color={ss.color} bg={ss.bg} />
+        ) : (
+          <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>—</span>
+        )}
+      </div>
+
+      {/* area */}
+      <div style={{ fontSize: 11.5, color: 'var(--txt-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {task.area ?? <span style={{ color: 'var(--txt-3)' }}>—</span>}
+      </div>
+
+      {/* priority */}
+      <div style={{ fontSize: 11.5, fontWeight: 600, color: ps?.color ?? 'var(--txt-3)' }}>
+        {task.priority ?? '—'}
+      </div>
+
+      {/* due */}
+      <div style={{ fontSize: 11, color: 'var(--txt-2)' }} className="mono">
+        {task.due ?? '—'}
+      </div>
+    </div>
+  );
+}
+
 // ── main component ────────────────────────────────────────────────────────────
 
 export function TasksPage() {
+  const backendConfig = useAppStore((s) => s.backendConfig);
+  const showToast     = useAppStore((s) => s.showToast);
+
   const [data,    setData]    = useState<VaultTasksResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
+
+  // status-edit state
+  const [pendingChange, setPendingChange] = useState<PendingChange | null>(null);
+  const [updating,      setUpdating]      = useState(false);
+  const [updateError,   setUpdateError]   = useState<string | null>(null);
 
   // filters
   const [search,         setSearch]         = useState('');
@@ -111,12 +356,46 @@ export function TasksPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // derive unique filter options from loaded tasks
+  // ── editing ────────────────────────────────────────────────────────────────
+
+  function requestStatusChange(task: VaultTask, newStatus: TaskStatus) {
+    if (newStatus === task.status) return;
+    setUpdateError(null);
+    setPendingChange({ task, newStatus });
+  }
+
+  async function applyChange() {
+    if (!pendingChange) return;
+    setUpdating(true);
+    setUpdateError(null);
+    try {
+      await api.updateVaultTaskStatus(pendingChange.task.id, pendingChange.newStatus);
+      const taskTitle = pendingChange.task.title;
+      const newSt     = pendingChange.newStatus;
+      setPendingChange(null);
+      setUpdating(false);
+      showToast(`"${truncate(taskTitle, 30)}" → ${newSt}`);
+      load();
+    } catch (err) {
+      setUpdating(false);
+      setUpdateError(err instanceof Error ? err.message : 'Update failed.');
+    }
+  }
+
+  function cancelChange() {
+    if (updating) return;
+    setPendingChange(null);
+    setUpdateError(null);
+  }
+
+  // ── filter options from loaded data ────────────────────────────────────────
+
   const allStatuses   = useMemo(() => [...new Set((data?.tasks ?? []).map((t) => t.status).filter(Boolean))].sort(), [data]);
   const allAreas      = useMemo(() => [...new Set((data?.tasks ?? []).map((t) => t.area).filter((v): v is string => !!v))].sort(), [data]);
   const allPriorities = useMemo(() => [...new Set((data?.tasks ?? []).map((t) => t.priority).filter((v): v is string => !!v))].sort(), [data]);
 
-  // client-side filtering
+  // ── client-side filtering ──────────────────────────────────────────────────
+
   const filtered = useMemo(() => {
     if (!data?.tasks) return [];
     return data.tasks.filter((t) => {
@@ -138,6 +417,12 @@ export function TasksPage() {
   const clearFilters = () => {
     setSearch(''); setStatusFilter(''); setAreaFilter(''); setPriorityFilter('');
   };
+
+  const vaultPath = backendConfig?.vaultPath ?? null;
+  const obsidianUrl =
+    vaultPath && data?.exists
+      ? createObsidianOpenUrl(vaultPath, data.path)
+      : null;
 
   // ── input style ────────────────────────────────────────────────────────────
   const inp: React.CSSProperties = {
@@ -177,10 +462,23 @@ export function TasksPage() {
             </div>
           )}
         </div>
-        <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
-          <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
-          Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 'var(--s2)', alignItems: 'center' }}>
+          {obsidianUrl && (
+            <a
+              href={obsidianUrl}
+              className="btn btn-sm btn-ghost"
+              style={{ fontSize: 11, textDecoration: 'none' }}
+              title="Open this note in Obsidian"
+            >
+              <Icon name="doc" size={12} style={{ marginRight: 4 }} />
+              Open in Obsidian
+            </a>
+          )}
+          <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
+            <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* ── error ── */}
@@ -214,7 +512,13 @@ export function TasksPage() {
         <>
           <div style={{ padding: 'var(--s3) var(--s4)', borderRadius: 'var(--r2)', background: 'var(--amber-bg)', border: '1px solid var(--amber-line)', fontSize: 12, color: 'var(--amber)', display: 'flex', gap: 6, alignItems: 'flex-start' }}>
             <Icon name="shield" size={12} style={{ marginTop: 1, flexShrink: 0 }} />
-            Task file found, but no structured tasks were detected. Showing preview instead. Supported formats: Markdown table or checklist (<code>- [ ]</code> / <code>- [x]</code>).
+            <span>
+              Task file found, but no structured tasks were detected. Showing preview instead.
+              Supported formats: Markdown table or checklist (<code>- [ ]</code> / <code>- [x]</code>).
+              <strong style={{ display: 'block', marginTop: 3 }}>
+                Structured task editing unavailable for this file format.
+              </strong>
+            </span>
           </div>
           {data.preview && (
             <div className="panel panel-pad">
@@ -289,7 +593,13 @@ export function TasksPage() {
 
               {/* rows */}
               {filtered.map((task, i) => (
-                <TaskRow key={task.id} task={task} last={i === filtered.length - 1} />
+                <TaskRow
+                  key={task.id}
+                  task={task}
+                  last={i === filtered.length - 1}
+                  parseMode={data.parseMode}
+                  onStatusChange={requestStatusChange}
+                />
               ))}
             </div>
           )}
@@ -306,58 +616,36 @@ export function TasksPage() {
       )}
 
       {/* ── footer ── */}
-      <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
-        <Icon name="shield" size={12} />
-        Read-only. No vault files are modified. Task editing comes in a later sprint.
+      <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Icon name="shield" size={12} />
+          Read-only by default. Status edits create a local backup under{' '}
+          <span className="mono">backend/data/backups/tasks/</span> before writing.
+        </div>
+        {data?.parseMode === 'markdown-table' && (
+          <div style={{ color: 'var(--txt-3)', paddingLeft: 18 }}>
+            Use the status dropdown in each row to update status. A confirmation dialog appears before writing.
+          </div>
+        )}
+        {data?.parseMode === 'checklist' && (
+          <div style={{ color: 'var(--txt-3)', paddingLeft: 18 }}>
+            Toggle checkboxes to update done/todo. A confirmation dialog appears before writing.
+          </div>
+        )}
       </div>
 
-    </div>
-  );
-}
+      {/* ── confirmation modal ── */}
+      {pendingChange && data && (
+        <ConfirmStatusModal
+          pending={pendingChange}
+          taskFilePath={data.path}
+          updating={updating}
+          error={updateError}
+          onConfirm={applyChange}
+          onCancel={cancelChange}
+        />
+      )}
 
-// ── task row ──────────────────────────────────────────────────────────────────
-
-function TaskRow({ task, last }: { task: VaultTask; last: boolean }) {
-  const ss = statusStyle(task.status);
-  const ps = task.priority ? priorityStyle(task.priority) : null;
-
-  return (
-    <div style={{
-      display: 'grid', gridTemplateColumns: COLS,
-      gap: 'var(--s3)', padding: '9px var(--s5)',
-      alignItems: 'center',
-      borderBottom: last ? 'none' : '1px solid var(--line-soft)',
-    }}>
-      {/* title */}
-      <div style={{
-        fontSize: 12.5, color: 'var(--txt-0)',
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-      }} title={task.title}>
-        {task.title}
-      </div>
-
-      {/* status */}
-      <div>
-        {task.status
-          ? <Pill label={task.status} color={ss.color} bg={ss.bg} />
-          : <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>—</span>
-        }
-      </div>
-
-      {/* area */}
-      <div style={{ fontSize: 11.5, color: 'var(--txt-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {task.area ?? <span style={{ color: 'var(--txt-3)' }}>—</span>}
-      </div>
-
-      {/* priority */}
-      <div style={{ fontSize: 11.5, fontWeight: 600, color: ps?.color ?? 'var(--txt-3)' }}>
-        {task.priority ?? '—'}
-      </div>
-
-      {/* due */}
-      <div style={{ fontSize: 11, color: 'var(--txt-2)' }} className="mono">
-        {task.due ?? '—'}
-      </div>
     </div>
   );
 }

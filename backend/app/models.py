@@ -315,6 +315,17 @@ class VaultTasksResponse(BaseModel):
     parseMode:    str  # "markdown-table" | "checklist" | "preview-only"
 
 
+class TaskStatusUpdateRequest(BaseModel):
+    status: str  # must be one of: todo | in progress | blocked | done
+
+
+class TaskStatusUpdateResponse(BaseModel):
+    ok:        bool
+    task:      VaultTask
+    path:      str
+    updatedAt: str
+
+
 # ── archive ───────────────────────────────────────────────────────────────────
 
 class ArchiveInfo(BaseModel):

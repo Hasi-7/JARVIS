@@ -1,18 +1,33 @@
 """
-Read-only vault inspection module for Brain UI.
+vault.py — Read-only vault inspection + safe task status editing.
 
-Safety rules — strictly enforced:
-- READ ONLY. No writes, deletes, moves, renames, or modifications.
-- All paths are resolved and validated to stay inside the configured vault root.
-- Traversal is prevented via Path.is_relative_to(); no user input reaches path resolution.
-- Previews are capped at 2000 chars; full file content is never forwarded.
-- Missing folders return empty results rather than raising.
-- Encoding errors are handled safely via errors='replace'.
-- No vault contents are parsed, executed, or indexed.
+Read-only operations:
+- Scans wiki/raw directories for projects, courses, hackathons, business entities.
+- Reads ops files (resume-pipeline, backfill, tasks).
+- Parses task files (Markdown table or checklist).
+
+Write operation (task status only):
+- update_task_status(): updates a single task's status field.
+- Creates a timestamped backup before every write.
+- Only writes to ops/task-db.md or ops/tasks.md.
+
+Safety rules strictly enforced:
+- READ ONLY for all operations except update_task_status().
+- All paths resolved and validated to stay inside the configured vault root.
+- Traversal prevented via Path.is_relative_to().
+- Previews capped at 2000 chars; full file content never forwarded.
+- Only allowed task statuses accepted; unknown IDs rejected.
+- Conflict detection: re-reads + re-parses file before writing; verifies target line.
+- Backup created before every write; backups never overwritten.
+- No other vault files touched.
+- Encoding errors handled safely via errors='replace'.
 """
 
 import logging
+import random
 import re
+import shutil
+import string
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -22,11 +37,17 @@ logger = logging.getLogger(__name__)
 _PREVIEW_CHARS = 2000
 _PARSE_CHARS   = 50_000   # max chars fed to the task parser
 
-# Ops files the UI is allowed to read.
 _OPS_ALLOWED: frozenset = frozenset({"resume-pipeline", "backfill", "tasks"})
-
-# Task file candidates, in priority order.
 _TASK_CANDIDATES = ("ops/task-db.md", "ops/tasks.md")
+
+# Allowed statuses for the status-update endpoint.
+ALLOWED_TASK_STATUSES: frozenset = frozenset({"todo", "in progress", "blocked", "done"})
+
+# Public task fields exposed via the API.  Internal _* keys are stripped before returning.
+_PUBLIC_TASK_FIELDS = frozenset({"id", "title", "status", "area", "priority", "due", "source", "raw"})
+
+# Backup directory: backend/data/backups/tasks/
+_BACKUP_DIR = Path(__file__).parent.parent / "data" / "backups" / "tasks"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -157,7 +178,7 @@ def _merge(wiki_items: dict, raw_items: dict) -> list:
     return result
 
 
-# ── public API ────────────────────────────────────────────────────────────────
+# ── public API (read-only domain scans) ──────────────────────────────────────
 
 def get_vault_summary(vault_path: str) -> dict:
     """Return vault availability and presence of standard top-level folders."""
@@ -200,7 +221,6 @@ def get_hackathons(vault_path: str) -> list:
     root = Path(vault_path)
     if not root.is_dir():
         return []
-    # Try wiki/projects/hackathons first, fall back to wiki/hackathons
     wiki = _scan_wiki(root, "wiki/projects/hackathons")
     if not wiki:
         wiki = _scan_wiki(root, "wiki/hackathons")
@@ -238,7 +258,11 @@ def _norm_col(name: str) -> str:
 
 
 def _parse_table_tasks(lines: list) -> list:
-    """Parse a Markdown pipe table. Returns list of task dicts, or [] if no table found."""
+    """
+    Parse a Markdown pipe table.
+    Returns list of task dicts including internal _lineNum, _statusColIdx, _colMap.
+    Internal _* fields are stripped before the public API returns.
+    """
     header_idx = None
     for i in range(len(lines) - 1):
         if _ROW_RE.match(lines[i]) and _SEP_RE.match(lines[i + 1]):
@@ -247,11 +271,12 @@ def _parse_table_tasks(lines: list) -> list:
     if header_idx is None:
         return []
 
-    raw_cols   = [c.strip() for c in lines[header_idx].strip().strip("|").split("|")]
-    col_map    = [_norm_col(c) for c in raw_cols]
-    tasks: list = []
+    raw_cols        = [c.strip() for c in lines[header_idx].strip().strip("|").split("|")]
+    col_map         = [_norm_col(c) for c in raw_cols]
+    status_col_idx  = col_map.index("status") if "status" in col_map else -1
+    tasks: list     = []
 
-    for line in lines[header_idx + 2:]:
+    for row_idx, line in enumerate(lines[header_idx + 2:]):
         if not _ROW_RE.match(line):
             break
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
@@ -259,14 +284,18 @@ def _parse_table_tasks(lines: list) -> list:
             cells.append("")
 
         task: dict = {
-            "id":       f"t{len(tasks) + 1}",
-            "title":    "",
-            "status":   "",
-            "area":     None,
-            "priority": None,
-            "due":      None,
-            "source":   None,
-            "raw":      line.strip(),
+            "id":              f"t{len(tasks) + 1}",
+            "title":           "",
+            "status":          "",
+            "area":            None,
+            "priority":        None,
+            "due":             None,
+            "source":          None,
+            "raw":             line.strip(),
+            # Internal location metadata — stripped before public API returns.
+            "_lineNum":        header_idx + 2 + row_idx,
+            "_statusColIdx":   status_col_idx,
+            "_colMap":         list(col_map),
         }
         title_set = False
         for i, col in enumerate(col_map):
@@ -290,10 +319,15 @@ def _parse_table_tasks(lines: list) -> list:
 
 
 def _parse_checklist_tasks(content: str) -> list:
-    """Parse Markdown checkbox lines. Returns list of task dicts."""
+    """
+    Parse Markdown checkbox lines.
+    Returns list of task dicts including internal _lineNum.
+    Internal _* fields are stripped before the public API returns.
+    """
     tasks: list = []
     for m in _CB_RE.finditer(content):
-        checked = m.group(1).lower() == "x"
+        checked  = m.group(1).lower() == "x"
+        line_num = content[:m.start()].count('\n')
         tasks.append({
             "id":       f"t{len(tasks) + 1}",
             "title":    m.group(2).strip(),
@@ -303,14 +337,16 @@ def _parse_checklist_tasks(content: str) -> list:
             "due":      None,
             "source":   None,
             "raw":      m.group(0).strip(),
+            # Internal location metadata.
+            "_lineNum": line_num,
         })
     return tasks
 
 
-def _parse_tasks(content: str) -> tuple:  # (list[dict], str)
+def _parse_tasks(content: str) -> tuple:
     """
     Try table parsing, then checklist, then fall back to preview-only.
-    Returns (tasks, parse_mode).
+    Returns (tasks_with_internal_fields, parse_mode).
     """
     lines  = content[:_PARSE_CHARS].splitlines()
     tasks  = _parse_table_tasks(lines)
@@ -322,6 +358,11 @@ def _parse_tasks(content: str) -> tuple:  # (list[dict], str)
     return [], "preview-only"
 
 
+def _strip_internal(tasks: list) -> list:
+    """Return tasks with only public fields; internal _* keys removed."""
+    return [{k: v for k, v in t.items() if k in _PUBLIC_TASK_FIELDS} for t in tasks]
+
+
 def get_tasks(vault_path: str) -> dict:
     """
     Read and parse the vault task file.
@@ -330,11 +371,12 @@ def get_tasks(vault_path: str) -> dict:
     Parses Markdown tables, checklists, or falls back to preview-only.
 
     Safety: read-only, path validated, preview capped, no writes.
+    Internal location metadata is stripped before returning.
     """
     root = Path(vault_path)
 
     task_path: Optional[Path] = None
-    rel_path = _TASK_CANDIDATES[0]  # default for "not found" response
+    rel_path = _TASK_CANDIDATES[0]
 
     for candidate in _TASK_CANDIDATES:
         p = _safe_subpath(root, candidate)
@@ -373,7 +415,7 @@ def get_tasks(vault_path: str) -> dict:
         "exists":       True,
         "lastModified": _last_modified_iso(task_path),
         "preview":      preview,
-        "tasks":        tasks,
+        "tasks":        _strip_internal(tasks),  # never expose _lineNum etc.
         "parseMode":    parse_mode,
     }
 
@@ -401,3 +443,238 @@ def get_ops_file(vault_path: str, kind: str) -> dict:
         "preview":      _preview(p)           if p.is_file() else None,
         "lastModified": _last_modified_iso(p) if p.is_file() else None,
     }
+
+
+# ── task status write ─────────────────────────────────────────────────────────
+
+def _backup_task_file(task_path: Path) -> Path:
+    """
+    Create a timestamped backup of the task file under backend/data/backups/tasks/.
+    Backup filenames include the stem, a UTC timestamp, and a 4-character random suffix.
+    Backups are never overwritten.
+
+    Returns the backup path on success. Raises on any I/O failure.
+    """
+    _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stem      = task_path.stem
+    ts        = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    suffix    = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    bak_name  = f"{stem}_{ts}_{suffix}.md"
+    bak_path  = _BACKUP_DIR / bak_name
+
+    # Safety: never overwrite an existing backup.
+    if bak_path.exists():
+        suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        bak_path = _BACKUP_DIR / f"{stem}_{ts}_{suffix}.md"
+
+    shutil.copy2(task_path, bak_path)
+    logger.info("Task backup created: %s", bak_path)
+    return bak_path
+
+
+def update_task_status(vault_path: str, task_id: str, new_status: str) -> dict:
+    """
+    Update a single task's status in the vault task file.
+
+    Safety contract:
+    - Only writes to ops/task-db.md or ops/tasks.md (path validated).
+    - Only ALLOWED_TASK_STATUSES are accepted.
+    - Task ID must match t<positive-integer> pattern.
+    - File is re-read and re-parsed on every call (no stale state).
+    - Target line is verified against the original task raw content before write.
+    - Backup is created before every write; backup never overwrites existing file.
+    - If ANY check fails, the file is NOT modified.
+    - No other vault files are touched.
+
+    Raises ValueError with a descriptive message on any safety check failure.
+    Returns {"ok": True, "task": {...public task dict...}, "path": str, "updatedAt": str}.
+    """
+    # ── validate inputs ───────────────────────────────────────────────────────
+    if new_status not in ALLOWED_TASK_STATUSES:
+        raise ValueError(
+            f"Invalid status {new_status!r}. Allowed: {sorted(ALLOWED_TASK_STATUSES)}"
+        )
+
+    if not (task_id.startswith("t") and task_id[1:].isdigit() and len(task_id) > 1):
+        raise ValueError(f"Invalid task id {task_id!r}. Expected format: t<number> (e.g. t1).")
+    task_index = int(task_id[1:]) - 1   # "t1" → 0
+    if task_index < 0:
+        raise ValueError(f"Invalid task id {task_id!r}.")
+
+    # ── locate task file ──────────────────────────────────────────────────────
+    root: Path = Path(vault_path)
+    task_path: Optional[Path] = None
+    rel_path = _TASK_CANDIDATES[0]
+
+    for candidate in _TASK_CANDIDATES:
+        p = _safe_subpath(root, candidate)
+        if p is not None and p.is_file():
+            task_path = p
+            rel_path  = candidate
+            break
+
+    if task_path is None:
+        raise ValueError("No task file found in vault ops/.")
+
+    # ── read full file ────────────────────────────────────────────────────────
+    try:
+        full_content = task_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        raise ValueError(f"Could not read task file: {exc}") from exc
+
+    # ── parse (with internal location metadata) ───────────────────────────────
+    parse_content = full_content[:_PARSE_CHARS]
+    lines         = parse_content.splitlines()
+    table_tasks   = _parse_table_tasks(lines)
+
+    if table_tasks:
+        parse_mode = "markdown-table"
+        tasks      = table_tasks
+    else:
+        cl_tasks = _parse_checklist_tasks(parse_content)
+        if cl_tasks:
+            parse_mode = "checklist"
+            tasks      = cl_tasks
+        else:
+            raise ValueError(
+                "Task file format is preview-only — status editing requires a "
+                "Markdown table or checklist format."
+            )
+
+    # ── find the target task ──────────────────────────────────────────────────
+    if task_index >= len(tasks):
+        raise ValueError(
+            f"Task '{task_id}' not found. File has {len(tasks)} task(s). "
+            "Refresh the page and try again."
+        )
+
+    task = tasks[task_index]
+
+    # ── split full content into lines (preserving line endings for write-back) ─
+    all_lines = full_content.splitlines(keepends=True)
+
+    line_num: int = task["_lineNum"]
+    if line_num >= len(all_lines):
+        raise ValueError(
+            f"Task line {line_num} not found (file has {len(all_lines)} lines). "
+            "File may have changed — refresh and try again."
+        )
+
+    orig_line = all_lines[line_num]
+
+    # ── apply the edit based on parse mode ────────────────────────────────────
+    if parse_mode == "markdown-table":
+        status_col_idx: int = task["_statusColIdx"]
+        col_map: list       = task["_colMap"]
+
+        if status_col_idx < 0:
+            raise ValueError("No status column found in the task table.")
+
+        # Verify the line is still a table row.
+        if not _ROW_RE.match(orig_line.rstrip('\r\n')):
+            raise ValueError(
+                f"Line {line_num} no longer looks like a table row. "
+                "File may have changed — refresh and try again."
+            )
+
+        # Split into cells and verify title matches (conflict detection).
+        cells = [c.strip() for c in orig_line.strip().rstrip('\r\n').strip('|').split('|')]
+        if status_col_idx >= len(cells):
+            raise ValueError(
+                f"Status column index {status_col_idx} is out of range "
+                f"(row has {len(cells)} cells). File may have changed."
+            )
+
+        if "title" in col_map:
+            title_idx = col_map.index("title")
+            if title_idx < len(cells) and cells[title_idx] != task["title"]:
+                raise ValueError(
+                    "Task title mismatch — file has changed since last load. "
+                    "Refresh and try again."
+                )
+
+        # Update only the status cell.
+        cells[status_col_idx] = new_status
+        while len(cells) < len(col_map):
+            cells.append("")
+
+        # Reconstruct row, preserving the original line ending.
+        new_row    = '| ' + ' | '.join(cells) + ' |'
+        line_end   = _line_ending(orig_line)
+        new_line   = new_row + line_end
+
+        updated_raw = new_row
+
+    elif parse_mode == "checklist":
+        # Verify the line is still a checkbox line.
+        stripped = orig_line.rstrip('\r\n')
+        if not re.match(r"^[-*]\s+\[( |x|X)\]", stripped):
+            raise ValueError(
+                f"Line {line_num} no longer looks like a checkbox. "
+                "File may have changed — refresh and try again."
+            )
+
+        # Verify title (conflict detection).
+        m = _CB_RE.match(stripped)
+        if m and m.group(2).strip() != task["title"]:
+            raise ValueError(
+                "Task title mismatch — file has changed since last load. "
+                "Refresh and try again."
+            )
+
+        # Replace checkbox marker; preserve the rest of the line exactly.
+        new_check  = 'x' if new_status == 'done' else ' '
+        new_stripped = re.sub(r'\[( |x|X)\]', f'[{new_check}]', stripped, count=1)
+        line_end   = _line_ending(orig_line)
+        new_line   = new_stripped + line_end
+
+        updated_raw = new_stripped.strip()
+
+    else:
+        raise ValueError("Unsupported parse mode for editing.")
+
+    # ── backup then write ─────────────────────────────────────────────────────
+    try:
+        _backup_task_file(task_path)
+    except Exception as exc:
+        raise ValueError(f"Backup failed — write aborted: {exc}") from exc
+
+    all_lines[line_num] = new_line
+    try:
+        task_path.write_text(''.join(all_lines), encoding="utf-8")
+    except Exception as exc:
+        raise ValueError(f"Could not write task file: {exc}") from exc
+
+    logger.info(
+        "Task status updated: id=%s  title=%r  status=%r→%r  file=%s",
+        task_id, task["title"], task["status"], new_status, rel_path,
+    )
+
+    updated_task = {
+        "id":       task_id,
+        "title":    task["title"],
+        "status":   new_status,
+        "area":     task["area"],
+        "priority": task["priority"],
+        "due":      task["due"],
+        "source":   task["source"],
+        "raw":      updated_raw,
+    }
+
+    return {
+        "ok":        True,
+        "task":      updated_task,
+        "path":      rel_path,
+        "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def _line_ending(line: str) -> str:
+    """Extract the line ending from a raw line string."""
+    if line.endswith('\r\n'):
+        return '\r\n'
+    if line.endswith('\r'):
+        return '\r'
+    if line.endswith('\n'):
+        return '\n'
+    return ''

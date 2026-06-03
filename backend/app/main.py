@@ -15,6 +15,7 @@ from app.vault import (
     get_business,
     get_ops_file,
     get_tasks,
+    update_task_status,
 )
 from app.agent import (
     chat_with_agent,
@@ -75,6 +76,8 @@ from app.models import (
     VaultOpsFileResponse,
     VaultTask,
     VaultTasksResponse,
+    TaskStatusUpdateRequest,
+    TaskStatusUpdateResponse,
     BatchApproveResponse,
     BatchSkippedItem,
     BrainRunRequest,
@@ -105,7 +108,7 @@ app = FastAPI(title="Brain UI Backend", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
 )
 
@@ -467,6 +470,40 @@ def vault_tasks() -> VaultTasksResponse:
         preview=data["preview"],
         tasks=[VaultTask(**t) for t in data["tasks"]],
         parseMode=data["parseMode"],
+    )
+
+
+@app.patch("/api/vault/tasks/{task_id}/status", response_model=TaskStatusUpdateResponse)
+def vault_task_update_status(task_id: str, req: TaskStatusUpdateRequest) -> TaskStatusUpdateResponse:
+    """
+    PATCH /api/vault/tasks/{task_id}/status
+
+    Update a single task's status in the vault task file.
+
+    Allowed statuses: todo | in progress | blocked | done
+
+    Safety:
+    - Only writes to ops/task-db.md or ops/tasks.md.
+    - Creates a backup under backend/data/backups/tasks/ before writing.
+    - Re-reads and re-parses the file on every call (no stale state).
+    - Verifies task location and title before writing (conflict detection).
+    - Returns 400 on any validation or conflict error; file is not modified.
+    - No other vault files are touched.
+    """
+    cfg = get_config()
+    try:
+        result = update_task_status(cfg.vault_path, task_id, req.status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Task status patched: id=%s  status=%r  path=%s",
+        task_id, req.status, result["path"],
+    )
+    return TaskStatusUpdateResponse(
+        ok=result["ok"],
+        task=VaultTask(**result["task"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
     )
 
 
