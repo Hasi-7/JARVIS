@@ -1,18 +1,21 @@
 """
-vault.py — Read-only vault inspection + safe task status editing.
+vault.py — Read-only vault inspection + safe task status editing + safe task creation.
 
 Read-only operations:
 - Scans wiki/raw directories for projects, courses, hackathons, business entities.
 - Reads ops files (resume-pipeline, backfill, tasks).
 - Parses task files (Markdown table or checklist).
 
-Write operation (task status only):
+Write operations:
 - update_task_status(): updates a single task's status field.
-- Creates a timestamped backup before every write.
-- Only writes to ops/task-db.md or ops/tasks.md.
+- create_task(): appends a new task row/item to the task file.
+  - If no task file exists, creates ops/task-db.md with a default table header.
+  - Only appends; never rewrites existing task content.
+  - Creates a timestamped backup before every write.
+  - Only writes to ops/task-db.md or ops/tasks.md.
 
 Safety rules strictly enforced:
-- READ ONLY for all operations except update_task_status().
+- READ ONLY for all operations except the two write functions above.
 - All paths resolved and validated to stay inside the configured vault root.
 - Traversal prevented via Path.is_relative_to().
 - Previews capped at 2000 chars; full file content never forwarded.
@@ -40,8 +43,18 @@ _PARSE_CHARS   = 50_000   # max chars fed to the task parser
 _OPS_ALLOWED: frozenset = frozenset({"resume-pipeline", "backfill", "tasks"})
 _TASK_CANDIDATES = ("ops/task-db.md", "ops/tasks.md")
 
-# Allowed statuses for the status-update endpoint.
+# Allowed statuses for the status-update and create endpoints.
 ALLOWED_TASK_STATUSES: frozenset = frozenset({"todo", "in progress", "blocked", "done"})
+
+# Allowed priorities for task creation.
+ALLOWED_TASK_PRIORITIES: frozenset = frozenset({"low", "medium", "high"})
+
+# Default table written when no task file exists and the user creates the first task.
+_DEFAULT_TABLE_HEADER = (
+    "| Title | Status | Area | Priority | Due | Source |\n"
+    "|---|---|---|---|---|---|\n"
+)
+_DEFAULT_TABLE_COLS = ["title", "status", "area", "priority", "due", "source"]
 
 # Public task fields exposed via the API.  Internal _* keys are stripped before returning.
 _PUBLIC_TASK_FIELDS = frozenset({"id", "title", "status", "area", "priority", "due", "source", "raw"})
@@ -678,3 +691,245 @@ def _line_ending(line: str) -> str:
     if line.endswith('\n'):
         return '\n'
     return ''
+
+
+# ── task creation helpers ─────────────────────────────────────────────────────
+
+def _sanitize_table_cell(value: str) -> str:
+    """Replace pipe chars and strip newlines for a safe Markdown table cell."""
+    return (
+        value
+        .replace("|", "∣")          # replace with Unicode DIVIDES, visually close
+        .replace("\r\n", " ")
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .strip()
+    )
+
+
+def _sanitize_meta_value(value: str) -> str:
+    """Strip characters that would break a checklist metadata parenthetical."""
+    return (
+        value
+        .replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        .replace("(", "").replace(")", "")
+        .replace("|", "")
+        .strip()
+    )
+
+
+def _extract_table_col_map(lines: list) -> list:
+    """
+    Return the normalized column order from an existing Markdown table header.
+    Falls back to the default column order if the header cannot be found.
+    """
+    for i in range(len(lines) - 1):
+        if _ROW_RE.match(lines[i]) and _SEP_RE.match(lines[i + 1]):
+            raw_cols = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+            return [_norm_col(c) for c in raw_cols]
+    return list(_DEFAULT_TABLE_COLS)
+
+
+# ── task creation (append-only) ───────────────────────────────────────────────
+
+def create_task(
+    vault_path: str,
+    title: str,
+    status: str,
+    area: Optional[str] = None,
+    priority: Optional[str] = None,
+    due: Optional[str] = None,
+    source: Optional[str] = None,
+) -> dict:
+    """
+    Append a new task to the vault task file.
+
+    File selection:
+    - Tries ops/task-db.md then ops/tasks.md.
+    - If neither exists, creates ops/task-db.md with a default Markdown table header.
+
+    Append behavior:
+    - markdown-table: appends a new pipe-delimited row matching the existing column order.
+    - checklist:      appends a new '- [ ]' or '- [x]' item.
+    - preview-only:   raises ValueError — safe append is not possible.
+
+    Safety contract:
+    - Validates title (required, non-empty), status (allowlist), priority (allowlist if set).
+    - Rejects any field value containing raw newlines.
+    - Sanitizes pipe characters in table cells (replaces with Unicode ∣).
+    - Creates a backup before every write; aborts if backup fails.
+    - Only writes to ops/task-db.md or ops/tasks.md.
+    - Creates ops/ only when creating the default task-db.md.
+    - Never deletes, moves, or rewrites existing task rows.
+    - No other vault files are touched.
+
+    Returns {"ok": True, "task": {...public task dict...}, "path": str, "updatedAt": str}.
+    Raises ValueError with a descriptive message on any validation or I/O failure.
+    """
+    # ── validate inputs ───────────────────────────────────────────────────────
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("title is required and cannot be empty.")
+    if "\n" in title or "\r" in title:
+        raise ValueError("title must not contain newlines.")
+
+    status = (status or "").strip().lower()
+    if status not in ALLOWED_TASK_STATUSES:
+        raise ValueError(
+            f"Invalid status {status!r}. Allowed: {sorted(ALLOWED_TASK_STATUSES)}"
+        )
+
+    if priority is not None:
+        priority = priority.strip().lower()
+        if "\n" in priority or "\r" in priority:
+            raise ValueError("priority must not contain newlines.")
+        if priority not in ALLOWED_TASK_PRIORITIES:
+            raise ValueError(
+                f"Invalid priority {priority!r}. Allowed: {sorted(ALLOWED_TASK_PRIORITIES)}"
+            )
+
+    for field_name, field_val in [("area", area), ("due", due), ("source", source)]:
+        if field_val is not None and ("\n" in field_val or "\r" in field_val):
+            raise ValueError(f"{field_name} must not contain newlines.")
+
+    # ── locate task file ──────────────────────────────────────────────────────
+    root: Path = Path(vault_path)
+    task_path: Optional[Path] = None
+    rel_path = _TASK_CANDIDATES[0]
+
+    for candidate in _TASK_CANDIDATES:
+        p = _safe_subpath(root, candidate)
+        if p is not None and p.is_file():
+            task_path = p
+            rel_path  = candidate
+            break
+
+    parse_mode: str
+    col_map: list
+    existing_count: int
+
+    # ── new file: create ops/task-db.md with default table header ─────────────
+    if task_path is None:
+        default_path = _safe_subpath(root, _TASK_CANDIDATES[0])
+        if default_path is None:
+            raise ValueError("Could not resolve task file path safely.")
+
+        ops_dir = default_path.parent
+        try:
+            ops_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            raise ValueError(f"Could not create ops/ directory: {exc}") from exc
+
+        try:
+            default_path.write_text(_DEFAULT_TABLE_HEADER, encoding="utf-8")
+        except Exception as exc:
+            raise ValueError(f"Could not create task file: {exc}") from exc
+
+        task_path      = default_path
+        rel_path       = _TASK_CANDIDATES[0]
+        parse_mode     = "markdown-table"
+        col_map        = list(_DEFAULT_TABLE_COLS)
+        existing_count = 0
+
+    else:
+        # ── read and parse existing file ──────────────────────────────────────
+        try:
+            full_content = task_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            raise ValueError(f"Could not read task file: {exc}") from exc
+
+        parse_content = full_content[:_PARSE_CHARS]
+        lines         = parse_content.splitlines()
+        table_tasks   = _parse_table_tasks(lines)
+
+        if table_tasks:
+            parse_mode     = "markdown-table"
+            existing_count = len(table_tasks)
+            col_map        = _extract_table_col_map(lines)
+        else:
+            cl_tasks = _parse_checklist_tasks(parse_content)
+            if cl_tasks:
+                parse_mode     = "checklist"
+                existing_count = len(cl_tasks)
+                col_map        = []
+            else:
+                raise ValueError(
+                    "Task file format is not structured enough for safe append."
+                )
+
+    new_task_id = f"t{existing_count + 1}"
+
+    # ── build the new line ────────────────────────────────────────────────────
+    raw_repr: str
+
+    if parse_mode == "markdown-table":
+        field_map = {
+            "title":    _sanitize_table_cell(title),
+            "status":   _sanitize_table_cell(status),
+            "area":     _sanitize_table_cell(area or ""),
+            "priority": _sanitize_table_cell(priority or ""),
+            "due":      _sanitize_table_cell(due or ""),
+            "source":   _sanitize_table_cell(source or ""),
+        }
+        cells    = [field_map.get(col, "") for col in col_map]
+        new_line = "| " + " | ".join(cells) + " |\n"
+        raw_repr = new_line.strip()
+
+    elif parse_mode == "checklist":
+        check      = "x" if status == "done" else " "
+        meta_parts: list = []
+        if area:     meta_parts.append(f"Area: {_sanitize_meta_value(area)}")
+        if priority: meta_parts.append(f"Priority: {priority.capitalize()}")
+        if due:      meta_parts.append(f"Due: {_sanitize_meta_value(due)}")
+        meta       = f" ({', '.join(meta_parts)})" if meta_parts else ""
+        safe_title = title.replace("\n", " ").replace("\r", " ")
+        new_line   = f"- [{check}] {safe_title}{meta}\n"
+        raw_repr   = new_line.strip()
+
+    else:
+        raise ValueError("Unexpected parse mode — cannot append.")
+
+    # ── backup then write ─────────────────────────────────────────────────────
+    try:
+        _backup_task_file(task_path)
+    except Exception as exc:
+        raise ValueError(f"Backup failed — write aborted: {exc}") from exc
+
+    # Re-read to get the current file state (handles new file created above too).
+    try:
+        current = task_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        raise ValueError(f"Could not re-read task file before append: {exc}") from exc
+
+    # Ensure file ends with a newline before appending.
+    if current and not current.endswith("\n"):
+        current += "\n"
+    current += new_line
+
+    try:
+        task_path.write_text(current, encoding="utf-8")
+    except Exception as exc:
+        raise ValueError(f"Could not write task file: {exc}") from exc
+
+    logger.info(
+        "Task created: id=%s  title=%r  status=%r  file=%s",
+        new_task_id, title, status, rel_path,
+    )
+
+    new_task = {
+        "id":       new_task_id,
+        "title":    title,
+        "status":   status,
+        "area":     area,
+        "priority": priority,
+        "due":      due,
+        "source":   source,
+        "raw":      raw_repr,
+    }
+
+    return {
+        "ok":        True,
+        "task":      new_task,
+        "path":      rel_path,
+        "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }

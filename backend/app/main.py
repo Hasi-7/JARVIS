@@ -16,6 +16,14 @@ from app.vault import (
     get_ops_file,
     get_tasks,
     update_task_status,
+    create_task,
+)
+from app.calendar import (
+    create_calendar_candidate,
+    create_calendar_candidates_file,
+    get_calendar_candidates,
+    update_calendar_candidate,
+    approve_calendar_candidate,
 )
 from app.agent import (
     chat_with_agent,
@@ -24,7 +32,7 @@ from app.agent import (
     LOCAL_MODEL,
     CONTEXT_WINDOW_MESSAGES,
 )
-from app.brain import run_brain_command
+from app.brain import run_brain_command, run_brain_command_args
 from app.config import get_config, update_config
 from app.conversations import (
     create_conversation,
@@ -33,6 +41,7 @@ from app.conversations import (
     list_conversations,
     save_chat_turn,
 )
+from app.entities import BusinessAreaPartialFailure, create_business_area
 from app.intake import (
     ai_classify_proposal,
     batch_ai_classify_proposals,
@@ -78,6 +87,12 @@ from app.models import (
     VaultTasksResponse,
     TaskStatusUpdateRequest,
     TaskStatusUpdateResponse,
+    CreateVaultTaskRequest,
+    CalendarCandidate,
+    CalendarCandidatesResponse,
+    CreateCalendarCandidateRequest,
+    UpdateCalendarCandidateRequest,
+    UpdateCalendarCandidateResponse,
     BatchApproveResponse,
     BatchSkippedItem,
     BrainRunRequest,
@@ -85,7 +100,13 @@ from app.models import (
     ClassificationProposalResponse,
     ConfigResponse,
     ConfigUpdateRequest,
+    CreateBusinessRequest,
     DeleteStagedResponse,
+    CreateCourseRequest,
+    CreateHackathonRequest,
+    CreateProjectRequest,
+    EntityCreateResponse,
+    EntityPaths,
     HealthResponse,
     ProposalUpdateRequest,
     ProposalsResponse,
@@ -150,6 +171,30 @@ def _proposal_to_response(p) -> ClassificationProposalResponse:
     )
 
 
+def _entity_command_response(entity_type: str, name: str, result: BrainRunResponse) -> EntityCreateResponse:
+    return EntityCreateResponse(
+        ok=result.ok,
+        entityType=entity_type,
+        name=name,
+        command=result.command,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        paths=EntityPaths(wikiPath=None, rawPath=None),
+    )
+
+
+def _entity_scaffold_response(data: dict) -> EntityCreateResponse:
+    return EntityCreateResponse(
+        ok=data["ok"],
+        entityType=data["entityType"],
+        name=data["name"],
+        command=data.get("command"),
+        stdout=data.get("stdout"),
+        stderr=data.get("stderr"),
+        paths=EntityPaths(**data["paths"]),
+    )
+
+
 # ── health / config ───────────────────────────────────────────────────────────
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -199,7 +244,53 @@ def brain_run(req: BrainRunRequest) -> BrainRunResponse:
             status_code=400,
             detail=f"Command '{req.command}' is not in the allowlist.",
         )
+    if req.command in {"new-project", "new-course", "new-hackathon"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Command '{req.command}' requires the entity-specific creation endpoint.",
+        )
     return run_brain_command(req.command)
+
+
+# ── entity creation ───────────────────────────────────────────────────────────
+
+@app.post("/api/entities/projects", response_model=EntityCreateResponse)
+def entity_project_create(req: CreateProjectRequest) -> EntityCreateResponse:
+    result = run_brain_command_args("new-project", {
+        "name": req.name,
+        "repoPath": req.repoPath,
+    })
+    return _entity_command_response("project", req.name.strip(), result)
+
+
+@app.post("/api/entities/courses", response_model=EntityCreateResponse)
+def entity_course_create(req: CreateCourseRequest) -> EntityCreateResponse:
+    result = run_brain_command_args("new-course", {
+        "code": req.code,
+        "name": req.name,
+    })
+    return _entity_command_response("course", req.code.strip(), result)
+
+
+@app.post("/api/entities/hackathons", response_model=EntityCreateResponse)
+def entity_hackathon_create(req: CreateHackathonRequest) -> EntityCreateResponse:
+    result = run_brain_command_args("new-hackathon", {
+        "name": req.name,
+        "date": req.date,
+    })
+    return _entity_command_response("hackathon", req.name.strip(), result)
+
+
+@app.post("/api/entities/business", response_model=EntityCreateResponse)
+def entity_business_create(req: CreateBusinessRequest) -> EntityCreateResponse:
+    cfg = get_config()
+    try:
+        data = create_business_area(cfg.vault_path, req.name, req.description)
+    except BusinessAreaPartialFailure as exc:
+        return _entity_scaffold_response(exc.data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _entity_scaffold_response(data)
 
 
 # ── intake / staging ──────────────────────────────────────────────────────────
@@ -473,6 +564,56 @@ def vault_tasks() -> VaultTasksResponse:
     )
 
 
+@app.post("/api/vault/tasks", response_model=TaskStatusUpdateResponse)
+def vault_task_create(req: CreateVaultTaskRequest) -> TaskStatusUpdateResponse:
+    """
+    POST /api/vault/tasks
+
+    Append a new task to the vault task file.
+
+    File selection:
+    - ops/task-db.md (priority) → ops/tasks.md → creates ops/task-db.md if neither exists.
+
+    Supported formats:
+    - markdown-table: appends a new pipe-delimited row.
+    - checklist:      appends a new checkbox item.
+    - preview-only:   returns HTTP 400 — safe append not possible.
+
+    Safety:
+    - Validates title (required), status (allowlist), priority (allowlist if set).
+    - Rejects fields containing raw newlines.
+    - Sanitizes pipe characters in table cells.
+    - Creates a backup under backend/data/backups/tasks/ before writing.
+    - Aborts and returns 400 if backup fails.
+    - Never writes outside ops/task-db.md or ops/tasks.md.
+    - Creates ops/ only when creating the default ops/task-db.md.
+    - Never deletes, moves, or rewrites existing tasks.
+    """
+    cfg = get_config()
+    try:
+        result = create_task(
+            vault_path=cfg.vault_path,
+            title=req.title,
+            status=req.status,
+            area=req.area,
+            priority=req.priority,
+            due=req.due,
+            source=req.source,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Task created via API: id=%s  status=%r  path=%s",
+        result["task"]["id"], result["task"]["status"], result["path"],
+    )
+    return TaskStatusUpdateResponse(
+        ok=result["ok"],
+        task=VaultTask(**result["task"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
+    )
+
+
 @app.patch("/api/vault/tasks/{task_id}/status", response_model=TaskStatusUpdateResponse)
 def vault_task_update_status(task_id: str, req: TaskStatusUpdateRequest) -> TaskStatusUpdateResponse:
     """
@@ -502,6 +643,171 @@ def vault_task_update_status(task_id: str, req: TaskStatusUpdateRequest) -> Task
     return TaskStatusUpdateResponse(
         ok=result["ok"],
         task=VaultTask(**result["task"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
+    )
+
+
+@app.get("/api/vault/calendar-candidates", response_model=CalendarCandidatesResponse)
+def vault_calendar_candidates() -> CalendarCandidatesResponse:
+    """
+    GET /api/vault/calendar-candidates
+
+    Reads ops/calendar-candidates.md from the configured vault.
+    Parses Markdown table candidates; falls back to preview-only or missing.
+
+    Read-only. No vault writes. Preview capped at 2000 chars.
+    parseMode: "markdown-table" | "preview-only" | "missing"
+    """
+    cfg  = get_config()
+    data = get_calendar_candidates(cfg.vault_path)
+    return CalendarCandidatesResponse(
+        path=data["path"],
+        exists=data["exists"],
+        lastModified=data["lastModified"],
+        preview=data["preview"],
+        parseMode=data["parseMode"],
+        candidates=[CalendarCandidate(**c) for c in data["candidates"]],
+    )
+
+
+@app.post("/api/vault/calendar-candidates/create", response_model=CalendarCandidatesResponse)
+def vault_calendar_candidates_create_file() -> CalendarCandidatesResponse:
+    """
+    POST /api/vault/calendar-candidates/create
+
+    Create ops/calendar-candidates.md with the default starter table only when
+    missing. Existing files are never overwritten.
+    """
+    cfg = get_config()
+    try:
+        data = create_calendar_candidates_file(cfg.vault_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return CalendarCandidatesResponse(
+        path=data["path"],
+        exists=data["exists"],
+        lastModified=data["lastModified"],
+        preview=data["preview"],
+        parseMode=data["parseMode"],
+        candidates=[CalendarCandidate(**c) for c in data["candidates"]],
+    )
+
+
+@app.post("/api/vault/calendar-candidates", response_model=UpdateCalendarCandidateResponse)
+def vault_calendar_candidate_create(
+    req: CreateCalendarCandidateRequest,
+) -> UpdateCalendarCandidateResponse:
+    """
+    POST /api/vault/calendar-candidates
+
+    Append one candidate to an existing parseable Markdown table.
+
+    Safety:
+    - Missing file is rejected; use the explicit starter-file endpoint first.
+    - Backup created under backend/data/backups/calendar/ before append.
+    - Rejects raw newlines; sanitizes pipe characters.
+    - Only writes ops/calendar-candidates.md.
+    - No Google Calendar writes or command execution.
+    """
+    cfg = get_config()
+    payload = {
+        "date":     req.date,
+        "time":     req.time,
+        "duration": req.duration,
+        "title":    req.title,
+        "reason":   req.reason,
+        "source":   req.source,
+        "approved": req.approved,
+    }
+    try:
+        result = create_calendar_candidate(cfg.vault_path, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Calendar candidate created: id=%s  path=%s",
+        result["candidate"]["id"], result["path"],
+    )
+    return UpdateCalendarCandidateResponse(
+        ok=result["ok"],
+        candidate=CalendarCandidate(**result["candidate"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
+    )
+
+
+@app.patch(
+    "/api/vault/calendar-candidates/{candidate_id}",
+    response_model=UpdateCalendarCandidateResponse,
+)
+def vault_calendar_candidate_update(
+    candidate_id: str,
+    req: UpdateCalendarCandidateRequest,
+) -> UpdateCalendarCandidateResponse:
+    """
+    PATCH /api/vault/calendar-candidates/{candidate_id}
+
+    Update all editable fields in a single calendar candidate row.
+
+    Safety:
+    - Re-reads and re-parses file on every call.
+    - Backup created under backend/data/backups/calendar/ before writing.
+    - Rejects raw newlines; sanitizes pipe characters.
+    - Only writes ops/calendar-candidates.md.
+    - No Google Calendar writes.
+    """
+    cfg = get_config()
+    updates = {
+        "date":     req.date,
+        "time":     req.time,
+        "duration": req.duration,
+        "title":    req.title,
+        "reason":   req.reason,
+        "source":   req.source,
+        "approved": req.approved,
+    }
+    try:
+        result = update_calendar_candidate(cfg.vault_path, candidate_id, updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Calendar candidate patched: id=%s  approved=%r  path=%s",
+        candidate_id, req.approved, result["path"],
+    )
+    return UpdateCalendarCandidateResponse(
+        ok=result["ok"],
+        candidate=CalendarCandidate(**result["candidate"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
+    )
+
+
+@app.post(
+    "/api/vault/calendar-candidates/{candidate_id}/approve",
+    response_model=UpdateCalendarCandidateResponse,
+)
+def vault_calendar_candidate_approve(candidate_id: str) -> UpdateCalendarCandidateResponse:
+    """
+    POST /api/vault/calendar-candidates/{candidate_id}/approve
+
+    Set Approved = Yes for one calendar candidate.
+    Only the Approved cell is modified; all other cells are preserved.
+
+    Safety: same as PATCH endpoint. Backup created before write.
+    No Google Calendar writes.
+    """
+    cfg = get_config()
+    try:
+        result = approve_calendar_candidate(cfg.vault_path, candidate_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Calendar candidate approved: id=%s  path=%s",
+        candidate_id, result["path"],
+    )
+    return UpdateCalendarCandidateResponse(
+        ok=result["ok"],
+        candidate=CalendarCandidate(**result["candidate"]),
         path=result["path"],
         updatedAt=result["updatedAt"],
     )

@@ -103,7 +103,7 @@ Conversation endpoints:
 
 ## Vault inspection (read-only)
 
-Brain UI can read metadata from your configured Obsidian vault to populate the Work pages.
+Brain UI can read metadata from your configured Obsidian vault to populate the Work pages. The inspection endpoints in this section are read-only; entity creation endpoints intentionally perform the narrow writes documented later.
 
 **What is read:**
 
@@ -315,6 +315,13 @@ Both helpers accept Windows backslashes and forward slashes. Only paths returned
 | Dashboard runtime: Local model row | **Real** — reflects Ollama availability |
 | Tasks page — read | **Real** — reads `ops/task-db.md` or `ops/tasks.md`, parses table/checklist |
 | Tasks page — status edit | **Real** — `PATCH /api/vault/tasks/{id}/status`, backup + conflict detection |
+| Calendar page — candidates read | **Real** — reads `ops/calendar-candidates.md`, parses Markdown tables |
+| Calendar page — starter/create | **Real** — creates missing `ops/calendar-candidates.md` only by explicit button |
+| Calendar page — add candidate | **Real** — appends one candidate row after creating a backup |
+| Calendar page — edit / approve | **Real** — updates one candidate row after creating a backup |
+| Calendar page — export/open | **Real** — calls allowlisted `brain calendar-export` / `brain calendar-open` manually |
+| Projects / Courses / Hackathons — create | **Real** — calls safe entity-specific `brain new-*` endpoints |
+| Business — create | **Real** — creates safe wiki note, raw folder, and pipeline row |
 | OpenClaw | Mocked — not wired |
 | NemoClaw / OpenShell | Mocked — not wired |
 | Browser harness | Mocked — not wired |
@@ -329,10 +336,12 @@ Only these `brain` subcommands may run through the backend API:
 ```
 doctor  status  vault-path  today  weekly
 raw-status  sync-raw  calendar-export  calendar-open
+new-project  new-course  new-hackathon
 ```
 
 Non-allowlisted commands are rejected with HTTP 400. No arbitrary shell
-execution is possible.
+execution is possible. The `new-*` commands require typed entity endpoints and
+are rejected by generic `/api/brain/run`.
 
 ## Settings and config
 
@@ -505,6 +514,186 @@ backend/data/
     <moved files>       staged originals after archive action
 ```
 
+## Entity creation
+
+Projects, Courses, Hackathons, and Business pages include first-class creation actions so entity setup does not require PowerShell or manual folder-path work.
+
+### Brain-backed entity creation
+
+These flows call existing `brain` commands through entity-specific backend endpoints:
+
+| Page | Endpoint | Safe command |
+|---|---|---|
+| Projects | `POST /api/entities/projects` | `brain new-project` |
+| Courses | `POST /api/entities/courses` | `brain new-course` |
+| Hackathons | `POST /api/entities/hackathons` | `brain new-hackathon` |
+
+The frontend never sends raw shell text. Arguments are modeled as typed fields, validated by the backend, and passed as a subprocess argument array with `shell=False`. The generic `/api/brain/run` endpoint rejects these argument-requiring `new-*` commands; they must use the entity-specific endpoints.
+
+Verified CLI signatures from the existing `brain` source and live `brain.cmd --help` output:
+
+```text
+brain new-project <name>
+brain new-course <code> [--title <title>] [--term <term>]
+brain new-hackathon <name>
+```
+
+Current endpoint mapping:
+
+| Endpoint | Request field | CLI mapping |
+|---|---|---|
+| `POST /api/entities/projects` | `name` | positional `<name>` |
+| `POST /api/entities/projects` | `repoPath` | rejected when non-empty; current CLI does not support it |
+| `POST /api/entities/courses` | `code` | positional `<code>` |
+| `POST /api/entities/courses` | `name` | optional `--title <name>` |
+| `POST /api/entities/hackathons` | `name` | positional `<name>` |
+| `POST /api/entities/hackathons` | `date` | rejected when non-empty; current CLI does not support it |
+
+### Business scaffold
+
+Business areas use a safe filesystem scaffold because there may not be a `brain new-business` command.
+
+`POST /api/entities/business` creates:
+
+```
+raw/business/<safe-name>/
+wiki/business/<safe-name>.md
+ops/business-pipeline.md
+```
+
+The business note starter is:
+
+```md
+# <Business Area Name>
+
+## Summary
+
+<description or blank>
+
+## Status
+
+Active
+
+## Notes
+```
+
+If `ops/business-pipeline.md` is missing, it is created with:
+
+```md
+# Business Pipeline
+
+| Name | Status | Description | Created |
+|---|---|---|---|
+```
+
+Then a row is appended:
+
+```md
+| <name> | Active | <description> | <date> |
+```
+
+### Entity creation safety
+
+- Only `new-project`, `new-course`, and `new-hackathon` were added to the command allowlist.
+- No arbitrary command arguments or shell strings are accepted.
+- Empty required names/codes are rejected.
+- Newlines and control characters are rejected.
+- Unsafe Windows CMD metacharacters are rejected before calling `.cmd` brain commands.
+- Business scaffold writes only under `raw/business/`, `wiki/business/`, and `ops/business-pipeline.md`.
+- Business notes and raw folders are never overwritten.
+- The configured vault root must already exist before business scaffold writes run.
+- Existing `ops/business-pipeline.md` is backed up under `backend/data/backups/business/` before modification.
+- If business pipeline update fails after the wiki note or raw folder is created, the API returns `ok: false` with `stdout`, `stderr`, and exact created paths instead of claiming full success.
+- No delete, rename, AI generation, OpenClaw tooling, or automatic Raw Inbox routing is implemented.
+
+### Backend safety tests
+
+Run focused backend tests with:
+
+```bash
+python -m pytest backend\tests
+```
+
+The tests cover command allowlist/argument validation, `new-*` rejection through generic `/api/brain/run`, course `--title` mapping, unsupported optional args, business scaffold creation, duplicate rejection, backup creation, and partial-failure reporting. They use temporary directories and do not require Ollama, the real vault, or the real `brain` CLI.
+
+## Calendar candidates workflow
+
+Calendar remains proposal-based. Google Calendar is still the final source of truth, and Brain UI does not create Google Calendar events directly.
+
+Expected flow:
+
+```
+create candidate
+  → ops/calendar-candidates.md
+  → view candidates in Calendar page
+  → edit or approve rows
+  → run brain calendar-export
+  → run brain calendar-open
+  → manually import/open the generated .ics
+```
+
+The Calendar page reads only `<vaultPath>/ops/calendar-candidates.md`. Markdown tables are parsed first. Common column variants are normalized, including `date`, `time`/`start`, `duration`/`length`, `title`/`name`/`event`, `reason`/`why`, `source`/`from`, and `approved`/`approve`.
+
+If the file is missing, the UI shows an empty state with **Create calendar candidates file**. This explicit action creates `ops/` if needed and writes the starter Markdown table:
+
+```md
+# Calendar Candidates
+
+| Date | Time | Duration | Title | Reason | Source | Approved |
+|---|---|---|---|---|---|---|
+```
+
+Existing calendar candidate files are never overwritten by starter creation. If the file exists but has no supported Markdown table, the UI shows a preview-only warning and disables row editing and adding.
+
+### Adding candidates
+
+Use **Add candidate** on the Calendar page to append one row to an existing parseable table. Date and Title are required. Time, Duration, Reason, and Source are optional. Approved defaults to `No`.
+
+Adding a candidate only writes a candidate row. It is not a calendar event, does not call Google Calendar, and does not run export/open automatically.
+
+### Calendar edit safety
+
+- `PATCH /api/vault/calendar-candidates/{candidateId}` updates one parsed table row.
+- `POST /api/vault/calendar-candidates/create` creates the starter file only if missing.
+- `POST /api/vault/calendar-candidates` appends one candidate row to a parseable table.
+- `POST /api/vault/calendar-candidates/{candidateId}/approve` changes only the `Approved` cell to `Yes`.
+- Candidate IDs are row-based for now: `c1`, `c2`, `c3`.
+- The backend re-reads and re-parses the file before each write.
+- Unknown table columns are preserved.
+- Missing files must be created explicitly before candidates can be added.
+- Malformed/non-table files are not modified by add/edit/approve.
+- Pipe characters in user input are sanitized, and raw newlines are rejected.
+- The backend only writes `ops/calendar-candidates.md`; no unrelated vault files are edited.
+
+### Calendar backups
+
+Before every modification to an existing calendar candidate file, the backend creates a UTF-8 Markdown backup under:
+
+```
+backend/data/backups/calendar/
+```
+
+Backup names use the source stem, UTC timestamp, and a random suffix, for example:
+
+```
+calendar-candidates_20260603_142233_ab12.md
+```
+
+If backup creation fails, the write is aborted.
+
+### Calendar export/open
+
+`Export .ics` and `Open calendar export` are manual buttons. They call the existing safe command wrapper with:
+
+```
+calendar-export
+calendar-open
+```
+
+These commands are never run automatically after adding, editing, or approval. Command output and errors are shown on the Calendar page and logged in the app command output.
+
+Google Calendar API integration is not implemented yet.
+
 ## Backend structure
 
 ```
@@ -517,18 +706,18 @@ backend/
     security.py   allowlist definition
     intake.py     staging + proposals + routing + archive
     classify.py   heuristic file classifier (filename + MIME)
+    calendar.py   calendar candidates Markdown table parser/writer
   requirements.txt
 ```
 
 ## What's NOT implemented yet
 
-- OpenClaw / NemoClaw / brain CLI calls beyond the allowlist
-- AI classification (OpenClaw replaces heuristic classifier)
+- OpenClaw / NemoClaw integrations
 - Real research runs
-- Calendar export UI
-- Vault read/write beyond staging
+- Google Calendar API writes or automatic calendar imports
+- Adding or deleting calendar candidates from the UI
+- Arbitrary vault Markdown editing
 - Gmail / MCP
 - Browser harness / computer use
-- Backend config file persistence (settings lost on backend restart)
 - Archive restore (manual only — files are in `backend/data/archive/`)
 - Bulk archive

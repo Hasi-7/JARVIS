@@ -8,6 +8,9 @@ ALLOWED_COMMANDS: frozenset[str] = frozenset({
     "sync-raw",
     "calendar-export",
     "calendar-open",
+    "new-project",
+    "new-course",
+    "new-hackathon",
 })
 
 

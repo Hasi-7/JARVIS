@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
-import type { VaultProject } from '@/lib/api';
+import type { EntityCreateResponse, VaultProject } from '@/lib/api';
 import { createObsidianOpenUrl } from '@/lib/obsidian';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { EntityCreateModal } from '@/components/ui/EntityCreateModal';
 
 function fmtDate(iso: string | null): string {
   if (!iso) return '—';
@@ -81,6 +82,10 @@ export function ProjectsPage() {
   const [projects, setProjects] = useState<VaultProject[] | null>(null);
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createLoading, setCreateLoading] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createResult, setCreateResult] = useState<EntityCreateResponse | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -100,6 +105,25 @@ export function ProjectsPage() {
 
   const vaultPath = backendConfig?.vaultPath ?? null;
 
+  async function handleCreate(values: Record<string, string>) {
+    setCreateLoading(true);
+    setCreateError(null);
+    setCreateResult(null);
+    try {
+      const result = await api.createProject({
+        name: values.name.trim(),
+        repoPath: values.repoPath.trim() || null,
+      });
+      setCreateResult(result);
+      if (result.ok) load();
+      else setCreateError(result.stderr || 'Project creation failed.');
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Project creation failed.');
+    } finally {
+      setCreateLoading(false);
+    }
+  }
+
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
 
@@ -111,10 +135,16 @@ export function ProjectsPage() {
             wiki/projects/ · raw/projects/ — {vaultPath ?? '—'}
           </div>
         </div>
-        <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
-          <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
-          Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 'var(--s2)', alignItems: 'center' }}>
+          <button className="btn btn-sm btn-primary" onClick={() => { setCreateOpen(true); setCreateError(null); setCreateResult(null); }}>
+            <Icon name="plus" size={13} />
+            New Project
+          </button>
+          <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
+            <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* error */}
@@ -139,7 +169,8 @@ export function ProjectsPage() {
         <EmptyState
           icon="cube"
           title="No projects found"
-          desc="No .md files in wiki/projects/ and no folders in raw/projects/. Route project files from the Raw Inbox to populate this page."
+          desc="No .md files in wiki/projects/ and no folders in raw/projects/. Create a project or route project files from the Raw Inbox."
+          action={<button className="btn btn-sm btn-primary" onClick={() => setCreateOpen(true)}>New Project</button>}
         />
       )}
 
@@ -160,8 +191,25 @@ export function ProjectsPage() {
       {/* footer */}
       <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
         <Icon name="shield" size={12} />
-        Read-only. No vault files are modified. "Open note" links open Obsidian — no writes occur.
+        New Project runs the safe brain command for this entity type. "Open note" links open Obsidian.
       </div>
+
+      {createOpen && (
+        <EntityCreateModal
+          title="New Project"
+          safetyNote="Runs the safe brain command for this entity type."
+          fields={[
+            { key: 'name', label: 'Name', placeholder: 'Project name', required: true },
+            { key: 'repoPath', label: 'Repo path', placeholder: 'Optional local repo path' },
+          ]}
+          loading={createLoading}
+          error={createError}
+          result={createResult}
+          submitLabel="Create project"
+          onSubmit={handleCreate}
+          onCancel={() => { if (!createLoading) setCreateOpen(false); }}
+        />
+      )}
 
     </div>
   );

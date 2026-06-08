@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
-import type { VaultBusinessItem } from '@/lib/api';
+import type { EntityCreateResponse, VaultBusinessItem } from '@/lib/api';
 import { createObsidianOpenUrl } from '@/lib/obsidian';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { EntityCreateModal } from '@/components/ui/EntityCreateModal';
 
 function fmtDate(iso: string | null): string {
   if (!iso) return '—';
@@ -24,6 +25,10 @@ export function BusinessPage() {
   const [entities, setEntities] = useState<VaultBusinessItem[] | null>(null);
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createLoading, setCreateLoading] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createResult, setCreateResult] = useState<EntityCreateResponse | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -43,6 +48,25 @@ export function BusinessPage() {
 
   const vaultPath = backendConfig?.vaultPath ?? null;
 
+  async function handleCreate(values: Record<string, string>) {
+    setCreateLoading(true);
+    setCreateError(null);
+    setCreateResult(null);
+    try {
+      const result = await api.createBusinessArea({
+        name: values.name.trim(),
+        description: values.description.trim() || null,
+      });
+      setCreateResult(result);
+      if (result.ok) load();
+      else setCreateError(result.stderr || 'Business area creation failed.');
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Business area creation failed.');
+    } finally {
+      setCreateLoading(false);
+    }
+  }
+
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
 
@@ -53,10 +77,16 @@ export function BusinessPage() {
             wiki/business/ · raw/business/ — {vaultPath ?? '—'}
           </div>
         </div>
-        <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
-          <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
-          Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 'var(--s2)', alignItems: 'center' }}>
+          <button className="btn btn-sm btn-primary" onClick={() => { setCreateOpen(true); setCreateError(null); setCreateResult(null); }}>
+            <Icon name="plus" size={13} />
+            New Business Area
+          </button>
+          <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
+            <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -76,7 +106,8 @@ export function BusinessPage() {
         <EmptyState
           icon="chart"
           title="No business entities found"
-          desc="No .md files in wiki/business/ and no folders in raw/business/. Route business files from the Raw Inbox to populate this page."
+          desc="No .md files in wiki/business/ and no folders in raw/business/. Create a business area or route files from the Raw Inbox."
+          action={<button className="btn btn-sm btn-primary" onClick={() => setCreateOpen(true)}>New Business Area</button>}
         />
       )}
 
@@ -131,8 +162,25 @@ export function BusinessPage() {
 
       <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
         <Icon name="shield" size={12} />
-        Read-only. No vault files are modified. "Open note" links open Obsidian — no writes occur.
+        New Business Area creates a wiki note, raw folder, and business pipeline row. No files are overwritten.
       </div>
+
+      {createOpen && (
+        <EntityCreateModal
+          title="New Business Area"
+          safetyNote="Creates a wiki note, raw folder, and business pipeline row. No files are overwritten."
+          fields={[
+            { key: 'name', label: 'Name', placeholder: 'Business area name', required: true },
+            { key: 'description', label: 'Description', placeholder: 'Optional summary', multiline: true },
+          ]}
+          loading={createLoading}
+          error={createError}
+          result={createResult}
+          submitLabel="Create business area"
+          onSubmit={handleCreate}
+          onCancel={() => { if (!createLoading) setCreateOpen(false); }}
+        />
+      )}
     </div>
   );
 }

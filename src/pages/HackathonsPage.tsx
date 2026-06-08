@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
-import type { VaultHackathon } from '@/lib/api';
+import type { EntityCreateResponse, VaultHackathon } from '@/lib/api';
 import { createObsidianOpenUrl } from '@/lib/obsidian';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { EntityCreateModal } from '@/components/ui/EntityCreateModal';
 
 function fmtDate(iso: string | null): string {
   if (!iso) return '—';
@@ -81,6 +82,10 @@ export function HackathonsPage() {
   const [hackathons, setHackathons] = useState<VaultHackathon[] | null>(null);
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createLoading, setCreateLoading] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createResult, setCreateResult] = useState<EntityCreateResponse | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -100,6 +105,25 @@ export function HackathonsPage() {
 
   const vaultPath = backendConfig?.vaultPath ?? null;
 
+  async function handleCreate(values: Record<string, string>) {
+    setCreateLoading(true);
+    setCreateError(null);
+    setCreateResult(null);
+    try {
+      const result = await api.createHackathon({
+        name: values.name.trim(),
+        date: values.date.trim() || null,
+      });
+      setCreateResult(result);
+      if (result.ok) load();
+      else setCreateError(result.stderr || 'Hackathon creation failed.');
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Hackathon creation failed.');
+    } finally {
+      setCreateLoading(false);
+    }
+  }
+
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
 
@@ -111,10 +135,16 @@ export function HackathonsPage() {
             wiki/projects/hackathons/ · raw/hackathons/ — {vaultPath ?? '—'}
           </div>
         </div>
-        <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
-          <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
-          Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 'var(--s2)', alignItems: 'center' }}>
+          <button className="btn btn-sm btn-primary" onClick={() => { setCreateOpen(true); setCreateError(null); setCreateResult(null); }}>
+            <Icon name="plus" size={13} />
+            New Hackathon
+          </button>
+          <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
+            <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* error */}
@@ -139,7 +169,8 @@ export function HackathonsPage() {
         <EmptyState
           icon="flag"
           title="No hackathons found"
-          desc="No .md files in wiki/projects/hackathons/ and no folders in raw/hackathons/. Route hackathon files from the Raw Inbox to populate this page."
+          desc="No .md files in wiki/projects/hackathons/ and no folders in raw/hackathons/. Create a hackathon or route files from the Raw Inbox."
+          action={<button className="btn btn-sm btn-primary" onClick={() => setCreateOpen(true)}>New Hackathon</button>}
         />
       )}
 
@@ -159,8 +190,25 @@ export function HackathonsPage() {
       {/* footer */}
       <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
         <Icon name="shield" size={12} />
-        Read-only. No vault files are modified. "Open note" links open Obsidian — no writes occur.
+        New Hackathon runs the safe brain command for this entity type. "Open note" links open Obsidian.
       </div>
+
+      {createOpen && (
+        <EntityCreateModal
+          title="New Hackathon"
+          safetyNote="Runs the safe brain command for this entity type."
+          fields={[
+            { key: 'name', label: 'Name', placeholder: 'Hackathon name', required: true },
+            { key: 'date', label: 'Date', placeholder: 'Optional date' },
+          ]}
+          loading={createLoading}
+          error={createError}
+          result={createResult}
+          submitLabel="Create hackathon"
+          onSubmit={handleCreate}
+          onCancel={() => { if (!createLoading) setCreateOpen(false); }}
+        />
+      )}
 
     </div>
   );

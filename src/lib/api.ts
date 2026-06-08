@@ -35,6 +35,41 @@ export interface BrainRunResult {
   durationMs: number;
 }
 
+// ── entity creation ───────────────────────────────────────────────────────────
+
+export interface CreateProjectRequest {
+  name: string;
+  repoPath?: string | null;
+}
+
+export interface CreateCourseRequest {
+  code: string;
+  name?: string | null;
+}
+
+export interface CreateHackathonRequest {
+  name: string;
+  date?: string | null;
+}
+
+export interface CreateBusinessRequest {
+  name: string;
+  description?: string | null;
+}
+
+export interface EntityCreateResponse {
+  ok: boolean;
+  entityType: 'project' | 'course' | 'hackathon' | 'business';
+  name: string;
+  command: string | null;
+  stdout: string | null;
+  stderr: string | null;
+  paths: {
+    wikiPath: string | null;
+    rawPath: string | null;
+  };
+}
+
 // ── intake / staging ──────────────────────────────────────────────────────────
 
 export interface StagedFileInfo {
@@ -339,14 +374,82 @@ export interface VaultTasksResponse {
   parseMode: 'markdown-table' | 'checklist' | 'preview-only';
 }
 
-export type TaskStatus = 'todo' | 'in progress' | 'blocked' | 'done';
+export type TaskStatus   = 'todo' | 'in progress' | 'blocked' | 'done';
+export type TaskPriority = 'low' | 'medium' | 'high';
 
-export const TASK_STATUSES: TaskStatus[] = ['todo', 'in progress', 'blocked', 'done'];
+export const TASK_STATUSES:   TaskStatus[]   = ['todo', 'in progress', 'blocked', 'done'];
+export const TASK_PRIORITIES: TaskPriority[] = ['low', 'medium', 'high'];
 
 export interface TaskStatusUpdateResponse {
   ok: boolean;
   task: VaultTask;
   path: string;
+  updatedAt: string;
+}
+
+// ── calendar candidates ───────────────────────────────────────────────────────
+
+export interface CalendarCandidate {
+  id:       string;
+  date:     string;
+  time:     string | null;
+  duration: string | null;
+  title:    string;
+  reason:   string | null;
+  source:   string | null;
+  approved: string;
+  raw:      string;
+}
+
+export interface CalendarCandidatesResponse {
+  path:         string;
+  exists:       boolean;
+  lastModified: string | null;
+  preview:      string | null;
+  parseMode:    'markdown-table' | 'preview-only' | 'missing';
+  candidates:   CalendarCandidate[];
+}
+
+export interface UpdateCalendarCandidateRequest {
+  date:     string;
+  time?:    string | null;
+  duration?: string | null;
+  title:    string;
+  reason?:  string | null;
+  source?:  string | null;
+  approved: 'Yes' | 'No';
+}
+
+export interface CreateCalendarCandidateRequest {
+  date:     string;
+  time?:    string | null;
+  duration?: string | null;
+  title:    string;
+  reason?:  string | null;
+  source?:  string | null;
+  approved: 'Yes' | 'No';
+}
+
+export interface UpdateCalendarCandidateResponse {
+  ok:        boolean;
+  candidate: CalendarCandidate;
+  path:      string;
+  updatedAt: string;
+}
+
+export interface CreateVaultTaskRequest {
+  title:    string;
+  status:   TaskStatus;
+  area?:    string | null;
+  priority?: TaskPriority | null;
+  due?:     string | null;
+  source?:  string | null;
+}
+
+export interface CreateVaultTaskResponse {
+  ok:        boolean;
+  task:      VaultTask;
+  path:      string;
   updatedAt: string;
 }
 
@@ -400,6 +503,16 @@ export const api = {
   commands:     ()                    => get<string[]>('/api/brain/commands'),
   runBrain:     (command: string)     => fetchWithBody<BrainRunResult>('POST', '/api/brain/run', { command }),
 
+  // entity creation
+  createProject: (payload: CreateProjectRequest) =>
+    fetchWithBody<EntityCreateResponse>('POST', '/api/entities/projects', payload),
+  createCourse: (payload: CreateCourseRequest) =>
+    fetchWithBody<EntityCreateResponse>('POST', '/api/entities/courses', payload),
+  createHackathon: (payload: CreateHackathonRequest) =>
+    fetchWithBody<EntityCreateResponse>('POST', '/api/entities/hackathons', payload),
+  createBusinessArea: (payload: CreateBusinessRequest) =>
+    fetchWithBody<EntityCreateResponse>('POST', '/api/entities/business', payload),
+
   // intake / staging
   uploadIntakeFiles: (files: File[]) => {
     const form = new FormData();
@@ -421,10 +534,24 @@ export const api = {
   archiveStagedFile:      (fileId: string) => fetchWithBody<ArchiveResponse>('POST', `/api/intake/staged/${fileId}/archive`, {}),
   getArchivedIntakeFiles: ()               => get<ArchivedFilesResponse>('/api/intake/archived'),
 
-  // vault (read-only)
+  // vault (read-only + safe task/calendar writes)
   getVaultTasks:      ()             => get<VaultTasksResponse>('/api/vault/tasks'),
+  createVaultTask:    (payload: CreateVaultTaskRequest) =>
+    fetchWithBody<CreateVaultTaskResponse>('POST', '/api/vault/tasks', payload),
   updateVaultTaskStatus: (taskId: string, status: TaskStatus) =>
     fetchWithBody<TaskStatusUpdateResponse>('PATCH', `/api/vault/tasks/${encodeURIComponent(taskId)}/status`, { status }),
+
+  // calendar candidates
+  getCalendarCandidates: () =>
+    get<CalendarCandidatesResponse>('/api/vault/calendar-candidates'),
+  createCalendarCandidatesFile: () =>
+    fetchWithBody<CalendarCandidatesResponse>('POST', '/api/vault/calendar-candidates/create', {}),
+  createCalendarCandidate: (payload: CreateCalendarCandidateRequest) =>
+    fetchWithBody<UpdateCalendarCandidateResponse>('POST', '/api/vault/calendar-candidates', payload),
+  updateCalendarCandidate: (candidateId: string, payload: UpdateCalendarCandidateRequest) =>
+    fetchWithBody<UpdateCalendarCandidateResponse>('PATCH', `/api/vault/calendar-candidates/${encodeURIComponent(candidateId)}`, payload),
+  approveCalendarCandidate: (candidateId: string) =>
+    fetchWithBody<UpdateCalendarCandidateResponse>('POST', `/api/vault/calendar-candidates/${encodeURIComponent(candidateId)}/approve`, {}),
   getVaultSummary:    ()             => get<VaultSummary>('/api/vault/summary'),
   getVaultProjects:   ()             => get<VaultProjectsResponse>('/api/vault/projects'),
   getVaultCourses:    ()             => get<VaultCoursesResponse>('/api/vault/courses'),

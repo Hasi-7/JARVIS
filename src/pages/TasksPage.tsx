@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
-import type { VaultTask, VaultTasksResponse, TaskStatus } from '@/lib/api';
-import { TASK_STATUSES } from '@/lib/api';
+import type { VaultTask, VaultTasksResponse, TaskStatus, TaskPriority, CreateVaultTaskRequest } from '@/lib/api';
+import { TASK_STATUSES, TASK_PRIORITIES } from '@/lib/api';
 import { createObsidianOpenUrl } from '@/lib/obsidian';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
@@ -215,6 +215,214 @@ function ConfirmStatusModal({
   );
 }
 
+// ── add task modal ────────────────────────────────────────────────────────────
+
+interface TaskFormData {
+  title:    string;
+  status:   TaskStatus;
+  area:     string;
+  priority: TaskPriority | '';
+  due:      string;
+  source:   string;
+}
+
+const EMPTY_FORM: TaskFormData = {
+  title: '', status: 'todo', area: '', priority: '', due: '', source: '',
+};
+
+function AddTaskModal({
+  onAdd,
+  onCancel,
+  loading,
+  error,
+}: {
+  onAdd:    (req: CreateVaultTaskRequest) => void;
+  onCancel: () => void;
+  loading:  boolean;
+  error:    string | null;
+}) {
+  const [form, setForm] = useState<TaskFormData>(EMPTY_FORM);
+
+  function set(field: keyof TaskFormData, value: string) {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.title.trim()) return;
+    onAdd({
+      title:    form.title.trim(),
+      status:   form.status,
+      area:     form.area.trim()     || null,
+      priority: (form.priority as TaskPriority) || null,
+      due:      form.due.trim()      || null,
+      source:   form.source.trim()   || null,
+    });
+  }
+
+  const fieldStyle: React.CSSProperties = {
+    width: '100%', background: 'var(--surface-2)',
+    border: '1px solid var(--line)', borderRadius: 'var(--r2)',
+    padding: '6px 9px', color: 'var(--txt-0)', fontSize: 12.5,
+    fontFamily: 'var(--font-ui)', outline: 'none', boxSizing: 'border-box',
+  };
+
+  const labelStyle: React.CSSProperties = {
+    fontSize: 10.5, fontWeight: 600, color: 'var(--txt-2)',
+    textTransform: 'uppercase', letterSpacing: '0.07em',
+    display: 'block', marginBottom: 4,
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0,
+        background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 1000,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget && !loading) onCancel(); }}
+    >
+      <div
+        className="panel"
+        style={{
+          width: 460, padding: 'var(--s5)',
+          display: 'flex', flexDirection: 'column', gap: 'var(--s4)',
+          boxShadow: 'var(--shadow-pop)',
+        }}
+      >
+        <div style={{ fontWeight: 700, fontSize: 14 }}>Add task</div>
+
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
+
+          {/* title */}
+          <div>
+            <label style={labelStyle}>Title <span style={{ color: 'var(--red)' }}>*</span></label>
+            <input
+              type="text"
+              value={form.title}
+              onChange={(e) => set('title', e.target.value)}
+              placeholder="Task title"
+              style={fieldStyle}
+              autoFocus
+              required
+              disabled={loading}
+            />
+          </div>
+
+          {/* status + priority row */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--s3)' }}>
+            <div>
+              <label style={labelStyle}>Status</label>
+              <select
+                value={form.status}
+                onChange={(e) => set('status', e.target.value)}
+                style={fieldStyle}
+                disabled={loading}
+              >
+                {TASK_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>Priority</label>
+              <select
+                value={form.priority}
+                onChange={(e) => set('priority', e.target.value)}
+                style={fieldStyle}
+                disabled={loading}
+              >
+                <option value="">— none —</option>
+                {TASK_PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* area */}
+          <div>
+            <label style={labelStyle}>Area <span style={{ color: 'var(--txt-3)', fontWeight: 400 }}>(optional)</span></label>
+            <input
+              type="text"
+              value={form.area}
+              onChange={(e) => set('area', e.target.value)}
+              placeholder="e.g. JARVIS, ECE344, work"
+              style={fieldStyle}
+              disabled={loading}
+            />
+          </div>
+
+          {/* due + source row */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--s3)' }}>
+            <div>
+              <label style={labelStyle}>Due <span style={{ color: 'var(--txt-3)', fontWeight: 400 }}>(optional)</span></label>
+              <input
+                type="text"
+                value={form.due}
+                onChange={(e) => set('due', e.target.value)}
+                placeholder="e.g. 2026-06-10"
+                style={fieldStyle}
+                disabled={loading}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Source <span style={{ color: 'var(--txt-3)', fontWeight: 400 }}>(optional)</span></label>
+              <input
+                type="text"
+                value={form.source}
+                onChange={(e) => set('source', e.target.value)}
+                placeholder="e.g. email, research"
+                style={fieldStyle}
+                disabled={loading}
+              />
+            </div>
+          </div>
+
+          {/* backup note */}
+          <div style={{
+            fontSize: 11, color: 'var(--txt-2)',
+            padding: 'var(--s2) var(--s3)',
+            background: 'var(--surface-2)', borderRadius: 'var(--r2)',
+            border: '1px solid var(--line)',
+          }}>
+            A backup will be created before writing to the task file.
+          </div>
+
+          {/* error */}
+          {error && (
+            <div style={{
+              fontSize: 11.5, color: 'var(--red)',
+              padding: 'var(--s2) var(--s3)',
+              background: 'var(--red-bg)', borderRadius: 'var(--r2)',
+              border: '1px solid var(--red-line)',
+            }}>
+              {error}
+            </div>
+          )}
+
+          {/* actions */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)', marginTop: 'var(--s1)' }}>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              onClick={onCancel}
+              disabled={loading}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn btn-sm btn-primary"
+              disabled={loading || !form.title.trim()}
+            >
+              {loading ? 'Adding…' : 'Add task'}
+            </button>
+          </div>
+
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ── constants ─────────────────────────────────────────────────────────────────
 
 const COLS = 'minmax(0,1fr) 100px 110px 80px 90px';
@@ -255,28 +463,43 @@ function TaskRow({
       alignItems: 'center',
       borderBottom: last ? 'none' : '1px solid var(--line-soft)',
     }}>
-      {/* title — for checklist, checkbox precedes text */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
-        {parseMode === 'checklist' && (
-          <input
-            type="checkbox"
-            checked={task.status === 'done'}
-            onChange={handleCheckboxChange}
+      {/* title + source — for checklist, checkbox precedes text; source shown below as secondary line */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, overflow: 'hidden', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden' }}>
+          {parseMode === 'checklist' && (
+            <input
+              type="checkbox"
+              checked={task.status === 'done'}
+              onChange={handleCheckboxChange}
+              style={{
+                flexShrink: 0,
+                accentColor: 'var(--live)',
+                cursor: 'pointer',
+                width: 14, height: 14,
+              }}
+              title="Toggle done"
+            />
+          )}
+          <span style={{
+            fontSize: 12.5, color: 'var(--txt-0)',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }} title={task.title}>
+            {task.title}
+          </span>
+        </div>
+        {task.source && (
+          <span
+            className="mono"
             style={{
-              flexShrink: 0,
-              accentColor: 'var(--live)',
-              cursor: 'pointer',
-              width: 14, height: 14,
+              fontSize: 10.5, color: 'var(--txt-3)',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              paddingLeft: parseMode === 'checklist' ? 20 : 0,
             }}
-            title="Toggle done"
-          />
+            title={task.source}
+          >
+            {task.source}
+          </span>
         )}
-        <span style={{
-          fontSize: 12.5, color: 'var(--txt-0)',
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }} title={task.title}>
-          {task.title}
-        </span>
       </div>
 
       {/* status */}
@@ -335,11 +558,17 @@ export function TasksPage() {
   const [updating,      setUpdating]      = useState(false);
   const [updateError,   setUpdateError]   = useState<string | null>(null);
 
+  // add-task state
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [addLoading,   setAddLoading]   = useState(false);
+  const [addError,     setAddError]     = useState<string | null>(null);
+
   // filters
   const [search,         setSearch]         = useState('');
   const [statusFilter,   setStatusFilter]   = useState('');
   const [areaFilter,     setAreaFilter]     = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
+  const [sourceFilter,   setSourceFilter]   = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -388,11 +617,34 @@ export function TasksPage() {
     setUpdateError(null);
   }
 
+  // ── add task ───────────────────────────────────────────────────────────────
+
+  async function handleAddTask(req: CreateVaultTaskRequest) {
+    setAddLoading(true);
+    setAddError(null);
+    try {
+      await api.createVaultTask(req);
+      setAddModalOpen(false);
+      showToast(`Task "${truncate(req.title, 30)}" added`);
+      load();
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : 'Failed to add task.');
+    } finally {
+      setAddLoading(false);
+    }
+  }
+
+  function openAddModal() {
+    setAddError(null);
+    setAddModalOpen(true);
+  }
+
   // ── filter options from loaded data ────────────────────────────────────────
 
   const allStatuses   = useMemo(() => [...new Set((data?.tasks ?? []).map((t) => t.status).filter(Boolean))].sort(), [data]);
   const allAreas      = useMemo(() => [...new Set((data?.tasks ?? []).map((t) => t.area).filter((v): v is string => !!v))].sort(), [data]);
   const allPriorities = useMemo(() => [...new Set((data?.tasks ?? []).map((t) => t.priority).filter((v): v is string => !!v))].sort(), [data]);
+  const allSources    = useMemo(() => [...new Set((data?.tasks ?? []).map((t) => t.source).filter((v): v is string => !!v))].sort(), [data]);
 
   // ── client-side filtering ──────────────────────────────────────────────────
 
@@ -402,20 +654,25 @@ export function TasksPage() {
       if (statusFilter   && t.status   !== statusFilter)   return false;
       if (areaFilter     && t.area     !== areaFilter)     return false;
       if (priorityFilter && t.priority !== priorityFilter) return false;
+      if (sourceFilter   && t.source   !== sourceFilter)   return false;
       if (search) {
         const q = search.toLowerCase();
-        if (!t.title.toLowerCase().includes(q) &&
-            !(t.area?.toLowerCase().includes(q)) &&
-            !(t.source?.toLowerCase().includes(q))) return false;
+        if (
+          !t.title.toLowerCase().includes(q) &&
+          !(t.area?.toLowerCase().includes(q)) &&
+          !(t.priority?.toLowerCase().includes(q)) &&
+          !(t.due?.toLowerCase().includes(q)) &&
+          !(t.source?.toLowerCase().includes(q))
+        ) return false;
       }
       return true;
     });
-  }, [data, search, statusFilter, areaFilter, priorityFilter]);
+  }, [data, search, statusFilter, areaFilter, priorityFilter, sourceFilter]);
 
-  const hasFilters = !!(search || statusFilter || areaFilter || priorityFilter);
+  const hasFilters = !!(search || statusFilter || areaFilter || priorityFilter || sourceFilter);
 
   const clearFilters = () => {
-    setSearch(''); setStatusFilter(''); setAreaFilter(''); setPriorityFilter('');
+    setSearch(''); setStatusFilter(''); setAreaFilter(''); setPriorityFilter(''); setSourceFilter('');
   };
 
   const vaultPath = backendConfig?.vaultPath ?? null;
@@ -423,6 +680,14 @@ export function TasksPage() {
     vaultPath && data?.exists
       ? createObsidianOpenUrl(vaultPath, data.path)
       : null;
+
+  // "Add task" is available when the file exists with a structured format OR doesn't exist yet.
+  // Disabled when the file is preview-only (cannot safely append).
+  const isPreviewOnly = data?.exists && data.parseMode === 'preview-only';
+  const canAdd        = !isPreviewOnly;
+  const addDisabledReason = isPreviewOnly
+    ? 'Existing task file format is not structured enough for safe append.'
+    : null;
 
   // ── input style ────────────────────────────────────────────────────────────
   const inp: React.CSSProperties = {
@@ -474,6 +739,15 @@ export function TasksPage() {
               Open in Obsidian
             </a>
           )}
+          <button
+            className={`btn btn-sm ${canAdd ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={openAddModal}
+            disabled={!canAdd || loading}
+            title={addDisabledReason ?? 'Add a new task'}
+            style={{ opacity: canAdd ? 1 : 0.5 }}
+          >
+            + Add task
+          </button>
           <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
             <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
             Refresh
@@ -503,7 +777,12 @@ export function TasksPage() {
         <EmptyState
           icon="check"
           title="No task file found"
-          desc="Expected ops/task-db.md or ops/tasks.md in the configured vault. Create or route a task file from the Raw Inbox."
+          desc="No ops/task-db.md or ops/tasks.md found. Adding a task will create ops/task-db.md with a default table."
+          action={
+            <button className="btn btn-sm btn-primary" onClick={openAddModal}>
+              Create first task
+            </button>
+          }
         />
       )}
 
@@ -562,6 +841,12 @@ export function TasksPage() {
                 {allPriorities.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
             )}
+            {allSources.length > 0 && (
+              <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} style={{ ...inp }}>
+                <option value="">All sources</option>
+                {allSources.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            )}
             {hasFilters && (
               <button className="btn btn-sm btn-ghost" onClick={clearFilters} style={{ fontSize: 11 }}>
                 Clear filters
@@ -612,6 +897,11 @@ export function TasksPage() {
           icon="check"
           title="No tasks found"
           desc={`Task file exists at ${data.path} but contains no parseable tasks.`}
+          action={
+            <button className="btn btn-sm btn-primary" onClick={openAddModal}>
+              + Add task
+            </button>
+          }
         />
       )}
 
@@ -643,6 +933,16 @@ export function TasksPage() {
           error={updateError}
           onConfirm={applyChange}
           onCancel={cancelChange}
+        />
+      )}
+
+      {/* ── add task modal ── */}
+      {addModalOpen && (
+        <AddTaskModal
+          onAdd={handleAddTask}
+          onCancel={() => { if (!addLoading) { setAddModalOpen(false); setAddError(null); } }}
+          loading={addLoading}
+          error={addError}
         />
       )}
 

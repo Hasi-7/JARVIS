@@ -42,6 +42,43 @@ class BrainRunResponse(BaseModel):
     durationMs: float
 
 
+# ── entity creation ───────────────────────────────────────────────────────────
+
+class CreateProjectRequest(BaseModel):
+    name: str
+    repoPath: Optional[str] = None
+
+
+class CreateCourseRequest(BaseModel):
+    code: str
+    name: Optional[str] = None
+
+
+class CreateHackathonRequest(BaseModel):
+    name: str
+    date: Optional[str] = None
+
+
+class CreateBusinessRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class EntityPaths(BaseModel):
+    wikiPath: Optional[str] = None
+    rawPath: Optional[str] = None
+
+
+class EntityCreateResponse(BaseModel):
+    ok: bool
+    entityType: str
+    name: str
+    command: Optional[str] = None
+    stdout: Optional[str] = None
+    stderr: Optional[str] = None
+    paths: EntityPaths
+
+
 # ── intake / staging ──────────────────────────────────────────────────────────
 
 class StagedFileInfo(BaseModel):
@@ -322,6 +359,65 @@ class TaskStatusUpdateRequest(BaseModel):
 class TaskStatusUpdateResponse(BaseModel):
     ok:        bool
     task:      VaultTask
+    path:      str
+    updatedAt: str
+
+
+class CreateVaultTaskRequest(BaseModel):
+    title:    str
+    status:   str              # todo | in progress | blocked | done
+    area:     Optional[str] = None
+    priority: Optional[str] = None  # low | medium | high
+    due:      Optional[str] = None
+    source:   Optional[str] = None
+
+
+# ── calendar candidates ───────────────────────────────────────────────────────
+
+class CalendarCandidate(BaseModel):
+    id:       str
+    date:     str        = ""
+    time:     Optional[str] = None
+    duration: Optional[str] = None
+    title:    str        = ""
+    reason:   Optional[str] = None
+    source:   Optional[str] = None
+    approved: str        = "No"
+    raw:      str        = ""
+
+
+class CalendarCandidatesResponse(BaseModel):
+    path:         str
+    exists:       bool
+    lastModified: Optional[str] = None
+    preview:      Optional[str] = None
+    parseMode:    str   # "markdown-table" | "preview-only" | "missing"
+    candidates:   List[CalendarCandidate]
+
+
+class UpdateCalendarCandidateRequest(BaseModel):
+    date:     str        = ""
+    time:     Optional[str] = None
+    duration: Optional[str] = None
+    title:    str
+    reason:   Optional[str] = None
+    source:   Optional[str] = None
+    approved: str        = "No"   # "Yes" | "No"
+
+
+class CreateCalendarCandidateRequest(BaseModel):
+    date:     str
+    time:     Optional[str] = None
+    duration: Optional[str] = None
+    title:    str
+    reason:   Optional[str] = None
+    source:   Optional[str] = None
+    approved: str        = "No"   # "Yes" | "No"
+
+
+class UpdateCalendarCandidateResponse(BaseModel):
+    ok:        bool
+    candidate: CalendarCandidate
     path:      str
     updatedAt: str
 
