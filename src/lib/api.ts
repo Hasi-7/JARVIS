@@ -39,7 +39,6 @@ export interface BrainRunResult {
 
 export interface CreateProjectRequest {
   name: string;
-  repoPath?: string | null;
 }
 
 export interface CreateCourseRequest {
@@ -49,7 +48,6 @@ export interface CreateCourseRequest {
 
 export interface CreateHackathonRequest {
   name: string;
-  date?: string | null;
 }
 
 export interface CreateBusinessRequest {
@@ -453,6 +451,257 @@ export interface CreateVaultTaskResponse {
   updatedAt: string;
 }
 
+// ── resume pipeline ───────────────────────────────────────────────────────────
+
+export type ResumePipelineStatus =
+  | 'new' | 'tailoring' | 'applied' | 'interview'
+  | 'offer' | 'rejected' | 'archived';
+
+export interface ResumePipelineItem {
+  id:       string;
+  target:   string;
+  company:  string | null;
+  role:     string | null;
+  status:   string;
+  priority: string | null;
+  deadline: string | null;
+  link:     string | null;
+  notes:    string | null;
+  raw:      string;
+}
+
+export interface ResumePipelineResponse {
+  path:         string;
+  exists:       boolean;
+  lastModified: string | null;
+  preview:      string | null;
+  parseMode:    'markdown-table' | 'preview-only' | 'missing';
+  items:        ResumePipelineItem[];
+}
+
+export interface UpdateResumePipelineStatusResponse {
+  ok:        boolean;
+  item:      ResumePipelineItem;
+  path:      string;
+  updatedAt: string;
+}
+
+// ── backfill ──────────────────────────────────────────────────────────────────
+
+export type BackfillStatus = 'new' | 'triaged' | 'in-progress' | 'done' | 'skipped';
+export type BackfillType   = 'project' | 'repo' | 'hackathon' | 'course' | 'business' | 'other';
+export type BackfillAgent  = 'claude-code' | 'opencode' | 'manual';
+export type BackfillValue  = 'high' | 'medium' | 'low';
+
+export interface BackfillItem {
+  id:     string;
+  item:   string;
+  type:   string | null;
+  status: string;
+  value:  string | null;
+  path:   string | null;
+  notes:  string | null;
+  agent:  string | null;
+  raw:    string;
+}
+
+export interface BackfillResponse {
+  path:         string;
+  exists:       boolean;
+  lastModified: string | null;
+  preview:      string | null;
+  parseMode:    'markdown-table' | 'preview-only' | 'missing';
+  items:        BackfillItem[];
+}
+
+export interface UpdateBackfillStatusResponse {
+  ok:        boolean;
+  item:      BackfillItem;
+  path:      string;
+  updatedAt: string;
+}
+
+export interface CreateBackfillItemRequest {
+  item:    string;
+  type?:   BackfillType | null;
+  status?: BackfillStatus | null;
+  value?:  BackfillValue | null;
+  path?:   string | null;
+  agent?:  BackfillAgent | null;
+  notes?:  string | null;
+}
+
+export interface CreateBackfillItemResponse {
+  ok:        boolean;
+  item:      BackfillItem;
+  path:      string;
+  updatedAt: string;
+}
+
+// ── escalation queue ─────────────────────────────────────────────────────────
+
+export type EscalationStatus = 'new' | 'ready' | 'in-progress' | 'done' | 'blocked' | 'skipped';
+export type EscalationTarget = 'claude-code' | 'opencode' | 'manual';
+
+export interface EscalationItem {
+  id:       string;
+  task:     string;
+  target:   EscalationTarget | string | null;
+  status:   EscalationStatus | string;
+  priority: string | null;
+  source:   string | null;
+  path:     string | null;
+  notes:    string | null;
+  created:  string | null;
+  raw:      string;
+}
+
+export interface EscalationResponse {
+  path:         string;
+  exists:       boolean;
+  lastModified: string | null;
+  preview:      string | null;
+  parseMode:    'markdown-table' | 'preview-only' | 'missing';
+  items:        EscalationItem[];
+}
+
+export interface CreateEscalationRequest {
+  task:     string;
+  target:   EscalationTarget;
+  priority?: string | null;
+  source?:  string | null;
+  path?:    string | null;
+  notes?:   string | null;
+}
+
+export interface UpdateEscalationStatusResponse {
+  ok:        boolean;
+  item:      EscalationItem;
+  path:      string;
+  updatedAt: string;
+}
+
+export interface UpdateEscalationItemRequest {
+  task:     string;
+  target:   EscalationTarget;
+  priority?: string | null;
+  source?:  string | null;
+  path?:    string | null;
+  notes?:   string | null;
+}
+
+export interface UpdateEscalationItemResponse {
+  ok:        boolean;
+  item:      EscalationItem;
+  path:      string;
+  updatedAt: string;
+}
+
+// ── dashboard summary ─────────────────────────────────────────────────────────
+
+export interface DashboardRawSummary {
+  staged: number;
+  proposed: number;
+  edited: number;
+  approved: number;
+  routed: number;
+  archived: number;
+}
+
+export interface DashboardTaskSummary {
+  total: number;
+  todo: number;
+  inProgress: number;
+  blocked: number;
+  done: number;
+}
+
+export interface DashboardCalendarSummary {
+  total: number;
+  approved: number;
+  pending: number;
+}
+
+export interface DashboardEntitySummary {
+  projects: number;
+  courses: number;
+  hackathons: number;
+  business: number;
+}
+
+export interface DashboardBackfillSummary {
+  total: number;
+  new: number;
+  triaged: number;
+  inProgress: number;
+  done: number;
+  skipped: number;
+}
+
+export interface DashboardResumeSummary {
+  total: number;
+  new: number;
+  tailoring: number;
+  applied: number;
+  interview: number;
+  offer: number;
+  rejected: number;
+  archived: number;
+}
+
+export interface DashboardEscalationSummary {
+  total:      number;
+  active:     number;
+  new:        number;
+  ready:      number;
+  inProgress: number;
+  blocked:    number;
+  done:       number;
+  skipped:    number;
+}
+
+export interface DashboardRuntimeSummary {
+  backend: string;
+  brain: 'available' | 'unavailable' | 'unknown';
+  agent: 'available' | 'unavailable' | 'unknown';
+  vaultExists: boolean;
+}
+
+export interface DashboardSummaryError {
+  source: string;
+  message: string;
+}
+
+export interface DashboardTodayPlanItem {
+  id: string;
+  title: string;
+  status: string;
+  priority: string | null;
+  due: string | null;
+  area: string | null;
+  source: string | null;
+  reason: string;
+}
+
+export interface DashboardTodayPlan {
+  items: DashboardTodayPlanItem[];
+  source: string;
+  generatedAt: string;
+}
+
+export interface DashboardSummary {
+  raw:         DashboardRawSummary;
+  tasks:       DashboardTaskSummary;
+  calendar:    DashboardCalendarSummary;
+  entities:    DashboardEntitySummary;
+  backfill:    DashboardBackfillSummary;
+  resume:      DashboardResumeSummary;
+  escalations: DashboardEscalationSummary;
+  runtime:     DashboardRuntimeSummary;
+  todayPlan:   DashboardTodayPlan;
+  errors:      DashboardSummaryError[];
+}
+
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 async function parseError(res: Response): Promise<string> {
@@ -494,6 +743,9 @@ async function uploadForm<T>(path: string, form: FormData): Promise<T> {
 // ── API surface ───────────────────────────────────────────────────────────────
 
 export const api = {
+  // dashboard summary
+  getDashboardSummary: () => get<DashboardSummary>('/api/dashboard/summary'),
+
   // health / config
   health:       ()                    => get<BackendHealth>('/api/health'),
   config:       ()                    => get<BackendConfig>('/api/config'),
@@ -559,6 +811,28 @@ export const api = {
   getVaultBusiness:   ()             => get<VaultBusinessResponse>('/api/vault/business'),
   getVaultOpsFile:    (kind: string) => get<VaultOpsFile>(`/api/vault/ops/${encodeURIComponent(kind)}`),
 
+  // resume pipeline
+  getVaultResumePipeline: () => get<ResumePipelineResponse>('/api/vault/resume-pipeline'),
+  updateResumePipelineStatus: (itemId: string, status: ResumePipelineStatus) =>
+    fetchWithBody<UpdateResumePipelineStatusResponse>(
+      'PATCH',
+      `/api/vault/resume-pipeline/${encodeURIComponent(itemId)}/status`,
+      { status },
+    ),
+
+  // backfill
+  getVaultBackfill: () => get<BackfillResponse>('/api/vault/backfill'),
+  createBackfillFile: () =>
+    fetchWithBody<BackfillResponse>('POST', '/api/vault/backfill/create', {}),
+  createBackfillItem: (payload: CreateBackfillItemRequest) =>
+    fetchWithBody<CreateBackfillItemResponse>('POST', '/api/vault/backfill', payload),
+  updateBackfillStatus: (itemId: string, status: BackfillStatus) =>
+    fetchWithBody<UpdateBackfillStatusResponse>(
+      'PATCH',
+      `/api/vault/backfill/${encodeURIComponent(itemId)}/status`,
+      { status },
+    ),
+
   // AI classification
   aiClassifyProposal:       (fileId: string)        => fetchWithBody<ClassificationProposal>('POST', `/api/intake/proposals/${fileId}/ai-classify`, {}),
   aiClassifyProposalsBatch: (fileIds: string[])      => fetchWithBody<BatchAiClassifyResponse>('POST', '/api/intake/proposals/ai-classify-batch', { fileIds }),
@@ -566,6 +840,23 @@ export const api = {
   // local agent
   getAgentStatus:   ()                          => get<AgentStatus>('/api/agent/status'),
   sendAgentMessage: (payload: AgentChatRequest) => fetchWithBody<AgentChatResponse>('POST', '/api/agent/chat', payload),
+
+  // escalation queue
+  getVaultEscalations:        ()                                         => get<EscalationResponse>('/api/vault/escalations'),
+  createEscalationQueueFile:  ()                                         => fetchWithBody<EscalationResponse>('POST', '/api/vault/escalations/create', {}),
+  createEscalationItem:       (payload: CreateEscalationRequest)         => fetchWithBody<EscalationResponse>('POST', '/api/vault/escalations', payload),
+  updateEscalationStatus:     (itemId: string, status: EscalationStatus) =>
+    fetchWithBody<UpdateEscalationStatusResponse>(
+      'PATCH',
+      `/api/vault/escalations/${encodeURIComponent(itemId)}/status`,
+      { status },
+    ),
+  updateEscalationItem: (itemId: string, payload: UpdateEscalationItemRequest) =>
+    fetchWithBody<UpdateEscalationItemResponse>(
+      'PATCH',
+      `/api/vault/escalations/${encodeURIComponent(itemId)}`,
+      payload,
+    ),
 
   // conversations
   createConversation:  (title?: string)     => fetchWithBody<ConversationSummary>('POST', '/api/conversations', { title: title ?? null }),

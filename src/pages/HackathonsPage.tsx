@@ -112,7 +112,6 @@ export function HackathonsPage() {
     try {
       const result = await api.createHackathon({
         name: values.name.trim(),
-        date: values.date.trim() || null,
       });
       setCreateResult(result);
       if (result.ok) load();
@@ -196,10 +195,9 @@ export function HackathonsPage() {
       {createOpen && (
         <EntityCreateModal
           title="New Hackathon"
-          safetyNote="Runs the safe brain command for this entity type."
+          safetyNote="Creates the hackathon using `brain new-hackathon <name>`. Dates can be tracked in the generated note or added later."
           fields={[
             { key: 'name', label: 'Name', placeholder: 'Hackathon name', required: true },
-            { key: 'date', label: 'Date', placeholder: 'Optional date' },
           ]}
           loading={createLoading}
           error={createError}

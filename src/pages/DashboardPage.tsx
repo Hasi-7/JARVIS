@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
-  TODAY, APPROVALS, SYSTEM, AGENT_STATES, AGENT_MODES,
-  QUICK_ACTIONS, CONSOLIDATED,
+  TODAY, SYSTEM, AGENT_STATES, AGENT_MODES,
+  QUICK_ACTIONS,
 } from '@/data/mock';
 import { useAppStore } from '@/store/useAppStore';
 import { AgentSphere } from '@/components/ui/AgentSphere';
@@ -9,14 +9,259 @@ import { ModeBadge } from '@/components/ui/ModeBadge';
 import { PanelHeader } from '@/components/ui/PanelHeader';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { Icon } from '@/components/ui/Icon';
-import { SourceGlyph } from '@/components/ui/SourceGlyph';
 import { StatusCard } from '@/components/dashboard/StatusCard';
-import { PlanBlock } from '@/components/dashboard/PlanBlock';
-import { ApprovalRow } from '@/components/dashboard/ApprovalRow';
 import { SystemRow } from '@/components/dashboard/SystemRow';
+import { api } from '@/lib/api';
+import type { DashboardSummary, DashboardTodayPlanItem, ConversationSummary } from '@/lib/api';
 import type { RouteId, SystemService } from '@/types';
 
-// brain subcommands wired to the backend (mirrors AppShell mapping)
+function taskStatusColor(status: string): string {
+  if (status === 'blocked')     return 'var(--red)';
+  if (status === 'in progress') return 'var(--live)';
+  return 'var(--txt-3)';
+}
+
+function taskStatusBg(status: string): string {
+  if (status === 'in progress') return 'var(--live-bg)';
+  if (status === 'blocked')     return 'var(--red-bg)';
+  return 'transparent';
+}
+
+function taskStatusBorder(status: string): string {
+  if (status === 'in progress') return '1px solid var(--live-line)';
+  if (status === 'blocked')     return '1px solid var(--red-line)';
+  return '1px solid transparent';
+}
+
+// ── Today's plan panel ────────────────────────────────────────────────────────
+
+function TodayPlanPanel({
+  loading,
+  items,
+  failed,
+  onNavigateTasks,
+}: {
+  loading: boolean;
+  items: DashboardTodayPlanItem[] | null;
+  failed: boolean;
+  onNavigateTasks: () => void;
+}) {
+  const planCount = items?.length ?? 0;
+
+  return (
+    <div className="panel panel-pad">
+      <PanelHeader
+        icon="sun"
+        title="Today's plan"
+        sub={
+          loading ? 'Loading…' :
+          failed   ? 'unavailable' :
+          items === null ? undefined :
+          planCount === 0 ? 'no active tasks' :
+          `${planCount} active task${planCount === 1 ? '' : 's'}`
+        }
+        right={
+          <button className="btn btn-sm btn-ghost" onClick={onNavigateTasks}>
+            All tasks <Icon name="chevron" size={13} />
+          </button>
+        }
+      />
+
+      {loading ? (
+        <div style={{ color: 'var(--txt-3)', fontSize: 12, paddingTop: 4 }}>Loading…</div>
+      ) : failed ? (
+        <div style={{ color: 'var(--txt-3)', fontSize: 12, paddingTop: 4 }}>
+          Could not load tasks — backend unavailable.{' '}
+          <button className="btn btn-sm btn-ghost" style={{ display: 'inline' }} onClick={onNavigateTasks}>
+            Open Tasks
+          </button>
+        </div>
+      ) : items !== null && items.length === 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)', alignItems: 'flex-start', paddingTop: 4 }}>
+          <span style={{ color: 'var(--txt-3)', fontSize: 12 }}>No active tasks found.</span>
+          <button className="btn btn-sm" onClick={onNavigateTasks}>
+            <Icon name="check" size={13} /> Open Tasks
+          </button>
+        </div>
+      ) : items !== null ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {items.map((item) => (
+            <button
+              key={item.id}
+              className="btn"
+              onClick={onNavigateTasks}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr auto',
+                alignItems: 'center',
+                gap: 'var(--s3)',
+                padding: '9px 12px',
+                background: taskStatusBg(item.status),
+                border: taskStatusBorder(item.status),
+                textAlign: 'left',
+                width: '100%',
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                  <span
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 700,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                      color: taskStatusColor(item.status),
+                    }}
+                  >
+                    {item.reason}
+                  </span>
+                  {item.priority === 'high' && (
+                    <span style={{ fontSize: 10, color: 'var(--amber)', fontWeight: 600 }}>↑ high</span>
+                  )}
+                </div>
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 500,
+                    color: 'var(--txt-0)',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {item.title}
+                </div>
+                {(item.area || item.due) && (
+                  <div style={{ display: 'flex', gap: 10, marginTop: 3 }}>
+                    {item.area && (
+                      <span style={{ fontSize: 10.5, color: 'var(--txt-3)' }}>{item.area}</span>
+                    )}
+                    {item.due && (
+                      <span className="mono" style={{ fontSize: 10, color: 'var(--txt-3)' }}>
+                        due {item.due}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+              <Icon name="chevron" size={12} style={{ color: 'var(--txt-3)', flexShrink: 0 }} />
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ── Recent AI work panel ──────────────────────────────────────────────────────
+
+function convRelTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    const diffH = (Date.now() - d.getTime()) / 3_600_000;
+    if (diffH < 24) return d.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hour12: false });
+    if (diffH < 48) return 'Yesterday';
+    return d.toLocaleDateString('en', { month: 'short', day: 'numeric' });
+  } catch { return ''; }
+}
+
+function RecentAiWorkPanel({
+  loading,
+  convs,
+  failed,
+  onNavigateAgent,
+}: {
+  loading: boolean;
+  convs: ConversationSummary[] | null;
+  failed: boolean;
+  onNavigateAgent: () => void;
+}) {
+  const items = convs
+    ? [...convs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 5)
+    : null;
+
+  return (
+    <div className="panel panel-pad">
+      <PanelHeader
+        icon="merge"
+        title="Recent AI work"
+        sub={
+          loading ? 'Loading…' :
+          failed   ? 'unavailable' :
+          items !== null ? `${items.length} conversation${items.length === 1 ? '' : 's'}` :
+          undefined
+        }
+        right={
+          <button className="btn btn-sm btn-ghost" onClick={onNavigateAgent}>
+            <Icon name="chevron" size={13} />
+          </button>
+        }
+      />
+
+      {loading ? (
+        <div style={{ color: 'var(--txt-3)', fontSize: 12, paddingTop: 4 }}>Loading…</div>
+      ) : failed ? (
+        <div style={{ color: 'var(--txt-3)', fontSize: 12, paddingTop: 4 }}>
+          Could not load conversations.{' '}
+          <button className="btn btn-sm btn-ghost" style={{ display: 'inline' }} onClick={onNavigateAgent}>
+            Open Local Agent
+          </button>
+        </div>
+      ) : items !== null && items.length === 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)', alignItems: 'flex-start', paddingTop: 4 }}>
+          <span style={{ color: 'var(--txt-3)', fontSize: 12 }}>No recent local-agent conversations.</span>
+          <button className="btn btn-sm" onClick={onNavigateAgent}>
+            <Icon name="merge" size={13} /> Open Local Agent
+          </button>
+        </div>
+      ) : items !== null ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {items.map((conv) => (
+            // TODO: deep-link to specific conversation deferred — AgentPage uses local convId state
+            <button
+              key={conv.id}
+              className="btn"
+              onClick={onNavigateAgent}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr auto',
+                alignItems: 'center',
+                gap: 'var(--s3)',
+                padding: '8px 10px',
+                textAlign: 'left',
+                width: '100%',
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 500,
+                    color: 'var(--txt-0)',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {conv.title}
+                </div>
+                <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>
+                  Local Agent · {conv.messageCount} msg{conv.messageCount === 1 ? '' : 's'}
+                </div>
+              </div>
+              <span style={{ fontSize: 10.5, color: 'var(--txt-3)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                {convRelTime(conv.updatedAt)}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 const BRAIN_ACTION_MAP: Record<string, string> = {
   today:     'today',
   weekly:    'weekly',
@@ -35,12 +280,63 @@ export function DashboardPage() {
   const backendConfig   = useAppStore((s) => s.backendConfig);
   const cmdLog          = useAppStore((s) => s.cmdLog);
   const runBrainCommand = useAppStore((s) => s.runBrainCommand);
-  const stagedCount            = useAppStore((s) => s.stagedCount);
-  const pendingProposalCount   = useAppStore((s) => s.pendingProposalCount);
   const agentStatus     = useAppStore((s) => s.agentStatus);
   const setAgentPrefill = useAppStore((s) => s.setAgentPrefill);
 
   const [ask, setAsk] = useState('');
+
+  // ── dashboard summary ──────────────────────────────────────────────────────
+  const [summary, setSummary]           = useState<DashboardSummary | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [summaryError, setSummaryError]   = useState<string | null>(null);
+
+  const loadSummary = useCallback(async () => {
+    setSummaryLoading(true);
+    setSummaryError(null);
+    try {
+      const data = await api.getDashboardSummary();
+      setSummary(data);
+    } catch (err) {
+      setSummaryError(err instanceof Error ? err.message : 'Could not reach backend.');
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadSummary(); }, [loadSummary]);
+
+  // ── conversations (recent AI work) ─────────────────────────────────────────
+  const [convs, setConvs]           = useState<ConversationSummary[] | null>(null);
+  const [convsLoading, setConvsLoading] = useState(true);
+  const [convsError, setConvsError]   = useState(false);
+
+  const loadConversations = useCallback(async () => {
+    setConvsLoading(true);
+    setConvsError(false);
+    try {
+      const data = await api.listConversations();
+      setConvs(data.conversations);
+    } catch {
+      setConvsError(true);
+    } finally {
+      setConvsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadConversations(); }, [loadConversations]);
+
+  // ── derived counts (safe to use before summary loads) ─────────────────────
+  const approvalsCount = summary
+    ? summary.raw.proposed + summary.raw.edited + summary.calendar.pending
+    : 0;
+  const rawPending  = summary?.raw.staged    ?? 0;
+  const calPending  = summary?.calendar.pending ?? 0;
+  const backfillActive = summary
+    ? summary.backfill.new + summary.backfill.triaged + summary.backfill.inProgress
+    : 0;
+  const resumeActive = summary
+    ? summary.resume.new + summary.resume.tailoring + summary.resume.applied + summary.resume.interview
+    : 0;
 
   const meta = AGENT_STATES[agentState];
 
@@ -63,25 +359,78 @@ export function DashboardPage() {
     setAsk('');
   };
 
+  // ── count strip ────────────────────────────────────────────────────────────
   const counts = [
-    { label: 'Approvals',    value: pendingProposalCount, sub: 'file proposals',  tone: 'amber'  as const, nav: 'inbox'     as RouteId, accent: true },
-    { label: 'Raw pending',  value: stagedCount,      sub: 'staged files',    tone: 'live'   as const, nav: 'inbox'     as RouteId },
-    { label: 'Escalations',  value: 3,                sub: '1 in progress',   tone: 'violet' as const, nav: 'escalation'as RouteId },
-    { label: 'Calendar',     value: 3,                sub: 'candidates',      tone: 'live'   as const, nav: 'calendar'  as RouteId },
-    { label: 'Backfill',     value: '34%',            sub: '11 / 32 repos',   icon: 'layers',           nav: 'backfill'  as RouteId },
-    { label: 'Resume',       value: 6,                sub: 'evidence rows',   icon: 'doc',              nav: 'resume'    as RouteId },
+    {
+      label: 'Approvals',
+      value: summaryLoading ? '…' : approvalsCount,
+      sub: 'proposals + calendar',
+      tone: 'amber' as const,
+      nav: 'inbox' as RouteId,
+      accent: true,
+    },
+    {
+      label: 'Raw pending',
+      value: summaryLoading ? '…' : rawPending,
+      sub: 'staged files',
+      tone: 'live' as const,
+      nav: 'inbox' as RouteId,
+    },
+    {
+      label: 'Escalations',
+      value: summaryLoading ? '…' : (summary?.escalations?.active ?? 0),
+      sub: 'active items',
+      tone: 'violet' as const,
+      nav: 'escalation' as RouteId,
+    },
+    {
+      label: 'Calendar',
+      value: summaryLoading ? '…' : calPending,
+      sub: 'pending candidates',
+      tone: 'live' as const,
+      nav: 'calendar' as RouteId,
+    },
+    {
+      label: 'Backfill',
+      value: summaryLoading ? '…' : backfillActive,
+      sub: 'active items',
+      icon: 'layers',
+      nav: 'backfill' as RouteId,
+    },
+    {
+      label: 'Resume',
+      value: summaryLoading ? '…' : resumeActive,
+      sub: 'in-flight',
+      icon: 'doc',
+      nav: 'resume' as RouteId,
+    },
   ];
 
-  // Dynamic runtime services derived from backend state
+  // ── runtime services ───────────────────────────────────────────────────────
   const backendService: SystemService =
     backendStatus === 'ok'      ? { state: 'ready',    label: 'Backend',   detail: 'FastAPI · localhost:8000' }
     : backendStatus === 'error' ? { state: 'blocked',  label: 'Backend',   detail: 'Not connected · start uvicorn' }
     :                             { state: 'idle',     label: 'Backend',   detail: 'Checking…' };
 
+  const brainAvail = summary?.runtime.brain;
   const brainService: SystemService =
-    backendStatus === 'ok'
-      ? { state: 'ready',    label: 'Brain CLI', detail: backendConfig?.brainCmd ?? 'Connected' }
-      : { state: 'disabled', label: 'Brain CLI', detail: 'Backend not connected' };
+    backendStatus !== 'ok'
+      ? { state: 'disabled', label: 'Brain CLI', detail: 'Backend not connected' }
+      : brainAvail === 'available'
+        ? { state: 'ready',   label: 'Brain CLI', detail: backendConfig?.brainCmd ?? 'Connected' }
+        : brainAvail === 'unavailable'
+          ? { state: 'blocked', label: 'Brain CLI', detail: 'brain.cmd not found — check config' }
+          : { state: 'idle',    label: 'Brain CLI', detail: 'Checking…' };
+
+  const vaultExists = summary?.runtime.vaultExists;
+  const vaultService: SystemService =
+    backendStatus !== 'ok'
+      ? { state: 'disabled', label: 'Vault',     detail: 'Backend not connected' }
+      : vaultExists === true
+        ? { state: 'ready',   label: 'Vault',     detail: backendConfig?.vaultPath ?? 'Connected' }
+        : vaultExists === false
+          ? { state: 'blocked', label: 'Vault',     detail: 'Vault path not found — check config' }
+          : { state: 'idle',    label: 'Vault',     detail: 'Checking…' };
 
   const localModelService: SystemService =
     agentStatus === null
@@ -90,8 +439,10 @@ export function DashboardPage() {
         ? { state: 'ready',  label: 'Local model', detail: `${agentStatus.model} · ${agentStatus.provider}` }
         : { state: 'partial',label: 'Local model', detail: agentStatus.message.slice(0, 52) };
 
-  // Vault path: prefer backend config, fall back to frontend localStorage setting
   const vaultDisplay = backendConfig?.vaultPath ?? settings.vaultPath;
+
+  // ── partial error notice ───────────────────────────────────────────────────
+  const partialErrors = summary?.errors ?? [];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s5)', maxWidth: 1320, margin: '0 auto' }}>
@@ -108,6 +459,10 @@ export function DashboardPage() {
           <div style={{ fontSize: 14, color: 'var(--txt-1)', marginTop: 2 }}>{TODAY.focus}</div>
         </div>
         <div style={{ display: 'flex', gap: 'var(--s2)' }}>
+          <button className="btn btn-sm btn-ghost" onClick={loadSummary} disabled={summaryLoading} title="Refresh metrics">
+            <Icon name="sync" size={13} />
+            {summaryLoading ? 'Loading…' : 'Refresh'}
+          </button>
           <button className="btn" onClick={() => runCommand('today')}>
             <Icon name="sun" size={15} />Run today
           </button>
@@ -120,6 +475,44 @@ export function DashboardPage() {
         </div>
       </div>
 
+      {/* ── backend disconnected notice ── */}
+      {summaryError && (
+        <div style={{
+          padding: '10px 14px',
+          background: 'var(--surface-2)',
+          border: '1px solid var(--red)',
+          borderRadius: 'var(--r2)',
+          fontSize: 12,
+          color: 'var(--txt-1)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+        }}>
+          <StatusDot tone="red" />
+          <span>Dashboard metrics unavailable — backend not reachable. Start uvicorn and refresh.</span>
+        </div>
+      )}
+
+      {/* ── partial error notice ── */}
+      {!summaryError && partialErrors.length > 0 && (
+        <div style={{
+          padding: '8px 14px',
+          background: 'var(--surface-2)',
+          border: '1px solid var(--amber)',
+          borderRadius: 'var(--r2)',
+          fontSize: 11,
+          color: 'var(--txt-2)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+        }}>
+          <StatusDot tone="amber" />
+          <span>
+            Some metrics could not load: {partialErrors.map((e) => e.source).join(', ')}. Counts may be incomplete.
+          </span>
+        </div>
+      )}
+
       {/* ── count strip ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 'var(--s3)' }}>
         {counts.map((c) => (
@@ -128,9 +521,9 @@ export function DashboardPage() {
             label={c.label}
             value={c.value}
             sub={c.sub}
-            tone={c.tone}
+            tone={'tone' in c ? c.tone : undefined}
             icon={'icon' in c ? c.icon : undefined}
-            accent={c.accent}
+            accent={'accent' in c ? c.accent : undefined}
             onClick={() => navigate(c.nav)}
           />
         ))}
@@ -148,47 +541,71 @@ export function DashboardPage() {
         {/* ── left column ── */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
 
-          {/* today's plan */}
-          <div className="panel panel-pad">
-            <PanelHeader
-              icon="sun"
-              title="Today's plan"
-              sub={`${TODAY.blocks.length} blocks · ${TODAY.blocks.filter((b) => b.done).length} done`}
-              right={
-                <button className="btn btn-sm btn-ghost" onClick={() => navigate('tasks')}>
-                  All tasks <Icon name="chevron" size={13} />
-                </button>
-              }
-            />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              {TODAY.blocks.map((block, i) => (
-                <PlanBlock key={i} block={block} />
-              ))}
-            </div>
-          </div>
+          {/* today's plan — real task data */}
+          <TodayPlanPanel
+            loading={summaryLoading}
+            items={summary?.todayPlan?.items ?? null}
+            failed={!summaryLoading && summaryError !== null}
+            onNavigateTasks={() => navigate('tasks')}
+          />
 
-          {/* pending approvals */}
+          {/* pending approvals — real data */}
           <div className="panel panel-pad">
             <PanelHeader
               icon="check"
               title="Pending approvals"
-              sub="Batched — review, don't babysit"
-              right={
-                <div style={{ display: 'flex', gap: 'var(--s2)' }}>
-                  <button className="btn btn-sm btn-ghost" onClick={() => navigate('agent')}>
-                    Review
-                  </button>
-                  <button className="btn btn-sm btn-primary" onClick={() => navigate('agent')}>
-                    Apply {APPROVALS.filter((a) => a.risk !== 'high').length} safe
-                  </button>
-                </div>
+              sub={
+                summary
+                  ? `${approvalsCount} item${approvalsCount === 1 ? '' : 's'} need review`
+                  : summaryLoading ? 'Loading…' : 'Could not load'
               }
             />
-            <div>
-              {APPROVALS.map((a) => (
-                <ApprovalRow key={a.id} approval={a} />
-              ))}
-            </div>
+            {summaryLoading ? (
+              <div style={{ color: 'var(--txt-3)', fontSize: 12, paddingTop: 8 }}>Loading…</div>
+            ) : summary ? (
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                {/* raw proposals */}
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '10px 0', borderBottom: '1px solid var(--line-soft)',
+                }}>
+                  <StatusDot tone={summary.raw.proposed + summary.raw.edited > 0 ? 'amber' : 'grey'} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--txt-0)' }}>
+                      {summary.raw.proposed + summary.raw.edited} raw file proposals
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--txt-2)' }}>
+                      {summary.raw.proposed} proposed · {summary.raw.edited} edited
+                    </div>
+                  </div>
+                  <button className="btn btn-sm" onClick={() => navigate('inbox')}>
+                    Review <Icon name="chevron" size={12} />
+                  </button>
+                </div>
+                {/* calendar candidates */}
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '10px 0',
+                }}>
+                  <StatusDot tone={summary.calendar.pending > 0 ? 'amber' : 'grey'} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--txt-0)' }}>
+                      {summary.calendar.pending} calendar candidates
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--txt-2)' }}>
+                      {summary.calendar.approved} approved · {summary.calendar.total} total
+                    </div>
+                  </div>
+                  <button className="btn btn-sm" onClick={() => navigate('calendar')}>
+                    Review <Icon name="chevron" size={12} />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ color: 'var(--txt-3)', fontSize: 12, paddingTop: 8 }}>
+                Could not load approvals — backend unavailable.
+              </div>
+            )}
           </div>
 
           {/* two-up: command output + recent AI work */}
@@ -237,45 +654,13 @@ export function DashboardPage() {
               )}
             </div>
 
-            {/* recent AI work */}
-            <div className="panel panel-pad">
-              <PanelHeader
-                icon="merge"
-                title="Recent AI work"
-                right={
-                  <button className="btn btn-sm btn-ghost" onClick={() => navigate('consolidate')}>
-                    <Icon name="chevron" size={13} />
-                  </button>
-                }
-              />
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
-                {CONSOLIDATED.map((item) => (
-                  <div key={item.id} style={{ display: 'flex', gap: 9, alignItems: 'center' }}>
-                    <SourceGlyph source={item.source} />
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 500,
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          color: 'var(--txt-0)',
-                        }}
-                      >
-                        {item.title}
-                      </div>
-                      <div className="mono" style={{ fontSize: 10, color: 'var(--txt-2)' }}>
-                        {item.dest}
-                      </div>
-                    </div>
-                    <span style={{ fontSize: 10.5, color: 'var(--txt-3)', whiteSpace: 'nowrap' }}>
-                      {item.when}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
+            {/* recent AI work — real conversation history */}
+            <RecentAiWorkPanel
+              loading={convsLoading}
+              convs={convs}
+              failed={!convsLoading && convsError}
+              onNavigateAgent={() => navigate('agent')}
+            />
 
           </div>
         </div>
@@ -363,6 +748,33 @@ export function DashboardPage() {
             </form>
           </div>
 
+          {/* entity counts — real data */}
+          <div className="panel panel-pad">
+            <PanelHeader icon="cube" title="Entities" />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--s2)', marginTop: 6 }}>
+              {(
+                [
+                  { label: 'Projects',   value: summary?.entities.projects,   nav: 'projects'   as RouteId },
+                  { label: 'Courses',    value: summary?.entities.courses,     nav: 'courses'    as RouteId },
+                  { label: 'Hackathons', value: summary?.entities.hackathons,  nav: 'hackathons' as RouteId },
+                  { label: 'Business',   value: summary?.entities.business,    nav: 'business'   as RouteId },
+                ] as const
+              ).map((e) => (
+                <button
+                  key={e.label}
+                  className="btn"
+                  style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2, padding: '8px 10px' }}
+                  onClick={() => navigate(e.nav)}
+                >
+                  <span style={{ fontSize: 20, fontWeight: 600, fontFamily: 'var(--font-mono)', lineHeight: 1, color: 'var(--txt-0)' }}>
+                    {summaryLoading ? '…' : (e.value ?? '?')}
+                  </span>
+                  <span style={{ fontSize: 10, color: 'var(--txt-2)' }}>{e.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* runtime status */}
           <div className="panel panel-pad">
             <PanelHeader
@@ -374,11 +786,12 @@ export function DashboardPage() {
                 </button>
               }
             />
-            {/* real: backend + brain CLI + local model (Ollama) */}
+            {/* real: backend, brain CLI, vault, local model */}
             <SystemRow service={backendService} />
             <SystemRow service={brainService} />
+            <SystemRow service={vaultService} />
             <SystemRow service={localModelService} />
-            {/* mocked: OpenClaw/NemoClaw/browser/computer/MCP */}
+            {/* not wired: OpenClaw, NemoClaw, browser, computer use, MCP */}
             {[SYSTEM.openclaw, SYSTEM.nemoclaw, SYSTEM.browser, SYSTEM.computer, SYSTEM.mcp].map(
               (svc, i) => <SystemRow key={i} service={svc} />
             )}

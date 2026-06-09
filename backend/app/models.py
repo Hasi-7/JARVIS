@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -45,8 +45,9 @@ class BrainRunResponse(BaseModel):
 # ── entity creation ───────────────────────────────────────────────────────────
 
 class CreateProjectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
-    repoPath: Optional[str] = None
 
 
 class CreateCourseRequest(BaseModel):
@@ -55,8 +56,9 @@ class CreateCourseRequest(BaseModel):
 
 
 class CreateHackathonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
-    date: Optional[str] = None
 
 
 class CreateBusinessRequest(BaseModel):
@@ -422,6 +424,92 @@ class UpdateCalendarCandidateResponse(BaseModel):
     updatedAt: str
 
 
+# ── backfill ──────────────────────────────────────────────────────────────────
+
+class BackfillItem(BaseModel):
+    id:     str
+    item:   str
+    type:   Optional[str] = None
+    status: str           = "new"
+    value:  Optional[str] = None
+    path:   Optional[str] = None
+    notes:  Optional[str] = None
+    agent:  Optional[str] = None
+    raw:    str           = ""
+
+
+class BackfillResponse(BaseModel):
+    path:         str
+    exists:       bool
+    lastModified: Optional[str] = None
+    preview:      Optional[str] = None
+    parseMode:    str            # "markdown-table" | "preview-only" | "missing"
+    items:        List[BackfillItem]
+
+
+class UpdateBackfillStatusRequest(BaseModel):
+    status: str  # new | triaged | in-progress | done | skipped
+
+
+class UpdateBackfillStatusResponse(BaseModel):
+    ok:        bool
+    item:      BackfillItem
+    path:      str
+    updatedAt: str
+
+
+class CreateBackfillItemRequest(BaseModel):
+    item:   str
+    type:   Optional[str] = None   # project|repo|hackathon|course|business|other
+    status: Optional[str] = None   # new|triaged|in-progress|done|skipped
+    value:  Optional[str] = None   # high|medium|low
+    path:   Optional[str] = None
+    agent:  Optional[str] = None   # claude-code|opencode|manual
+    notes:  Optional[str] = None
+
+
+class CreateBackfillItemResponse(BaseModel):
+    ok:        bool
+    item:      BackfillItem
+    path:      str
+    updatedAt: str
+
+
+# ── resume pipeline ───────────────────────────────────────────────────────────
+
+class ResumePipelineItem(BaseModel):
+    id:       str
+    target:   str
+    company:  Optional[str] = None
+    role:     Optional[str] = None
+    status:   str           = "new"
+    priority: Optional[str] = None
+    deadline: Optional[str] = None
+    link:     Optional[str] = None
+    notes:    Optional[str] = None
+    raw:      str           = ""
+
+
+class ResumePipelineResponse(BaseModel):
+    path:         str
+    exists:       bool
+    lastModified: Optional[str] = None
+    preview:      Optional[str] = None
+    parseMode:    str            # "markdown-table" | "preview-only" | "missing"
+    items:        List[ResumePipelineItem]
+
+
+class UpdateResumePipelineStatusRequest(BaseModel):
+    status: str  # new | tailoring | applied | interview | offer | rejected | archived
+
+
+class UpdateResumePipelineStatusResponse(BaseModel):
+    ok:        bool
+    item:      ResumePipelineItem
+    path:      str
+    updatedAt: str
+
+
 # ── archive ───────────────────────────────────────────────────────────────────
 
 class ArchiveInfo(BaseModel):
@@ -440,3 +528,172 @@ class ArchiveResponse(BaseModel):
 class ArchivedFilesResponse(BaseModel):
     count: int
     archived: List[ClassificationProposalResponse]
+
+
+# ── escalation queue ─────────────────────────────────────────────────────────
+
+class EscalationItem(BaseModel):
+    id:       str
+    task:     str
+    target:   Optional[str] = None
+    status:   str           = "new"
+    priority: Optional[str] = None
+    source:   Optional[str] = None
+    path:     Optional[str] = None
+    notes:    Optional[str] = None
+    created:  Optional[str] = None
+    raw:      str           = ""
+
+
+class EscalationResponse(BaseModel):
+    path:         str
+    exists:       bool
+    lastModified: Optional[str] = None
+    preview:      Optional[str] = None
+    parseMode:    str            # "markdown-table" | "preview-only" | "missing"
+    items:        List[EscalationItem]
+
+
+class CreateEscalationItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task:     str
+    target:   str
+    priority: Optional[str] = None
+    source:   Optional[str] = None
+    path:     Optional[str] = None
+    notes:    Optional[str] = None
+
+
+class UpdateEscalationStatusRequest(BaseModel):
+    status: str  # new | ready | in-progress | done | blocked | skipped
+
+
+class UpdateEscalationStatusResponse(BaseModel):
+    ok:        bool
+    item:      EscalationItem
+    path:      str
+    updatedAt: str
+
+
+class UpdateEscalationItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task:     str
+    target:   str
+    priority: Optional[str] = None
+    source:   Optional[str] = None
+    path:     Optional[str] = None
+    notes:    Optional[str] = None
+
+
+class UpdateEscalationItemResponse(BaseModel):
+    ok:        bool
+    item:      EscalationItem
+    path:      str
+    updatedAt: str
+
+
+# ── dashboard summary ─────────────────────────────────────────────────────────
+
+class DashboardRawSummary(BaseModel):
+    staged: int = 0
+    proposed: int = 0
+    edited: int = 0
+    approved: int = 0
+    routed: int = 0
+    archived: int = 0
+
+
+class DashboardTaskSummary(BaseModel):
+    total: int = 0
+    todo: int = 0
+    inProgress: int = 0
+    blocked: int = 0
+    done: int = 0
+
+
+class DashboardCalendarSummary(BaseModel):
+    total: int = 0
+    approved: int = 0
+    pending: int = 0
+
+
+class DashboardEntitySummary(BaseModel):
+    projects: int = 0
+    courses: int = 0
+    hackathons: int = 0
+    business: int = 0
+
+
+class DashboardBackfillSummary(BaseModel):
+    total: int = 0
+    new: int = 0
+    triaged: int = 0
+    inProgress: int = 0
+    done: int = 0
+    skipped: int = 0
+
+
+class DashboardResumeSummary(BaseModel):
+    total: int = 0
+    new: int = 0
+    tailoring: int = 0
+    applied: int = 0
+    interview: int = 0
+    offer: int = 0
+    rejected: int = 0
+    archived: int = 0
+
+
+class DashboardRuntimeSummary(BaseModel):
+    backend: str = "connected"
+    brain: str = "unknown"
+    agent: str = "unknown"
+    vaultExists: bool = False
+
+
+class DashboardSummaryError(BaseModel):
+    source: str
+    message: str
+
+
+class DashboardEscalationSummary(BaseModel):
+    total:      int = 0
+    active:     int = 0
+    new:        int = 0
+    ready:      int = 0
+    inProgress: int = 0
+    blocked:    int = 0
+    done:       int = 0
+    skipped:    int = 0
+
+
+class DashboardTodayPlanItem(BaseModel):
+    id: str
+    title: str
+    status: str
+    priority: Optional[str] = None
+    due: Optional[str] = None
+    area: Optional[str] = None
+    source: Optional[str] = None
+    reason: str
+
+
+class DashboardTodayPlan(BaseModel):
+    items: List[DashboardTodayPlanItem] = []
+    source: str = "tasks"
+    generatedAt: str = ""
+
+
+class DashboardSummaryResponse(BaseModel):
+    raw: DashboardRawSummary = DashboardRawSummary()
+    tasks: DashboardTaskSummary = DashboardTaskSummary()
+    calendar: DashboardCalendarSummary = DashboardCalendarSummary()
+    entities: DashboardEntitySummary = DashboardEntitySummary()
+    backfill: DashboardBackfillSummary = DashboardBackfillSummary()
+    resume: DashboardResumeSummary = DashboardResumeSummary()
+    escalations: DashboardEscalationSummary = DashboardEscalationSummary()
+    runtime: DashboardRuntimeSummary = DashboardRuntimeSummary()
+    todayPlan: DashboardTodayPlan = DashboardTodayPlan()
+    errors: List[DashboardSummaryError] = []

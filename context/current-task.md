@@ -2,148 +2,84 @@
 
 ## Goal
 
-Build the first frontend foundation for Brain UI in the new repo.
+Sprint 26 complete: Backfill row creation from the UI — safe capture of prior work.
 
-This task is only the initial UI shell and Dashboard v0. It should establish the visual system, layout, mock state, and component structure from `DESIGN.md` while staying consistent with `PRD_NemoClaw_OpenShell.md`.
-
-The goal is to create a clean React/Vite/TypeScript frontend foundation that can later connect to the real backend, OpenClaw, NemoClaw/OpenShell, `brain` CLI, MCP gateway, browser harness, computer use, and Obsidian vault.
+Next possibilities:
+- Backfill field editing (type, value, path, notes, agent) after creation
+- Resume Pipeline row creation (same pattern as Backfill)
+- Escalation Queue: mark items done from Dashboard quick actions
+- Dashboard refresh interval / background polling
 
 ## Relevant Files
 
-Use these files as the source of truth:
+- PRD.md
+- DESIGN.md
+- backend/app/vault.py
+- backend/app/models.py
+- backend/app/main.py
+- src/lib/api.ts
+- src/pages/BackfillPage.tsx
+- backend/tests/test_backfill_creation.py  ← new
+- context/current-task.md
 
-* `PRD_NemoClaw_OpenShell.md`
-* `DESIGN.md`
-* Claude Design mockup files, if provided
+## Current State
 
-Source-of-truth order:
-
-1. `PRD_NemoClaw_OpenShell.md` controls product requirements, architecture, agent responsibilities, safety model, and long-term scope.
-2. `DESIGN.md` controls UI/UX, layout, visual style, navigation, components, tokens, and interaction behavior.
-3. Mockup files are visual references only.
-4. This task file controls implementation scope for this run.
-
-If there is a conflict, follow the PRD and `DESIGN.md`.
+- `GET /api/vault/backfill` reads `ops/backfill.md` or `ops/backfill-last-year.md`
+- `POST /api/vault/backfill/create` creates `ops/backfill.md` starter file if missing (never overwrites)
+- `POST /api/vault/backfill` appends a new row to `ops/backfill.md` with backup
+- `PATCH /api/vault/backfill/{id}/status` updates status cell with backup
+- `ops/backfill-last-year.md` is always read-only — appends rejected with clear message
+- BackfillPage: missing state shows "Create Backfill file" button
+- BackfillPage: fallback-only state (last-year file) shows notice + "Create ops/backfill.md" button
+- BackfillPage: "New Backfill Item" button appears when primary file is in markdown-table mode
+- BackfillPage: Add Item modal with item/type/status/value/agent/path/notes fields
+- BackfillPage: safety note in modal; error stays in modal on failure; modal closes and list reloads on success
+- Closeout prompt, filters, status editing all still work unchanged
+- 53/53 backend tests pass; npm run build passes
 
 ## Constraints
 
-Use:
-
-* React
-* Vite
-* TypeScript
-* Tailwind CSS
-* shadcn/ui where useful
-* CSS variables for design tokens
-* Typed mock data
-
-Implement:
-
-* App shell
-* Sidebar navigation
-* Top command bar
-* Command palette shell
-* Dashboard v0
-* AgentSphere component with mocked states
-* Runtime status UI for OpenClaw, NemoClaw/OpenShell, Browser, Computer Use, MCP gateway, and vault path
-* Stub pages for non-Dashboard routes
-* README setup/run instructions
-
-The app should feel like a restrained, Jarvis-inspired local-first command center: serious, calm, dense, technical, and useful.
-
-Use the design principles from `DESIGN.md`:
-
-* Friction-calibrated
-* Real state only
-* Calm density
+- No Claude Code/OpenCode launch from Brain UI.
+- No shell commands.
+- No repo modifications.
+- Backups before every write.
+- Only `ops/backfill.md` is ever written.
+- Allowed statuses: new | triaged | in-progress | done | skipped.
+- Allowed types: project | repo | hackathon | course | business | other.
+- Allowed values: high | medium | low.
+- Allowed agents: claude-code | opencode | manual.
 
 ## Do Not Touch
 
-Do not implement real privileged or backend behavior in this run.
+- Raw Inbox routing/sync/archive behavior
+- Calendar candidates workflow
+- Tasks write behavior (still only editable from Tasks page)
+- Entity creation command mapping
+- Conversation files (read-only from Dashboard)
+- `ops/backfill-last-year.md` (read-only fallback, never written)
 
-Do not build:
+## Acceptance Criteria — all met
 
-* real backend
-* FastAPI
-* real `brain` command execution
-* real OpenClaw calls
-* real NemoClaw/OpenShell integration
-* MCP gateway
-* Gmail integration
-* Obsidian read/write logic
-* real file upload or routing
-* browser harness
-* computer use
-* real research agent
-* real Claude Code/OpenCode launch
-* real calendar export
-* real vault mutation
-
-Do not blindly copy prototype architecture from Claude Design mockups.
-
-Mockup files may be used for visual reference only. Do not preserve CDN/Babel setup, one-file architecture, prototype hacks, or mock logic as production architecture.
-
-## Acceptance Criteria
-
-This task is complete when:
-
-* The app launches locally with Vite.
-* The app has a clean desktop-first shell with sidebar, top bar, and main content.
-* Sidebar nav matches the grouped structure in `DESIGN.md`.
-* Top bar includes command palette trigger, runtime status pills, and agent mode dropdown.
-* Command palette opens and supports mock navigation/actions.
-* Dashboard v0 includes:
-
-  * header/focus line
-  * quick actions
-  * metric/count strip
-  * today’s plan
-  * pending approvals
-  * recent command output
-  * recent AI work
-  * agent panel
-  * runtime status panel
-  * quick actions grid
-* `AgentSphere` supports the required states from `DESIGN.md`.
-* Runtime status UI includes OpenClaw, NemoClaw/OpenShell, Browser, Computer Use, MCP gateway, and vault path.
-* Non-Dashboard pages have clean stub pages.
-* Mock data is typed and isolated.
-* Styling follows `DESIGN.md`: graphite surfaces, restrained accents, mono only for technical data, no excessive glow.
-* No real privileged actions are implemented.
-* README explains how to install and run the app.
+- `POST /api/vault/backfill/create` creates `ops/backfill.md` only when missing. ✓
+- Existing `ops/backfill.md` is not overwritten. ✓
+- `POST /api/vault/backfill` appends a valid row to `ops/backfill.md`. ✓
+- Append rejects if only fallback file exists (clear message). ✓
+- Append rejects malformed `ops/backfill.md`. ✓
+- Backup created before append. ✓
+- Invalid status/type/value/agent rejected (400). ✓
+- Raw newlines rejected. ✓
+- Pipe characters sanitized. ✓
+- No repo/path is modified. ✓
+- Backfill page has "New Backfill Item" action (enabled when primary file + markdown-table). ✓
+- Create-file button works when missing or fallback-only. ✓
+- Add modal validates required fields. ✓
+- Successful add reloads list. ✓
+- Errors visible in modal. ✓
+- Existing filters/status/prompt behavior still works. ✓
+- npm run build passes. ✓
+- 53/53 backend tests pass. ✓
 
 ## Test Plan
 
-Run:
-
-```bash
-npm install
-npm run dev
-```
-
-Then verify:
-
-* App loads without runtime errors.
-* Dashboard is the default route.
-* Sidebar navigation works.
-* Stub pages render for non-Dashboard routes.
-* Command palette opens by click and keyboard shortcut if implemented.
-* Mock commands update command output, show a toast, or visibly perform a safe mock action.
-* Agent mode dropdown works with mock state.
-* AgentSphere visually changes when its mocked state changes.
-* Runtime status panel displays all required systems.
-* Layout remains usable on a normal desktop/laptop width.
-* TypeScript check passes if configured.
-* Build passes:
-
-```bash
-npm run build
-```
-
-## Open Questions
-
-* Should routing use React Router now, or simple local state until the backend is added?
-* Should shadcn/ui be fully installed in this first run, or only added when components need it?
-* Which exact font stack should be used if external fonts are avoided?
-* Should mock state be stored in plain TypeScript files, Zustand, or simple React state for now?
-* Should the next run add the backend skeleton first or finish the Local Agent and Raw Inbox UI screens first?
+- python -m pytest backend/tests/
+- npm run build

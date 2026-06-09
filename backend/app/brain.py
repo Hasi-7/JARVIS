@@ -17,24 +17,15 @@ _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _CMD_META_RE = re.compile(r"[&|<>^%!\"()]")
 
 _ARG_SCHEMAS: dict[str, tuple[str, ...]] = {
-    "new-project": ("name", "repoPath"),
+    "new-project": ("name",),
     "new-course": ("code", "name"),
-    "new-hackathon": ("name", "date"),
+    "new-hackathon": ("name",),
 }
 
 _REQUIRED_ARGS: dict[str, tuple[str, ...]] = {
     "new-project": ("name",),
     "new-course": ("code",),
     "new-hackathon": ("name",),
-}
-
-_UNSUPPORTED_NONEMPTY_ARGS: dict[str, dict[str, str]] = {
-    "new-project": {
-        "repoPath": "Current brain new-project accepts only a project name; repoPath is not supported by the CLI.",
-    },
-    "new-hackathon": {
-        "date": "Current brain new-hackathon accepts only a hackathon name; date is not supported by the CLI.",
-    },
 }
 
 
@@ -139,10 +130,6 @@ def _validate_arg_value(command: str, key: str, value: object) -> str | None:
 
 
 def _build_command_args(command: str, cleaned: dict[str, str | None]) -> list[str]:
-    for key, message in _UNSUPPORTED_NONEMPTY_ARGS.get(command, {}).items():
-        if cleaned.get(key):
-            raise ValueError(message)
-
     if command == "new-project":
         return [cleaned["name"] or ""]
     if command == "new-hackathon":

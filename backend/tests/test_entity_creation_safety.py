@@ -31,7 +31,7 @@ def test_generic_brain_run_rejects_argument_commands():
 
 
 def test_unsafe_argument_characters_rejected():
-    result = brain.run_brain_command_args("new-project", {"name": "demo&whoami", "repoPath": None})
+    result = brain.run_brain_command_args("new-project", {"name": "demo&whoami"})
 
     assert result.ok is False
     assert "unsafe shell metacharacters" in result.stderr
@@ -72,7 +72,7 @@ def test_unsupported_project_repo_path_rejected():
     result = brain.run_brain_command_args("new-project", {"name": "Demo", "repoPath": "D:/repo"})
 
     assert result.ok is False
-    assert "repoPath is not supported" in result.stderr
+    assert "repoPath" in result.stderr
 
 
 def test_business_scaffold_creates_expected_files(tmp_path, monkeypatch):

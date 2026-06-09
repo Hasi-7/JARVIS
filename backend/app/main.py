@@ -17,6 +17,12 @@ from app.vault import (
     get_tasks,
     update_task_status,
     create_task,
+    get_backfill,
+    update_backfill_status,
+    create_backfill_file,
+    create_backfill_item,
+    get_resume_pipeline,
+    update_resume_pipeline_status,
 )
 from app.calendar import (
     create_calendar_candidate,
@@ -33,6 +39,14 @@ from app.agent import (
     CONTEXT_WINDOW_MESSAGES,
 )
 from app.brain import run_brain_command, run_brain_command_args
+from app.dashboard import get_dashboard_summary
+from app.escalations import (
+    add_escalation_item,
+    create_escalation_queue_file,
+    get_escalations,
+    update_escalation_item,
+    update_escalation_status,
+)
 from app.config import get_config, update_config
 from app.conversations import (
     create_conversation,
@@ -63,6 +77,16 @@ from app.models import (
     AgentChatResponse,
     AgentStatusResponse,
     ArchiveInfo,
+    BackfillItem,
+    BackfillResponse,
+    UpdateBackfillStatusRequest,
+    UpdateBackfillStatusResponse,
+    CreateBackfillItemRequest,
+    CreateBackfillItemResponse,
+    ResumePipelineItem,
+    ResumePipelineResponse,
+    UpdateResumePipelineStatusRequest,
+    UpdateResumePipelineStatusResponse,
     ConversationDetail,
     ConversationListResponse,
     ConversationSummary,
@@ -107,6 +131,14 @@ from app.models import (
     CreateProjectRequest,
     EntityCreateResponse,
     EntityPaths,
+    CreateEscalationItemRequest,
+    DashboardSummaryResponse,
+    EscalationItem,
+    EscalationResponse,
+    UpdateEscalationItemRequest,
+    UpdateEscalationItemResponse,
+    UpdateEscalationStatusRequest,
+    UpdateEscalationStatusResponse,
     HealthResponse,
     ProposalUpdateRequest,
     ProposalsResponse,
@@ -220,6 +252,14 @@ def config_put(req: ConfigUpdateRequest) -> ConfigResponse:
     return _config_response(cfg)
 
 
+# ── dashboard summary ─────────────────────────────────────────────────────────
+
+@app.get("/api/dashboard/summary", response_model=DashboardSummaryResponse)
+def dashboard_summary() -> DashboardSummaryResponse:
+    data = get_dashboard_summary()
+    return DashboardSummaryResponse(**data)
+
+
 # ── brain commands ────────────────────────────────────────────────────────────
 
 @app.get("/api/brain/commands")
@@ -256,10 +296,7 @@ def brain_run(req: BrainRunRequest) -> BrainRunResponse:
 
 @app.post("/api/entities/projects", response_model=EntityCreateResponse)
 def entity_project_create(req: CreateProjectRequest) -> EntityCreateResponse:
-    result = run_brain_command_args("new-project", {
-        "name": req.name,
-        "repoPath": req.repoPath,
-    })
+    result = run_brain_command_args("new-project", {"name": req.name})
     return _entity_command_response("project", req.name.strip(), result)
 
 
@@ -274,10 +311,7 @@ def entity_course_create(req: CreateCourseRequest) -> EntityCreateResponse:
 
 @app.post("/api/entities/hackathons", response_model=EntityCreateResponse)
 def entity_hackathon_create(req: CreateHackathonRequest) -> EntityCreateResponse:
-    result = run_brain_command_args("new-hackathon", {
-        "name": req.name,
-        "date": req.date,
-    })
+    result = run_brain_command_args("new-hackathon", {"name": req.name})
     return _entity_command_response("hackathon", req.name.strip(), result)
 
 
@@ -821,6 +855,395 @@ def vault_ops_file(kind: str) -> VaultOpsFileResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return VaultOpsFileResponse(**data)
+
+
+@app.get("/api/vault/backfill", response_model=BackfillResponse)
+def vault_backfill() -> BackfillResponse:
+    """
+    GET /api/vault/backfill
+
+    Reads ops/backfill.md (priority) or ops/backfill-last-year.md from the vault.
+    Parses the Markdown table; falls back to preview-only or missing.
+
+    parseMode: "markdown-table" | "preview-only" | "missing"
+
+    Read-only. No vault writes. Preview capped at 2000 chars.
+    Internal location metadata is never exposed.
+    """
+    cfg  = get_config()
+    data = get_backfill(cfg.vault_path)
+    return BackfillResponse(
+        path=data["path"],
+        exists=data["exists"],
+        lastModified=data["lastModified"],
+        preview=data["preview"],
+        parseMode=data["parseMode"],
+        items=[BackfillItem(**it) for it in data["items"]],
+    )
+
+
+@app.post("/api/vault/backfill/create", response_model=BackfillResponse)
+def vault_backfill_create_file() -> BackfillResponse:
+    """
+    POST /api/vault/backfill/create
+
+    Create ops/backfill.md with the default starter table only when missing.
+    Existing files are never overwritten.
+
+    Safety:
+    - Never overwrites an existing file.
+    - Only creates ops/backfill.md — never ops/backfill-last-year.md.
+    - No repo files modified. No Claude Code/OpenCode launched.
+    """
+    cfg = get_config()
+    try:
+        data = create_backfill_file(cfg.vault_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return BackfillResponse(
+        path=data["path"],
+        exists=data["exists"],
+        lastModified=data["lastModified"],
+        preview=data["preview"],
+        parseMode=data["parseMode"],
+        items=[BackfillItem(**it) for it in data["items"]],
+    )
+
+
+@app.post("/api/vault/backfill", response_model=CreateBackfillItemResponse)
+def vault_backfill_add_item(req: CreateBackfillItemRequest) -> CreateBackfillItemResponse:
+    """
+    POST /api/vault/backfill
+
+    Append one backfill item to ops/backfill.md.
+
+    Safety:
+    - File must already exist. Call /create first if needed.
+    - item is required.
+    - type, status, value, agent must be from their respective allowlists.
+    - Pipe chars and newlines rejected in all fields.
+    - Backup created before every write.
+    - Only appends; never modifies existing rows.
+    - Never writes ops/backfill-last-year.md.
+    - No shell commands. No Claude Code/OpenCode launched. No repo files modified.
+    """
+    cfg = get_config()
+    try:
+        result = create_backfill_item(
+            vault_path=cfg.vault_path,
+            item=req.item,
+            item_type=req.type,
+            status=req.status,
+            value=req.value,
+            path=req.path,
+            agent=req.agent,
+            notes=req.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Backfill item created via API: id=%s  item=%r  path=%s",
+        result["item"]["id"], result["item"]["item"], result["path"],
+    )
+    return CreateBackfillItemResponse(
+        ok=result["ok"],
+        item=BackfillItem(**result["item"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
+    )
+
+
+@app.patch(
+    "/api/vault/backfill/{item_id}/status",
+    response_model=UpdateBackfillStatusResponse,
+)
+def vault_backfill_update_status(
+    item_id: str,
+    req: UpdateBackfillStatusRequest,
+) -> UpdateBackfillStatusResponse:
+    """
+    PATCH /api/vault/backfill/{item_id}/status
+
+    Update a single backfill item's status.
+
+    Allowed statuses: new | triaged | in-progress | done | skipped
+
+    Safety:
+    - Only writes to ops/backfill.md or ops/backfill-last-year.md.
+    - Re-reads and re-parses the file on every call (no stale state).
+    - Verifies item name before writing (conflict detection).
+    - Creates a backup under backend/data/backups/backfill/ before writing.
+    - Returns 400 on any validation or conflict error; file is not modified.
+    - No other vault files are touched.
+    - No repo files are modified.
+    - No Claude/OpenCode process is launched.
+    """
+    cfg = get_config()
+    try:
+        result = update_backfill_status(cfg.vault_path, item_id, req.status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Backfill status patched: id=%s  status=%r  path=%s",
+        item_id, req.status, result["path"],
+    )
+    return UpdateBackfillStatusResponse(
+        ok=result["ok"],
+        item=BackfillItem(**result["item"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
+    )
+
+
+@app.get("/api/vault/resume-pipeline", response_model=ResumePipelineResponse)
+def vault_resume_pipeline() -> ResumePipelineResponse:
+    """
+    GET /api/vault/resume-pipeline
+
+    Reads ops/resume-pipeline.md from the vault.
+    Parses the Markdown table; falls back to preview-only or missing.
+
+    parseMode: "markdown-table" | "preview-only" | "missing"
+
+    Read-only. No vault writes. Preview capped at 2000 chars.
+    """
+    cfg  = get_config()
+    data = get_resume_pipeline(cfg.vault_path)
+    return ResumePipelineResponse(
+        path=data["path"],
+        exists=data["exists"],
+        lastModified=data["lastModified"],
+        preview=data["preview"],
+        parseMode=data["parseMode"],
+        items=[ResumePipelineItem(**it) for it in data["items"]],
+    )
+
+
+@app.patch(
+    "/api/vault/resume-pipeline/{item_id}/status",
+    response_model=UpdateResumePipelineStatusResponse,
+)
+def vault_resume_pipeline_update_status(
+    item_id: str,
+    req: UpdateResumePipelineStatusRequest,
+) -> UpdateResumePipelineStatusResponse:
+    """
+    PATCH /api/vault/resume-pipeline/{item_id}/status
+
+    Update a single resume-pipeline item's status.
+
+    Allowed statuses: new | tailoring | applied | interview | offer | rejected | archived
+
+    Safety:
+    - Only writes to ops/resume-pipeline.md.
+    - Re-reads and re-parses the file on every call (no stale state).
+    - Verifies target name before writing (conflict detection).
+    - Creates a backup under backend/data/backups/resume/ before writing.
+    - Returns 400 on any validation or conflict error; file is not modified.
+    - No other vault files are touched.
+    - No browser automation or application submission occurs.
+    """
+    cfg = get_config()
+    try:
+        result = update_resume_pipeline_status(cfg.vault_path, item_id, req.status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Resume pipeline status patched: id=%s  status=%r  path=%s",
+        item_id, req.status, result["path"],
+    )
+    return UpdateResumePipelineStatusResponse(
+        ok=result["ok"],
+        item=ResumePipelineItem(**result["item"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
+    )
+
+
+# ── escalation queue ─────────────────────────────────────────────────────────
+
+@app.get("/api/vault/escalations", response_model=EscalationResponse)
+def vault_escalations() -> EscalationResponse:
+    """
+    GET /api/vault/escalations
+
+    Reads ops/escalation-queue.md from the vault.
+    Parses the Markdown table; falls back to preview-only or missing.
+
+    parseMode: "markdown-table" | "preview-only" | "missing"
+
+    Read-only. No vault writes. Preview capped at 2000 chars.
+    No Claude Code/OpenCode processes launched.
+    """
+    cfg  = get_config()
+    data = get_escalations(cfg.vault_path)
+    return EscalationResponse(
+        path=data["path"],
+        exists=data["exists"],
+        lastModified=data["lastModified"],
+        preview=data["preview"],
+        parseMode=data["parseMode"],
+        items=[EscalationItem(**it) for it in data["items"]],
+    )
+
+
+@app.post("/api/vault/escalations/create", response_model=EscalationResponse)
+def vault_escalations_create_file() -> EscalationResponse:
+    """
+    POST /api/vault/escalations/create
+
+    Create ops/escalation-queue.md with the starter table if it is missing.
+    If the file already exists, returns the current state without modifying it.
+
+    Safety:
+    - Never overwrites an existing file.
+    - No Claude Code/OpenCode processes launched.
+    - No repo files modified.
+    """
+    cfg = get_config()
+    try:
+        data = create_escalation_queue_file(cfg.vault_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return EscalationResponse(
+        path=data["path"],
+        exists=data["exists"],
+        lastModified=data["lastModified"],
+        preview=data["preview"],
+        parseMode=data["parseMode"],
+        items=[EscalationItem(**it) for it in data["items"]],
+    )
+
+
+@app.post("/api/vault/escalations", response_model=EscalationResponse)
+def vault_escalations_add(req: CreateEscalationItemRequest) -> EscalationResponse:
+    """
+    POST /api/vault/escalations
+
+    Append one escalation item to ops/escalation-queue.md.
+
+    Safety:
+    - File must already exist. Call /create first if needed.
+    - task is required.
+    - target must be claude-code | opencode | manual.
+    - priority must be high | medium | low or omitted.
+    - Pipe chars and newlines rejected in all fields.
+    - Backup created before every write.
+    - Only appends; never modifies existing rows.
+    - No shell commands. No Claude Code/OpenCode launched. No repo files modified.
+    """
+    cfg = get_config()
+    try:
+        data = add_escalation_item(
+            vault_path=cfg.vault_path,
+            task=req.task,
+            target=req.target,
+            priority=req.priority,
+            source=req.source,
+            path=req.path,
+            notes=req.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info("Escalation item added: task=%r  target=%r", req.task, req.target)
+    return EscalationResponse(
+        path=data["path"],
+        exists=data["exists"],
+        lastModified=data["lastModified"],
+        preview=data["preview"],
+        parseMode=data["parseMode"],
+        items=[EscalationItem(**it) for it in data["items"]],
+    )
+
+
+@app.patch(
+    "/api/vault/escalations/{item_id}/status",
+    response_model=UpdateEscalationStatusResponse,
+)
+def vault_escalations_update_status(
+    item_id: str,
+    req: UpdateEscalationStatusRequest,
+) -> UpdateEscalationStatusResponse:
+    """
+    PATCH /api/vault/escalations/{item_id}/status
+
+    Update a single escalation item's status.
+
+    Allowed statuses: new | ready | in-progress | done | blocked | skipped
+
+    Safety:
+    - Only writes to ops/escalation-queue.md.
+    - Re-reads and re-parses the file on every call (no stale state).
+    - Verifies task title before writing (conflict detection).
+    - Creates a backup under backend/data/backups/escalations/ before writing.
+    - Returns 400 on any validation or conflict error; file is not modified.
+    - No other vault files are touched.
+    - No shell commands. No Claude Code/OpenCode launched. No repo files modified.
+    """
+    cfg = get_config()
+    try:
+        result = update_escalation_status(cfg.vault_path, item_id, req.status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Escalation status patched: id=%s  status=%r  path=%s",
+        item_id, req.status, result["path"],
+    )
+    return UpdateEscalationStatusResponse(
+        ok=result["ok"],
+        item=EscalationItem(**result["item"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
+    )
+
+
+@app.patch(
+    "/api/vault/escalations/{item_id}",
+    response_model=UpdateEscalationItemResponse,
+)
+def vault_escalations_update_item(
+    item_id: str,
+    req: UpdateEscalationItemRequest,
+) -> UpdateEscalationItemResponse:
+    """
+    PATCH /api/vault/escalations/{item_id}
+
+    Update the editable fields of an existing escalation item.
+    Editable: task, target, priority, source, path, notes.
+    Preserved: status, created, and any unknown columns.
+
+    Safety:
+    - Only writes to ops/escalation-queue.md.
+    - Re-reads and re-parses file on every call (no stale state).
+    - Verifies task title before writing (conflict detection).
+    - Backup created before write; aborted if backup fails.
+    - Returns 400 on any validation or conflict error; file not modified.
+    - No shell commands. No Claude Code/OpenCode launched. No repo files modified.
+    """
+    cfg = get_config()
+    try:
+        result = update_escalation_item(
+            vault_path=cfg.vault_path,
+            item_id=item_id,
+            task=req.task,
+            target=req.target,
+            priority=req.priority,
+            source=req.source,
+            path=req.path,
+            notes=req.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Escalation item patched: id=%s  task=%r  target=%r  path=%s",
+        item_id, req.task, req.target, result["path"],
+    )
+    return UpdateEscalationItemResponse(
+        ok=result["ok"],
+        item=EscalationItem(**result["item"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
+    )
 
 
 # ── SSE helper ────────────────────────────────────────────────────────────────

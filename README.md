@@ -113,8 +113,8 @@ Brain UI can read metadata from your configured Obsidian vault to populate the W
 | Courses | `wiki/courses/*.md`, `raw/courses/*/` |
 | Hackathons | `wiki/projects/hackathons/*.md`, `raw/hackathons/*/` |
 | Business | `wiki/business/*.md`, `raw/business/*/` |
-| Resume Pipeline | `ops/resume-pipeline.md` (preview only) |
-| Backfill | `ops/backfill.md` (preview only) |
+| Resume Pipeline | `ops/resume-pipeline.md` (structured table) |
+| Backfill | `ops/backfill.md` or `ops/backfill-last-year.md` (structured table) |
 
 **Safety:**
 - Read-only. No vault files are created, modified, moved, or deleted.
@@ -131,6 +131,10 @@ GET /api/vault/courses       — course items from wiki/courses + raw/courses
 GET /api/vault/hackathons    — hackathon items
 GET /api/vault/business      — business entity items
 GET /api/vault/ops/{kind}    — single ops file: resume-pipeline | backfill | tasks
+GET /api/vault/backfill      — structured backfill items from ops/backfill.md (or ops/backfill-last-year.md)
+PATCH /api/vault/backfill/{id}/status — update one backfill item's status (backup-safe)
+GET /api/vault/resume-pipeline — structured resume/application rows from ops/resume-pipeline.md
+PATCH /api/vault/resume-pipeline/{id}/status — update one resume item's status (backup-safe)
 ```
 
 **Merge logic:** `.md` files from `wiki/` and subdirectories from `raw/` with the same lowercase name are merged into a single item. Items with wiki notes show a text preview.
@@ -288,6 +292,86 @@ Both helpers accept Windows backslashes and forward slashes. Only paths returned
 
 ---
 
+## Dashboard real metrics
+
+The Dashboard page calls `GET /api/dashboard/summary` on mount and on manual refresh. This endpoint aggregates counts from all major vault systems in a single backend round-trip.
+
+### Summary endpoint
+
+```
+GET /api/dashboard/summary
+```
+
+**Read-only.** No files are written, no brain commands run, no Ollama chat called, no vault mutations occur.
+
+**Aggregated sections:**
+
+| Section | Source |
+|---|---|
+| `raw.staged` | Count of files in `backend/data/staging/` |
+| `raw.proposed/edited/approved/routed/archived` | Proposal status counts |
+| `tasks.total/todo/inProgress/blocked/done` | Parsed `ops/task-db.md` or `ops/tasks.md` |
+| `calendar.total/approved/pending` | Parsed `ops/calendar-candidates.md` (pending = Approved ≠ Yes) |
+| `entities.projects/courses/hackathons/business` | Wiki + raw folder scanner counts |
+| `backfill.total/new/triaged/inProgress/done/skipped` | Parsed `ops/backfill.md` |
+| `resume.total/new/tailoring/applied/interview/offer/rejected/archived` | Parsed `ops/resume-pipeline.md` |
+| `runtime.brain` | `available` if `brain.cmd` path exists; `unavailable` otherwise |
+| `runtime.agent` | `available` if Ollama is reachable and model is installed; `unavailable` otherwise |
+| `runtime.vaultExists` | `true` if configured vault path is a directory |
+| `errors[]` | Partial-failure log — one entry per subsystem that fails |
+
+**Partial failure handling:** if one subsystem fails, its section is zeroed and an entry is appended to `errors`. Other sections still load. The endpoint never returns a 500.
+
+### Dashboard metric wiring
+
+| Count strip tile | Source |
+|---|---|
+| Approvals | `raw.proposed + raw.edited + calendar.pending` |
+| Raw pending | `raw.staged` |
+| Escalations | Always `0` — not wired |
+| Calendar | `calendar.pending` |
+| Backfill | `backfill.new + backfill.triaged + backfill.inProgress` |
+| Resume | `resume.new + resume.tailoring + resume.applied + resume.interview` |
+
+### Today's plan — deterministic task selection
+
+The Dashboard Today's plan panel shows up to 5 active tasks derived from the vault task file using deterministic priority bucketing. No AI planning or scheduling is involved.
+
+**Selection order:**
+
+1. Blocked tasks
+2. In-progress tasks
+3. Tasks due today or overdue (parsed from the `due` field)
+4. High-priority tasks
+5. Remaining open/todo tasks
+
+**Exclusions:** done, completed, archived, closed tasks are never shown.
+
+**Reason labels:** each item carries a plain-text reason — `Blocked`, `In progress`, `Due today`, `Overdue`, `High priority`, `Open task`.
+
+**Date parsing:** common formats are tried (`YYYY-MM-DD`, `DD-MM-YYYY`, etc.). Parsing failures do not crash the endpoint.
+
+**Failure isolation:** if the task file cannot be parsed, `todayPlan.items` is empty and an error entry is added to `errors[]`. The rest of the dashboard summary still loads.
+
+**No AI planning, no scheduling, no automation.** This is a deterministic read-only view of existing tasks.
+
+### Recent AI work — local conversation history
+
+The Dashboard "Recent AI work" panel loads from `GET /api/conversations` independently of the main dashboard summary. It shows up to 5 conversations sorted by `updatedAt` descending, with title, message count, and a relative timestamp.
+
+- Clicking a row navigates to the Local Agent page (deep-linking to a specific conversation is deferred — AgentPage uses local component state for `convId`).
+- Empty, loading, and failed states are handled independently.
+- **No AI or summarization involved.** Titles are whatever the conversation was saved with; counts and timestamps are raw metadata.
+
+### Still mocked / not wired on Dashboard
+
+| Section | Status |
+|---|---|
+| Escalations count | Always `0` — no escalation queue exists yet |
+| OpenClaw, NemoClaw, Browser, Computer use, MCP in runtime status | Mocked — not wired |
+
+---
+
 ## What is real now vs still mocked
 
 | Feature | Status |
@@ -298,8 +382,13 @@ Both helpers accept Windows backslashes and forward slashes. Only paths returned
 | Dashboard "Sync Raw" / "Export Calendar" | **Real** — calls backend |
 | ⌘K palette brain commands | **Real** — calls backend |
 | Command output panel | **Real** — live output from backend |
+| Dashboard count strip | **Real** — `GET /api/dashboard/summary` |
+| Dashboard pending approvals panel | **Real** — raw proposal + calendar candidate counts |
+| Dashboard entity counts | **Real** — wiki/raw scanner counts |
+| Dashboard runtime: Backend, Brain CLI, Vault, Local model | **Real** — backend-derived status |
 | Runtime status: Backend row | **Real** — reflects actual connection |
-| Runtime status: Brain CLI row | **Real** — reflects backend config |
+| Runtime status: Brain CLI row | **Real** — reflects `brain.cmd` path existence |
+| Runtime status: Vault row | **Real** — reflects vault path existence |
 | Vault path display | **Real** — from backend config (falls back to localStorage) |
 | Raw Inbox — upload / stage files | **Real** — stored in `backend/data/staging/` |
 | Raw Inbox — heuristic proposals | **Real** — deterministic filename + MIME classifier |
@@ -322,12 +411,72 @@ Both helpers accept Windows backslashes and forward slashes. Only paths returned
 | Calendar page — export/open | **Real** — calls allowlisted `brain calendar-export` / `brain calendar-open` manually |
 | Projects / Courses / Hackathons — create | **Real** — calls safe entity-specific `brain new-*` endpoints |
 | Business — create | **Real** — creates safe wiki note, raw folder, and pipeline row |
+| Backfill page — structured table | **Real** — reads `ops/backfill.md`, parses Markdown table |
+| Backfill page — status edit | **Real** — `PATCH /api/vault/backfill/{id}/status`, backup + conflict detection |
+| Backfill page — create starter file | **Real** — `POST /api/vault/backfill/create`, never overwrites existing |
+| Backfill page — add item | **Real** — `POST /api/vault/backfill`, appends row to `ops/backfill.md`, backup before write |
+| Backfill page — closeout prompt | **Real** (frontend only) — generates prompt, copies to clipboard, no agent launched |
+| Resume Pipeline page — structured table | **Real** — reads `ops/resume-pipeline.md`, parses Markdown table |
+| Resume Pipeline page — status edit | **Real** — `PATCH /api/vault/resume-pipeline/{id}/status`, backup + conflict detection |
+| Resume Pipeline page — tailoring prompt | **Real** (frontend only) — generates tailoring prompt, copies to clipboard, no AI called |
+| Dashboard Recent AI work | **Real** — `GET /api/conversations`, up to 5 latest conversations, read-only |
+| Escalation Queue — read | **Real** — `GET /api/vault/escalations`, parses `ops/escalation-queue.md` |
+| Escalation Queue — create file | **Real** — `POST /api/vault/escalations/create`, creates starter if missing |
+| Escalation Queue — add item | **Real** — `POST /api/vault/escalations`, appends row with backup |
+| Escalation Queue — status edit | **Real** — `PATCH /api/vault/escalations/{id}/status`, status cell only with backup |
+| Escalation Queue — copy handoff prompt | **Real** (frontend only) — copies prompt to clipboard, no process launched |
+| Dashboard Escalations count | **Real** — `summary.escalations.active` (new + ready + in-progress + blocked) |
 | OpenClaw | Mocked — not wired |
 | NemoClaw / OpenShell | Mocked — not wired |
 | Browser harness | Mocked — not wired |
 | Computer use | Mocked — not wired |
 | MCP gateway | Mocked — not wired |
-| Approvals / Escalations / AI Consolidation | Mocked — not wired |
+| Approvals / AI Consolidation | Mocked — not wired |
+
+## Escalation Queue
+
+The Escalation Queue is for tasks too complex for the local agent or simple UI workflows.
+
+### Workflow
+
+```text
+capture task → choose target agent → review/copy prompt → run Claude Code/OpenCode manually → update status
+```
+
+### File location
+
+`ops/escalation-queue.md` — a Markdown pipe table with columns: Task, Target, Status, Priority, Source, Path, Notes, Created.
+
+### Statuses
+
+`new` → `ready` → `in-progress` → `done` | `blocked` | `skipped`
+
+Active statuses (counted on Dashboard): `new`, `ready`, `in-progress`, `blocked`.
+
+### Targets
+
+- `claude-code` — for Claude Code CLI handoffs
+- `opencode` — for OpenCode handoffs
+- `manual` — for manual or human escalation
+
+### Handoff prompt
+
+Each item has a "Copy handoff prompt" action that generates a structured prompt containing the task, target, priority, source, path, notes, and safe instructions. The prompt is copied to the clipboard only — **no process is launched**.
+
+Run the prompt manually in Claude Code (`claude`) or OpenCode after copying.
+
+### Backups
+
+A timestamped backup is created under `backend/data/backups/escalations/` before every write. Backups are never overwritten.
+
+### Safety constraints
+
+- Brain UI does not launch Claude Code, OpenCode, or any shell command.
+- The `path` field is metadata only — no repo files are read, modified, or deleted by Brain UI.
+- `POST /api/vault/escalations/create` never overwrites an existing file.
+- `PATCH /api/vault/escalations/{id}/status` modifies only the status cell of a single row.
+- All path operations are validated to stay inside the vault root (traversal rejected).
+- `extra="forbid"` on the create request model rejects unknown fields.
 
 ## Brain command allowlist
 
@@ -710,14 +859,245 @@ backend/
   requirements.txt
 ```
 
+## Structured Resume Pipeline workflow
+
+Resume Pipeline tracks job opportunities, applications, and resume tailoring work without manually editing Markdown for every status change.
+
+Expected flow:
+
+```
+job opportunity / application target
+  → listed in ops/resume-pipeline.md as a Markdown table row
+  → filtered by status/company/priority in the Resume Pipeline page
+  → status updated via the UI (confirmation required, backup created)
+  → "Copy tailoring prompt" generates a ready-to-paste prompt for Claude or ChatGPT
+  → user tailors resume/cover letter manually using the prompt
+  → status updated to applied, interview, offer, etc.
+```
+
+### Supported file
+
+`ops/resume-pipeline.md` only. No fallback.
+
+### Expected table format
+
+```md
+| Target | Company | Role | Status | Priority | Deadline | Link | Notes |
+|---|---|---|---|---|---|---|---|
+| SWE Intern | Acme Corp | Software Engineer Intern | new | high | 2026-09-01 | https://acme.com/careers | Apply via portal |
+```
+
+**Column aliases** (any of these names are recognized):
+
+| Canonical | Aliases |
+|---|---|
+| target | name, title, job |
+| company | org, employer |
+| role | position |
+| status | state, stage |
+| priority | value, importance |
+| deadline | due, date |
+| link | url, source |
+| notes | summary, description |
+
+### Allowed statuses
+
+`new` · `tailoring` · `applied` · `interview` · `offer` · `rejected` · `archived`
+
+### Status update safety
+
+Same backup-before-write pattern as Tasks, Calendar, and Backfill:
+
+1. Re-read file from disk.
+2. Re-parse table.
+3. Conflict check — verify target name still matches the expected row.
+4. Backup — create a timestamped copy under `backend/data/backups/resume/`. Write aborted if backup fails.
+5. Write — replace only the status cell. All other cells preserved.
+
+### Backups
+
+Stored under `backend/data/backups/resume/` with timestamped names, for example:
+
+```
+resume-pipeline_20260608_142233_ab12.md
+```
+
+### Tailoring prompt generation
+
+Each row has a **Tailor** button. This is frontend-only — no backend call, no AI invoked, no browser opened, no application submitted.
+
+The prompt includes:
+- Target, company, role, priority, deadline, link, notes
+- Task list: tailor resume bullets, identify missing keywords, draft cover-letter outline, list prep tasks
+- Safety rule: do not invent experience; ask for resume/JD if missing
+
+### Link handling
+
+If `link` starts with `http://` or `https://`, it renders as an external anchor (`target="_blank" rel="noopener noreferrer"`). Otherwise it renders as muted mono text. Links are never auto-opened.
+
+### Filters
+
+Client-side filters for status, company, priority, and free text search. Filter options derived from the loaded table.
+
+### Endpoints
+
+```
+GET /api/vault/resume-pipeline
+  → { path, exists, lastModified, parseMode, preview, items[] }
+  parseMode: "markdown-table" | "preview-only" | "missing"
+
+PATCH /api/vault/resume-pipeline/{itemId}/status
+  Body: { "status": "new | tailoring | applied | interview | offer | rejected | archived" }
+  → { ok, item, path, updatedAt }
+```
+
+---
+
+## Structured Backfill workflow
+
+Backfill is the workflow for converting old scattered work (repos, projects, hackathons, courses) into structured vault records.
+
+Expected flow:
+
+```
+old repo / old project
+  → listed in ops/backfill.md as a Markdown table row
+  → triaged and filtered by status/value/type in the Backfill page
+  → status updated via the UI (confirmation required, backup created)
+  → "Copy closeout prompt" generates a ready-to-paste prompt for Claude Code or OpenCode
+  → user runs the agent manually in the relevant repo
+  → status updated to done
+```
+
+### Supported files
+
+The Backfill page reads (in priority order):
+
+1. `ops/backfill.md`
+2. `ops/backfill-last-year.md`
+
+If neither file exists, the page shows a missing state with the expected table format.
+
+### Expected table format
+
+```md
+| Item | Type | Status | Value | Path | Agent | Notes |
+|---|---|---|---|---|---|---|
+| JARVIS repo | project | in-progress | high | D:\dev\JARVIS | claude-code | Needs closeout sprint |
+| ECE244 notes | course | new | medium | | opencode | |
+```
+
+**Column aliases** (any of these names are recognized):
+
+| Canonical | Aliases |
+|---|---|
+| item | name, title |
+| type | kind, category |
+| status | state |
+| value | priority, importance |
+| path | repo, folder, link |
+| notes | summary, description |
+| agent | tool |
+
+### Allowed statuses
+
+`new` · `triaged` · `in-progress` · `done` · `skipped`
+
+### Status update safety
+
+Every status edit follows the same pattern as task and calendar editing:
+
+1. Re-read the file from disk (no stale state).
+2. Re-parse the table to locate the exact target row.
+3. Conflict check — verify the item name still matches the expected value at that line. If the file changed, the write is rejected.
+4. Backup — create a timestamped copy under `backend/data/backups/backfill/`. Write is aborted if backup fails.
+5. Write — replace only the status cell. All other cells and content are preserved exactly.
+
+If any step fails, the file is **not modified** and an error is returned to the UI.
+
+### Backups
+
+Backups are stored locally under `backend/data/backups/backfill/` with timestamped names, for example:
+
+```
+backfill_20260608_142233_ab12.md
+```
+
+Backups are never overwritten. There is no restore UI — copy the backup manually over the file if needed.
+
+### Closeout prompt generation
+
+Each backfill row has a **Copy closeout prompt** button. This is frontend-only — no commands are run, no repos are touched.
+
+The prompt includes:
+- Item name, type, path/repo, notes, value/priority
+- Task list: summarize what it was, identify useful artifacts, create/update vault notes, suggest archive actions
+- Safety rules: do not delete anything, ask before destructive actions
+
+If `agent` is `claude-code`, the prompt header says "Claude Code Closeout Prompt".
+If `agent` is `opencode`, the prompt header says "OpenCode Closeout Prompt".
+Otherwise it uses "Backfill Closeout Prompt".
+
+**Nothing is launched automatically.** The user pastes the prompt into Claude Code or OpenCode manually.
+
+### Filters
+
+The Backfill page includes client-side filters for status, type, value, agent, and a free text search. Filter options are derived from the loaded table (only values that exist in the file appear).
+
+### Supported files
+
+- **Read**: tries `ops/backfill.md` first, then `ops/backfill-last-year.md` as fallback.
+- **Write** (create/append): only ever writes `ops/backfill.md`. `ops/backfill-last-year.md` is permanently read-only.
+- **Backups**: created before every write under `backend/data/backups/backfill/`.
+
+### Adding new items
+
+New items are added from the Backfill page using the **New Backfill Item** button. On success the list reloads and the new row is visible immediately.
+
+If `ops/backfill.md` does not exist (but the fallback file may), a **Create Backfill file** / **Create ops/backfill.md** button appears. Clicking it creates the starter file and enables adding items.
+
+No repo scanning, agent launching, or shell execution occurs at any point.
+
+### Endpoints
+
+```
+GET /api/vault/backfill
+  → { path, exists, lastModified, parseMode, preview, items[] }
+  parseMode: "markdown-table" | "preview-only" | "missing"
+
+POST /api/vault/backfill/create
+  → same shape as GET; creates ops/backfill.md if missing, no-op if it exists
+
+POST /api/vault/backfill
+  Body: { item, type?, status?, value?, path?, agent?, notes? }
+  → { ok, item, path, updatedAt }
+  Appends row to ops/backfill.md. Backup created before write.
+  Rejects if only fallback file exists, if file is malformed, or if enums are invalid.
+
+PATCH /api/vault/backfill/{itemId}/status
+  Body: { "status": "new | triaged | in-progress | done | skipped" }
+  → { ok, item, path, updatedAt }
+```
+
+Errors return HTTP 400 with a descriptive message. File is never modified on error.
+
+---
+
 ## What's NOT implemented yet
 
 - OpenClaw / NemoClaw integrations
 - Real research runs
 - Google Calendar API writes or automatic calendar imports
 - Adding or deleting calendar candidates from the UI
+- Editing arbitrary backfill fields (type, value, path, notes) after creation
+- Deleting backfill rows from the UI
+- Adding or deleting resume pipeline rows from the UI
+- Editing resume pipeline fields other than status from the UI
+- Automatic job application or browser automation
+- AI resume rewriting (tailoring prompt generation only — no AI called)
 - Arbitrary vault Markdown editing
 - Gmail / MCP
 - Browser harness / computer use
 - Archive restore (manual only — files are in `backend/data/archive/`)
 - Bulk archive
+- Automatic closeout (Claude/OpenCode are never launched by the app)

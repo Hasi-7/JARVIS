@@ -162,13 +162,13 @@ export function BusinessPage() {
 
       <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
         <Icon name="shield" size={12} />
-        New Business Area creates a wiki note, raw folder, and business pipeline row. No files are overwritten.
+        New Business Area scaffolds a wiki note and raw folder. No brain command is used — no files are overwritten.
       </div>
 
       {createOpen && (
         <EntityCreateModal
           title="New Business Area"
-          safetyNote="Creates a wiki note, raw folder, and business pipeline row. No files are overwritten."
+          safetyNote="Scaffolds a wiki note and raw folder using a safe local scaffold. No brain command is used. No files are overwritten."
           fields={[
             { key: 'name', label: 'Name', placeholder: 'Business area name', required: true },
             { key: 'description', label: 'Description', placeholder: 'Optional summary', multiline: true },

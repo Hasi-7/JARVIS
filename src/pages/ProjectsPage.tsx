@@ -112,7 +112,6 @@ export function ProjectsPage() {
     try {
       const result = await api.createProject({
         name: values.name.trim(),
-        repoPath: values.repoPath.trim() || null,
       });
       setCreateResult(result);
       if (result.ok) load();
@@ -197,10 +196,9 @@ export function ProjectsPage() {
       {createOpen && (
         <EntityCreateModal
           title="New Project"
-          safetyNote="Runs the safe brain command for this entity type."
+          safetyNote="Creates the project using `brain new-project <name>`. Repo linking can be added later."
           fields={[
             { key: 'name', label: 'Name', placeholder: 'Project name', required: true },
-            { key: 'repoPath', label: 'Repo path', placeholder: 'Optional local repo path' },
           ]}
           loading={createLoading}
           error={createError}

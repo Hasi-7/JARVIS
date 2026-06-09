@@ -693,6 +693,547 @@ def _line_ending(line: str) -> str:
     return ''
 
 
+# ── backfill parsing + write ───────────────────────────────────────────────────
+
+_BACKFILL_CANDIDATES = ("ops/backfill.md", "ops/backfill-last-year.md")
+_BACKFILL_PRIMARY    = "ops/backfill.md"
+_BACKFILL_BACKUP_DIR = Path(__file__).parent.parent / "data" / "backups" / "backfill"
+_PARSE_CHARS_BF      = 50_000
+
+ALLOWED_BACKFILL_STATUSES: frozenset = frozenset({
+    "new", "triaged", "in-progress", "done", "skipped"
+})
+ALLOWED_BACKFILL_TYPES: frozenset = frozenset({
+    "project", "repo", "hackathon", "course", "business", "other"
+})
+ALLOWED_BACKFILL_VALUES: frozenset = frozenset({"high", "medium", "low"})
+ALLOWED_BACKFILL_AGENTS: frozenset = frozenset({"claude-code", "opencode", "manual"})
+
+_BACKFILL_STARTER_CONTENT = (
+    "# Backfill\n\n"
+    "| Item | Type | Status | Value | Path | Agent | Notes |\n"
+    "|---|---|---|---|---|---|---|\n"
+)
+
+_BACKFILL_COL_ALIASES: dict = {
+    # item
+    "item": "item", "name": "item", "title": "item",
+    # type
+    "type": "type", "kind": "type", "category": "type",
+    # status
+    "status": "status", "state": "status",
+    # value
+    "value": "value", "priority": "value", "importance": "value",
+    # path
+    "path": "path", "repo": "path", "folder": "path", "link": "path",
+    # notes
+    "notes": "notes", "summary": "notes", "description": "notes",
+    # agent
+    "agent": "agent", "tool": "agent",
+}
+
+_PUBLIC_BACKFILL_FIELDS = frozenset({
+    "id", "item", "type", "status", "value", "path", "notes", "agent", "raw"
+})
+
+
+def _norm_bf_col(name: str) -> str:
+    return _BACKFILL_COL_ALIASES.get(name.strip().lower(), name.strip().lower())
+
+
+def _parse_table_backfill(lines: list) -> list:
+    """
+    Parse a Markdown pipe table for backfill items.
+    Returns list of item dicts including internal _lineNum, _statusColIdx,
+    _itemColIdx, and _colMap. Internal _* keys are stripped before the public API returns.
+    """
+    header_idx = None
+    for i in range(len(lines) - 1):
+        if _ROW_RE.match(lines[i]) and _SEP_RE.match(lines[i + 1]):
+            header_idx = i
+            break
+    if header_idx is None:
+        return []
+
+    raw_cols       = [c.strip() for c in lines[header_idx].strip().strip("|").split("|")]
+    col_map        = [_norm_bf_col(c) for c in raw_cols]
+    status_col_idx = col_map.index("status") if "status" in col_map else -1
+    item_col_idx   = col_map.index("item")   if "item"   in col_map else -1
+    items: list    = []
+
+    for row_idx, line in enumerate(lines[header_idx + 2:]):
+        if not _ROW_RE.match(line):
+            break
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        while len(cells) < len(col_map):
+            cells.append("")
+
+        bfi: dict = {
+            "id":     f"b{len(items) + 1}",
+            "item":   "",
+            "type":   None,
+            "status": "new",
+            "value":  None,
+            "path":   None,
+            "notes":  None,
+            "agent":  None,
+            "raw":    line.strip(),
+            "_lineNum":      header_idx + 2 + row_idx,
+            "_statusColIdx": status_col_idx,
+            "_itemColIdx":   item_col_idx,
+            "_colMap":       list(col_map),
+        }
+
+        for i, col in enumerate(col_map):
+            val = cells[i] if i < len(cells) else ""
+            if col == "item":
+                bfi["item"] = val
+            elif col in ("type", "status", "value", "path", "notes", "agent"):
+                bfi[col] = val or None
+
+        # Fallback: use first non-empty cell as item name.
+        if not bfi["item"]:
+            for cell in cells:
+                if cell:
+                    bfi["item"] = cell
+                    break
+
+        if bfi["item"]:
+            items.append(bfi)
+
+    return items
+
+
+def _strip_bf_internal(items: list) -> list:
+    """Return items with only public fields; internal _* keys removed."""
+    return [{k: v for k, v in it.items() if k in _PUBLIC_BACKFILL_FIELDS} for it in items]
+
+
+def get_backfill(vault_path: str) -> dict:
+    """
+    Read and parse the vault backfill file.
+
+    Tries ops/backfill.md first, then ops/backfill-last-year.md.
+    Parses Markdown tables; falls back to preview-only or missing.
+
+    Safety: read-only, path validated, preview capped, no writes.
+    Internal location metadata is stripped before returning.
+    """
+    root: Path = Path(vault_path)
+    bf_path: Optional[Path] = None
+    rel_path = _BACKFILL_CANDIDATES[0]
+
+    for candidate in _BACKFILL_CANDIDATES:
+        p = _safe_subpath(root, candidate)
+        if p is not None and p.is_file():
+            bf_path  = p
+            rel_path = candidate
+            break
+
+    if bf_path is None:
+        return {
+            "path": rel_path, "exists": False,
+            "lastModified": None, "preview": None,
+            "items": [], "parseMode": "missing",
+        }
+
+    content = _preview(bf_path, max_chars=_PARSE_CHARS_BF)
+    preview = content[:_PREVIEW_CHARS] if content else None
+
+    if not content:
+        return {
+            "path": rel_path, "exists": True,
+            "lastModified": _last_modified_iso(bf_path),
+            "preview": None, "items": [], "parseMode": "preview-only",
+        }
+
+    lines = content[:_PARSE_CHARS_BF].splitlines()
+    items = _parse_table_backfill(lines)
+
+    return {
+        "path":         rel_path,
+        "exists":       True,
+        "lastModified": _last_modified_iso(bf_path),
+        "preview":      preview,
+        "items":        _strip_bf_internal(items),
+        "parseMode":    "markdown-table" if items else "preview-only",
+    }
+
+
+def _backup_backfill_file(bf_path: Path) -> Path:
+    """
+    Create a timestamped backup under backend/data/backups/backfill/.
+    Never overwrites an existing backup. Raises on I/O failure.
+    """
+    _BACKFILL_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stem     = bf_path.stem
+    ts       = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    suffix   = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    bak_name = f"{stem}_{ts}_{suffix}.md"
+    bak_path = _BACKFILL_BACKUP_DIR / bak_name
+    if bak_path.exists():
+        suffix   = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        bak_path = _BACKFILL_BACKUP_DIR / f"{stem}_{ts}_{suffix}.md"
+    shutil.copy2(bf_path, bak_path)
+    logger.info("Backfill backup created: %s", bak_path)
+    return bak_path
+
+
+def update_backfill_status(vault_path: str, item_id: str, new_status: str) -> dict:
+    """
+    Update a single backfill item's status in the vault backfill file.
+
+    Safety contract:
+    - Only writes to ops/backfill.md or ops/backfill-last-year.md.
+    - Only ALLOWED_BACKFILL_STATUSES accepted.
+    - Item ID must match b<positive-integer> pattern.
+    - File re-read and re-parsed on every call (no stale state).
+    - Target row verified by item name before write (conflict detection).
+    - Backup created before every write; aborted if backup fails.
+    - Only the status cell is modified; all other cells preserved.
+    - No other vault files are touched.
+
+    Raises ValueError with a descriptive message on any safety check failure.
+    Returns {"ok": True, "item": {...}, "path": str, "updatedAt": str}.
+    """
+    # ── validate inputs ───────────────────────────────────────────────────────
+    if new_status not in ALLOWED_BACKFILL_STATUSES:
+        raise ValueError(
+            f"Invalid status {new_status!r}. "
+            f"Allowed: {sorted(ALLOWED_BACKFILL_STATUSES)}"
+        )
+    if not (item_id.startswith("b") and item_id[1:].isdigit() and len(item_id) > 1):
+        raise ValueError(
+            f"Invalid item id {item_id!r}. Expected format: b<number> (e.g. b1)."
+        )
+    item_index = int(item_id[1:]) - 1
+    if item_index < 0:
+        raise ValueError(f"Invalid item id {item_id!r}.")
+
+    # ── locate backfill file ──────────────────────────────────────────────────
+    root: Path = Path(vault_path)
+    bf_path: Optional[Path] = None
+    rel_path = _BACKFILL_CANDIDATES[0]
+    for candidate in _BACKFILL_CANDIDATES:
+        p = _safe_subpath(root, candidate)
+        if p is not None and p.is_file():
+            bf_path  = p
+            rel_path = candidate
+            break
+    if bf_path is None:
+        raise ValueError("No backfill file found in vault ops/.")
+
+    # ── read full file ────────────────────────────────────────────────────────
+    try:
+        full_content = bf_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        raise ValueError(f"Could not read backfill file: {exc}") from exc
+
+    # ── parse ─────────────────────────────────────────────────────────────────
+    lines = full_content[:_PARSE_CHARS_BF].splitlines()
+    items = _parse_table_backfill(lines)
+    if not items:
+        raise ValueError(
+            "Backfill file format is preview-only — "
+            "status editing requires a Markdown table."
+        )
+    if item_index >= len(items):
+        raise ValueError(
+            f"Item '{item_id}' not found. File has {len(items)} item(s). "
+            "Refresh and try again."
+        )
+
+    item           = items[item_index]
+    status_col_idx = item["_statusColIdx"]
+    item_col_idx   = item["_itemColIdx"]
+    col_map        = item["_colMap"]
+
+    if status_col_idx < 0:
+        raise ValueError("No status column found in the backfill table.")
+
+    # ── locate and verify the line ────────────────────────────────────────────
+    all_lines = full_content.splitlines(keepends=True)
+    line_num: int = item["_lineNum"]
+    if line_num >= len(all_lines):
+        raise ValueError(
+            f"Item line {line_num} not found (file has {len(all_lines)} lines). "
+            "File may have changed — refresh and try again."
+        )
+
+    orig_line = all_lines[line_num]
+    if not _ROW_RE.match(orig_line.rstrip('\r\n')):
+        raise ValueError(
+            f"Line {line_num} no longer looks like a table row. "
+            "File may have changed — refresh and try again."
+        )
+
+    cells = [c.strip() for c in orig_line.strip().rstrip('\r\n').strip('|').split('|')]
+    if status_col_idx >= len(cells):
+        raise ValueError(
+            f"Status column {status_col_idx} out of range "
+            f"(row has {len(cells)} cells). File may have changed."
+        )
+
+    # Conflict detection: verify item name still matches.
+    if item_col_idx >= 0 and item_col_idx < len(cells):
+        if cells[item_col_idx] != item["item"]:
+            raise ValueError(
+                "Item name mismatch — file has changed since last load. "
+                "Refresh and try again."
+            )
+
+    # ── update status cell only ───────────────────────────────────────────────
+    cells[status_col_idx] = new_status
+    while len(cells) < len(col_map):
+        cells.append("")
+    new_row  = '| ' + ' | '.join(cells) + ' |'
+    line_end = _line_ending(orig_line)
+    new_line = new_row + line_end
+
+    # ── backup then write ─────────────────────────────────────────────────────
+    try:
+        _backup_backfill_file(bf_path)
+    except Exception as exc:
+        raise ValueError(f"Backup failed — write aborted: {exc}") from exc
+
+    all_lines[line_num] = new_line
+    try:
+        bf_path.write_text(''.join(all_lines), encoding="utf-8")
+    except Exception as exc:
+        raise ValueError(f"Could not write backfill file: {exc}") from exc
+
+    logger.info(
+        "Backfill status updated: id=%s  item=%r  %r→%r  file=%s",
+        item_id, item["item"], item.get("status"), new_status, rel_path,
+    )
+
+    updated_item = {
+        "id":     item_id,
+        "item":   item["item"],
+        "type":   item["type"],
+        "status": new_status,
+        "value":  item["value"],
+        "path":   item["path"],
+        "notes":  item["notes"],
+        "agent":  item["agent"],
+        "raw":    new_row,
+    }
+    return {
+        "ok":        True,
+        "item":      updated_item,
+        "path":      rel_path,
+        "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+# ── backfill creation helpers ─────────────────────────────────────────────────
+
+def _has_bf_table_header(lines: list) -> bool:
+    for i in range(len(lines) - 1):
+        if _ROW_RE.match(lines[i]) and _SEP_RE.match(lines[i + 1]):
+            return True
+    return False
+
+
+def _read_bf_col_map(lines: list) -> list:
+    """Return the normalized column order from the backfill Markdown table header."""
+    for i in range(len(lines) - 1):
+        if _ROW_RE.match(lines[i]) and _SEP_RE.match(lines[i + 1]):
+            raw_cols = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+            return [_norm_bf_col(c) for c in raw_cols]
+    return ["item", "type", "status", "value", "path", "agent", "notes"]
+
+
+def create_backfill_file(vault_path: str) -> dict:
+    """
+    Create ops/backfill.md with a starter Markdown table if it is missing.
+
+    Does not overwrite an existing file. Never touches ops/backfill-last-year.md.
+
+    Safety contract:
+    - Only writes to ops/backfill.md.
+    - Never overwrites an existing file.
+    - Creates ops/ directory only if needed.
+    - No shell commands. No Claude Code/OpenCode launched. No repo files modified.
+
+    Returns the same shape as get_backfill().
+    Raises ValueError on any I/O failure.
+    """
+    root     = Path(vault_path)
+    bf_path  = _safe_subpath(root, _BACKFILL_PRIMARY)
+    if bf_path is None:
+        raise ValueError("Invalid backfill file path.")
+
+    if bf_path.exists():
+        return get_backfill(vault_path)
+
+    ops_dir = _safe_subpath(root, "ops")
+    if ops_dir is None:
+        raise ValueError("Invalid vault ops path.")
+
+    try:
+        ops_dir.mkdir(parents=True, exist_ok=True)
+        bf_path.write_text(_BACKFILL_STARTER_CONTENT, encoding="utf-8")
+    except Exception as exc:
+        raise ValueError(f"Could not create backfill file: {exc}") from exc
+
+    logger.info("Backfill starter file created: %s", bf_path)
+    return get_backfill(vault_path)
+
+
+def create_backfill_item(
+    vault_path: str,
+    item:       str,
+    item_type:  Optional[str] = None,
+    status:     Optional[str] = None,
+    value:      Optional[str] = None,
+    path:       Optional[str] = None,
+    agent:      Optional[str] = None,
+    notes:      Optional[str] = None,
+) -> dict:
+    """
+    Append one backfill item row to ops/backfill.md.
+
+    Safety contract:
+    - Only writes to ops/backfill.md (never to ops/backfill-last-year.md).
+    - File must already exist and contain a Markdown table header.
+    - item must be non-empty.
+    - Rejects raw newlines in all fields.
+    - Sanitizes pipe characters in all table cells.
+    - status defaults to 'new'; item_type defaults to 'other'.
+    - Enum fields validated against allowlists.
+    - Backup created before writing; aborted if backup fails.
+    - Only appends; never rewrites existing rows.
+    - No shell commands. No Claude Code/OpenCode launched. No repo files modified.
+
+    Raises ValueError on any validation or I/O failure.
+    Returns {"ok": True, "item": {...}, "path": str, "updatedAt": str}.
+    """
+    # ── validate inputs ───────────────────────────────────────────────────────
+    item = (item or "").strip()
+    if not item:
+        raise ValueError("item is required and cannot be empty.")
+
+    for field_name, field_val in (
+        ("item", item), ("path", path), ("notes", notes),
+    ):
+        if field_val and ("\n" in str(field_val) or "\r" in str(field_val)):
+            raise ValueError(f"Field '{field_name}' must not contain newlines.")
+
+    status = (status or "new").strip().lower()
+    if status not in ALLOWED_BACKFILL_STATUSES:
+        raise ValueError(
+            f"Invalid status {status!r}. Allowed: {sorted(ALLOWED_BACKFILL_STATUSES)}"
+        )
+
+    item_type = (item_type or "other").strip().lower()
+    if item_type not in ALLOWED_BACKFILL_TYPES:
+        raise ValueError(
+            f"Invalid type {item_type!r}. Allowed: {sorted(ALLOWED_BACKFILL_TYPES)}"
+        )
+
+    if value is not None:
+        value = (value or "").strip().lower()
+        if value and value not in ALLOWED_BACKFILL_VALUES:
+            raise ValueError(
+                f"Invalid value {value!r}. Allowed: {sorted(ALLOWED_BACKFILL_VALUES)}"
+            )
+        if not value:
+            value = None
+
+    if agent is not None:
+        agent = (agent or "").strip().lower()
+        if agent and agent not in ALLOWED_BACKFILL_AGENTS:
+            raise ValueError(
+                f"Invalid agent {agent!r}. Allowed: {sorted(ALLOWED_BACKFILL_AGENTS)}"
+            )
+        if not agent:
+            agent = None
+
+    # ── locate file — only ops/backfill.md ───────────────────────────────────
+    root_path: Path = Path(vault_path)
+    primary   = _safe_subpath(root_path, _BACKFILL_PRIMARY)
+    if primary is None:
+        raise ValueError("Invalid backfill file path.")
+
+    if not primary.is_file():
+        fallback = _safe_subpath(root_path, _BACKFILL_CANDIDATES[1])
+        if fallback is not None and fallback.is_file():
+            raise ValueError(
+                "Create ops/backfill.md before adding new backfill items."
+            )
+        raise ValueError("Backfill file does not exist. Create it first.")
+
+    # ── read + parse ──────────────────────────────────────────────────────────
+    try:
+        full_content = primary.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        raise ValueError(f"Could not read backfill file: {exc}") from exc
+
+    lines = full_content[:_PARSE_CHARS_BF].splitlines()
+    if not _has_bf_table_header(lines):
+        raise ValueError(
+            "Backfill file does not contain a Markdown table — cannot append. "
+            "The file may be malformed."
+        )
+
+    existing = _parse_table_backfill(lines)
+    col_map  = _read_bf_col_map(lines)
+    new_id   = f"b{len(existing) + 1}"
+
+    # ── build new row ─────────────────────────────────────────────────────────
+    # _sanitize_table_cell is defined in the task creation helpers section below.
+    cell_values: dict = {
+        "item":   _sanitize_table_cell(item),
+        "type":   _sanitize_table_cell(item_type),
+        "status": _sanitize_table_cell(status),
+        "value":  _sanitize_table_cell(value  or ""),
+        "path":   _sanitize_table_cell(path   or ""),
+        "agent":  _sanitize_table_cell(agent  or ""),
+        "notes":  _sanitize_table_cell(notes  or ""),
+    }
+    cells   = [cell_values.get(col, "") for col in col_map]
+    new_row = '| ' + ' | '.join(cells) + ' |'
+
+    # ── backup then append ────────────────────────────────────────────────────
+    try:
+        _backup_backfill_file(primary)
+    except Exception as exc:
+        raise ValueError(f"Backup failed — write aborted: {exc}") from exc
+
+    append_content = full_content
+    if append_content and not append_content.endswith('\n'):
+        append_content += '\n'
+
+    try:
+        primary.write_text(append_content + new_row + '\n', encoding="utf-8")
+    except Exception as exc:
+        raise ValueError(f"Could not write backfill file: {exc}") from exc
+
+    logger.info(
+        "Backfill item appended: id=%s  item=%r  type=%r  status=%r",
+        new_id, item, item_type, status,
+    )
+
+    new_item = {
+        "id":     new_id,
+        "item":   item,
+        "type":   item_type,
+        "status": status,
+        "value":  value,
+        "path":   path,
+        "notes":  notes,
+        "agent":  agent,
+        "raw":    new_row,
+    }
+    return {
+        "ok":        True,
+        "item":      new_item,
+        "path":      _BACKFILL_PRIMARY,
+        "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
 # ── task creation helpers ─────────────────────────────────────────────────────
 
 def _sanitize_table_cell(value: str) -> str:
@@ -931,5 +1472,316 @@ def create_task(
         "ok":        True,
         "task":      new_task,
         "path":      rel_path,
+        "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+# ── resume pipeline parsing + write ───────────────────────────────────────────
+
+_RESUME_FILE      = "ops/resume-pipeline.md"
+_RESUME_BACKUP_DIR = Path(__file__).parent.parent / "data" / "backups" / "resume"
+_PARSE_CHARS_RP   = 50_000
+
+ALLOWED_RESUME_STATUSES: frozenset = frozenset({
+    "new", "tailoring", "applied", "interview", "offer", "rejected", "archived"
+})
+
+_RESUME_COL_ALIASES: dict = {
+    # target
+    "target": "target", "name": "target", "title": "target", "job": "target",
+    # company
+    "company": "company", "org": "company", "employer": "company",
+    # role
+    "role": "role", "position": "role",
+    # status
+    "status": "status", "state": "status", "stage": "status",
+    # priority
+    "priority": "priority", "value": "priority", "importance": "priority",
+    # deadline
+    "deadline": "deadline", "due": "deadline", "date": "deadline",
+    # link
+    "link": "link", "url": "link", "source": "link",
+    # notes
+    "notes": "notes", "summary": "notes", "description": "notes",
+}
+
+_PUBLIC_RESUME_FIELDS = frozenset({
+    "id", "target", "company", "role", "status", "priority",
+    "deadline", "link", "notes", "raw"
+})
+
+
+def _norm_rp_col(name: str) -> str:
+    return _RESUME_COL_ALIASES.get(name.strip().lower(), name.strip().lower())
+
+
+def _parse_table_resume(lines: list) -> list:
+    """
+    Parse a Markdown pipe table for resume-pipeline items.
+    Returns list of item dicts including internal _lineNum, _statusColIdx,
+    _targetColIdx, and _colMap. Internal _* keys are stripped before the public
+    API returns.
+    """
+    header_idx = None
+    for i in range(len(lines) - 1):
+        if _ROW_RE.match(lines[i]) and _SEP_RE.match(lines[i + 1]):
+            header_idx = i
+            break
+    if header_idx is None:
+        return []
+
+    raw_cols        = [c.strip() for c in lines[header_idx].strip().strip("|").split("|")]
+    col_map         = [_norm_rp_col(c) for c in raw_cols]
+    status_col_idx  = col_map.index("status") if "status" in col_map else -1
+    target_col_idx  = col_map.index("target") if "target" in col_map else -1
+    items: list     = []
+
+    for row_idx, line in enumerate(lines[header_idx + 2:]):
+        if not _ROW_RE.match(line):
+            break
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        while len(cells) < len(col_map):
+            cells.append("")
+
+        rpi: dict = {
+            "id":       f"r{len(items) + 1}",
+            "target":   "",
+            "company":  None,
+            "role":     None,
+            "status":   "new",
+            "priority": None,
+            "deadline": None,
+            "link":     None,
+            "notes":    None,
+            "raw":      line.strip(),
+            "_lineNum":       header_idx + 2 + row_idx,
+            "_statusColIdx":  status_col_idx,
+            "_targetColIdx":  target_col_idx,
+            "_colMap":        list(col_map),
+        }
+
+        for i, col in enumerate(col_map):
+            val = cells[i] if i < len(cells) else ""
+            if col == "target":
+                rpi["target"] = val
+            elif col in ("company", "role", "status", "priority", "deadline", "link", "notes"):
+                rpi[col] = val or None
+
+        # Fallback: use first non-empty cell as target name.
+        if not rpi["target"]:
+            for cell in cells:
+                if cell:
+                    rpi["target"] = cell
+                    break
+
+        if rpi["target"]:
+            items.append(rpi)
+
+    return items
+
+
+def _strip_rp_internal(items: list) -> list:
+    """Return items with only public fields; internal _* keys removed."""
+    return [{k: v for k, v in it.items() if k in _PUBLIC_RESUME_FIELDS} for it in items]
+
+
+def get_resume_pipeline(vault_path: str) -> dict:
+    """
+    Read and parse ops/resume-pipeline.md from the vault.
+
+    Parses Markdown tables; falls back to preview-only or missing.
+
+    Safety: read-only, path validated, preview capped, no writes.
+    Internal location metadata is stripped before returning.
+    """
+    root: Path = Path(vault_path)
+    rp_path: Optional[Path] = _safe_subpath(root, _RESUME_FILE)
+
+    if rp_path is None or not rp_path.is_file():
+        return {
+            "path": _RESUME_FILE, "exists": False,
+            "lastModified": None, "preview": None,
+            "items": [], "parseMode": "missing",
+        }
+
+    content = _preview(rp_path, max_chars=_PARSE_CHARS_RP)
+    preview = content[:_PREVIEW_CHARS] if content else None
+
+    if not content:
+        return {
+            "path": _RESUME_FILE, "exists": True,
+            "lastModified": _last_modified_iso(rp_path),
+            "preview": None, "items": [], "parseMode": "preview-only",
+        }
+
+    lines = content[:_PARSE_CHARS_RP].splitlines()
+    items = _parse_table_resume(lines)
+
+    return {
+        "path":         _RESUME_FILE,
+        "exists":       True,
+        "lastModified": _last_modified_iso(rp_path),
+        "preview":      preview,
+        "items":        _strip_rp_internal(items),
+        "parseMode":    "markdown-table" if items else "preview-only",
+    }
+
+
+def _backup_resume_file(rp_path: Path) -> Path:
+    """
+    Create a timestamped backup under backend/data/backups/resume/.
+    Never overwrites an existing backup. Raises on I/O failure.
+    """
+    _RESUME_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stem     = rp_path.stem
+    ts       = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    suffix   = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    bak_name = f"{stem}_{ts}_{suffix}.md"
+    bak_path = _RESUME_BACKUP_DIR / bak_name
+    if bak_path.exists():
+        suffix   = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        bak_path = _RESUME_BACKUP_DIR / f"{stem}_{ts}_{suffix}.md"
+    shutil.copy2(rp_path, bak_path)
+    logger.info("Resume pipeline backup created: %s", bak_path)
+    return bak_path
+
+
+def update_resume_pipeline_status(vault_path: str, item_id: str, new_status: str) -> dict:
+    """
+    Update a single resume-pipeline item's status.
+
+    Safety contract:
+    - Only writes to ops/resume-pipeline.md.
+    - Only ALLOWED_RESUME_STATUSES accepted.
+    - Item ID must match r<positive-integer> pattern.
+    - File re-read and re-parsed on every call (no stale state).
+    - Target field verified before write (conflict detection).
+    - Backup created before every write; aborted if backup fails.
+    - Only the status cell is modified; all other cells preserved.
+    - No other vault files are touched.
+
+    Raises ValueError with a descriptive message on any safety check failure.
+    Returns {"ok": True, "item": {...}, "path": str, "updatedAt": str}.
+    """
+    # ── validate inputs ───────────────────────────────────────────────────────
+    if new_status not in ALLOWED_RESUME_STATUSES:
+        raise ValueError(
+            f"Invalid status {new_status!r}. "
+            f"Allowed: {sorted(ALLOWED_RESUME_STATUSES)}"
+        )
+    if not (item_id.startswith("r") and item_id[1:].isdigit() and len(item_id) > 1):
+        raise ValueError(
+            f"Invalid item id {item_id!r}. Expected format: r<number> (e.g. r1)."
+        )
+    item_index = int(item_id[1:]) - 1
+    if item_index < 0:
+        raise ValueError(f"Invalid item id {item_id!r}.")
+
+    # ── locate file ───────────────────────────────────────────────────────────
+    root: Path = Path(vault_path)
+    rp_path: Optional[Path] = _safe_subpath(root, _RESUME_FILE)
+    if rp_path is None or not rp_path.is_file():
+        raise ValueError("ops/resume-pipeline.md not found in vault.")
+
+    # ── read full file ────────────────────────────────────────────────────────
+    try:
+        full_content = rp_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        raise ValueError(f"Could not read resume-pipeline file: {exc}") from exc
+
+    # ── parse ─────────────────────────────────────────────────────────────────
+    lines = full_content[:_PARSE_CHARS_RP].splitlines()
+    items = _parse_table_resume(lines)
+    if not items:
+        raise ValueError(
+            "Resume pipeline file format is preview-only — "
+            "status editing requires a Markdown table."
+        )
+    if item_index >= len(items):
+        raise ValueError(
+            f"Item '{item_id}' not found. File has {len(items)} item(s). "
+            "Refresh and try again."
+        )
+
+    item           = items[item_index]
+    status_col_idx = item["_statusColIdx"]
+    target_col_idx = item["_targetColIdx"]
+    col_map        = item["_colMap"]
+
+    if status_col_idx < 0:
+        raise ValueError("No status column found in the resume-pipeline table.")
+
+    # ── locate and verify the line ────────────────────────────────────────────
+    all_lines = full_content.splitlines(keepends=True)
+    line_num: int = item["_lineNum"]
+    if line_num >= len(all_lines):
+        raise ValueError(
+            f"Item line {line_num} not found (file has {len(all_lines)} lines). "
+            "File may have changed — refresh and try again."
+        )
+
+    orig_line = all_lines[line_num]
+    if not _ROW_RE.match(orig_line.rstrip('\r\n')):
+        raise ValueError(
+            f"Line {line_num} no longer looks like a table row. "
+            "File may have changed — refresh and try again."
+        )
+
+    cells = [c.strip() for c in orig_line.strip().rstrip('\r\n').strip('|').split('|')]
+    if status_col_idx >= len(cells):
+        raise ValueError(
+            f"Status column {status_col_idx} out of range "
+            f"(row has {len(cells)} cells). File may have changed."
+        )
+
+    # Conflict detection: verify target still matches.
+    if target_col_idx >= 0 and target_col_idx < len(cells):
+        if cells[target_col_idx] != item["target"]:
+            raise ValueError(
+                "Target name mismatch — file has changed since last load. "
+                "Refresh and try again."
+            )
+
+    # ── update status cell only ───────────────────────────────────────────────
+    cells[status_col_idx] = new_status
+    while len(cells) < len(col_map):
+        cells.append("")
+    new_row  = '| ' + ' | '.join(cells) + ' |'
+    line_end = _line_ending(orig_line)
+    new_line = new_row + line_end
+
+    # ── backup then write ─────────────────────────────────────────────────────
+    try:
+        _backup_resume_file(rp_path)
+    except Exception as exc:
+        raise ValueError(f"Backup failed — write aborted: {exc}") from exc
+
+    all_lines[line_num] = new_line
+    try:
+        rp_path.write_text(''.join(all_lines), encoding="utf-8")
+    except Exception as exc:
+        raise ValueError(f"Could not write resume-pipeline file: {exc}") from exc
+
+    logger.info(
+        "Resume pipeline status updated: id=%s  target=%r  %r->%r  file=%s",
+        item_id, item["target"], item.get("status"), new_status, _RESUME_FILE,
+    )
+
+    updated_item = {
+        "id":       item_id,
+        "target":   item["target"],
+        "company":  item["company"],
+        "role":     item["role"],
+        "status":   new_status,
+        "priority": item["priority"],
+        "deadline": item["deadline"],
+        "link":     item["link"],
+        "notes":    item["notes"],
+        "raw":      new_row,
+    }
+    return {
+        "ok":        True,
+        "item":      updated_item,
+        "path":      _RESUME_FILE,
         "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }

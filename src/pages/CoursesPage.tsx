@@ -196,10 +196,10 @@ export function CoursesPage() {
       {createOpen && (
         <EntityCreateModal
           title="New Course"
-          safetyNote="Runs the safe brain command for this entity type."
+          safetyNote="Creates the course using `brain new-course <code>` with an optional title."
           fields={[
             { key: 'code', label: 'Course code', placeholder: 'ESC203', required: true },
-            { key: 'name', label: 'Course name', placeholder: 'Optional course title' },
+            { key: 'name', label: 'Course title', placeholder: 'Optional course title' },
           ]}
           loading={createLoading}
           error={createError}
