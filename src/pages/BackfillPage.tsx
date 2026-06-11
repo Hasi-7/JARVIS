@@ -9,6 +9,7 @@ import type {
   BackfillAgent,
   BackfillValue,
   CreateBackfillItemRequest,
+  UpdateBackfillItemRequest,
 } from '@/lib/api';
 import { createObsidianOpenUrl } from '@/lib/obsidian';
 import { Icon } from '@/components/ui/Icon';
@@ -86,6 +87,209 @@ function generateCloseoutPrompt(item: BackfillItem): string {
   lines.push('5. Do NOT delete anything.');
   lines.push('6. Ask before taking any destructive or irreversible actions.');
   return lines.join('\n');
+}
+
+// ── edit backfill item modal ──────────────────────────────────────────────────
+
+interface EditItemFormState {
+  item:  string;
+  type:  BackfillType;
+  value: BackfillValue | '';
+  agent: BackfillAgent | '';
+  path:  string;
+  notes: string;
+}
+
+function EditBackfillItemModal({
+  item: initial,
+  loading,
+  error,
+  onSubmit,
+  onCancel,
+}: {
+  item:     BackfillItem;
+  loading:  boolean;
+  error:    string | null;
+  onSubmit: (payload: UpdateBackfillItemRequest) => void;
+  onCancel: () => void;
+}) {
+  const [form, setForm] = useState<EditItemFormState>({
+    item:  initial.item,
+    type:  (initial.type as BackfillType) || 'other',
+    value: (initial.value as BackfillValue) || '',
+    agent: (initial.agent as BackfillAgent) || '',
+    path:  initial.path  || '',
+    notes: initial.notes || '',
+  });
+
+  function handleChange(key: keyof EditItemFormState, val: string) {
+    setForm((f) => ({ ...f, [key]: val }));
+  }
+
+  function handleSubmit() {
+    const trimmed = form.item.trim();
+    if (!trimmed) return;
+    onSubmit({
+      item:  trimmed,
+      type:  form.type  || undefined,
+      value: (form.value || undefined) as BackfillValue | undefined,
+      agent: (form.agent || undefined) as BackfillAgent | undefined,
+      path:  form.path.trim()  || undefined,
+      notes: form.notes.trim() || undefined,
+    });
+  }
+
+  const labelStyle: React.CSSProperties = {
+    fontSize: 11, fontWeight: 600, color: 'var(--txt-2)',
+    textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3,
+    display: 'block',
+  };
+  const inputStyle: React.CSSProperties = {
+    width: '100%', boxSizing: 'border-box',
+    background: 'var(--surface-3)', color: 'var(--txt-0)',
+    border: '1px solid var(--line)', borderRadius: 'var(--r2)',
+    fontSize: 12, padding: '5px 8px', fontFamily: 'var(--font-ui)',
+  };
+  const selectStyle: React.CSSProperties = { ...inputStyle, cursor: 'pointer' };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0,
+        background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 1000,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget && !loading) onCancel(); }}
+    >
+      <div className="panel" style={{
+        width: 520, maxHeight: '90vh', overflowY: 'auto',
+        padding: 'var(--s5)', display: 'flex', flexDirection: 'column', gap: 'var(--s4)',
+        boxShadow: 'var(--shadow-pop)',
+      }}>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>Edit Backfill Item</div>
+
+        {/* status read-only badge */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5 }}>
+          <span style={{ color: 'var(--txt-3)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: 10 }}>Status</span>
+          <span style={{
+            fontSize: 10.5, padding: '1px 7px', borderRadius: 'var(--r1)',
+            background: 'var(--surface-2)', border: '1px solid var(--line)',
+            color: STATUS_TONE[initial.status] ?? 'var(--txt-2)',
+          }}>
+            {initial.status}
+          </span>
+          <span style={{ fontSize: 10.5, color: 'var(--txt-3)' }}>
+            (use status dropdown to change)
+          </span>
+        </div>
+
+        {/* item */}
+        <div>
+          <label style={labelStyle}>Item <span style={{ color: 'var(--red)' }}>*</span></label>
+          <input
+            style={inputStyle}
+            type="text"
+            value={form.item}
+            onChange={(e) => handleChange('item', e.target.value)}
+            disabled={loading}
+            autoFocus
+          />
+        </div>
+
+        {/* type + value row */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--s3)' }}>
+          <div>
+            <label style={labelStyle}>Type</label>
+            <select style={selectStyle} value={form.type} onChange={(e) => handleChange('type', e.target.value)} disabled={loading}>
+              {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={labelStyle}>Value</label>
+            <select style={selectStyle} value={form.value} onChange={(e) => handleChange('value', e.target.value)} disabled={loading}>
+              <option value="">none</option>
+              {VALUES.map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {/* agent */}
+        <div>
+          <label style={labelStyle}>Agent</label>
+          <select style={selectStyle} value={form.agent} onChange={(e) => handleChange('agent', e.target.value)} disabled={loading}>
+            <option value="">none</option>
+            {AGENTS.map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
+
+        {/* path */}
+        <div>
+          <label style={labelStyle}>Path / Repo</label>
+          <input
+            style={inputStyle}
+            type="text"
+            placeholder="D:\path\to\repo or /home/user/project  (optional)"
+            value={form.path}
+            onChange={(e) => handleChange('path', e.target.value)}
+            disabled={loading}
+          />
+        </div>
+
+        {/* notes */}
+        <div>
+          <label style={labelStyle}>Notes</label>
+          <textarea
+            style={{ ...inputStyle, resize: 'vertical', minHeight: 60 }}
+            placeholder="Any context worth capturing  (optional)"
+            value={form.notes}
+            onChange={(e) => handleChange('notes', e.target.value)}
+            disabled={loading}
+          />
+        </div>
+
+        {/* safety note */}
+        <div style={{
+          fontSize: 11, color: 'var(--txt-3)',
+          padding: 'var(--s2) var(--s3)',
+          background: 'var(--surface-2)', borderRadius: 'var(--r2)',
+          border: '1px solid var(--line)',
+          display: 'flex', alignItems: 'flex-start', gap: 6,
+        }}>
+          <Icon name="shield" size={12} style={{ marginTop: 1, flexShrink: 0 }} />
+          <span>
+            This edits the Backfill row only. It does not scan repos, launch agents, or modify the referenced path.
+          </span>
+        </div>
+
+        {/* error */}
+        {error && (
+          <div style={{
+            fontSize: 11.5, color: 'var(--red)',
+            padding: 'var(--s2) var(--s3)',
+            background: 'var(--red-bg)', borderRadius: 'var(--r2)',
+            border: '1px solid var(--red-line)',
+          }}>
+            {error}
+          </div>
+        )}
+
+        {/* actions */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)' }}>
+          <button className="btn btn-sm btn-ghost" onClick={onCancel} disabled={loading}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-sm btn-primary"
+            onClick={handleSubmit}
+            disabled={loading || !form.item.trim()}
+          >
+            {loading ? 'Saving…' : 'Save changes'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── add backfill item modal ───────────────────────────────────────────────────
@@ -382,13 +586,17 @@ function StatusConfirmModal({
 
 function BackfillRow({
   item,
+  canEdit,
   onStatusChange,
   onCopyPrompt,
+  onEdit,
   copiedId,
 }: {
   item:           BackfillItem;
+  canEdit:        boolean;
   onStatusChange: (item: BackfillItem, s: BackfillStatus) => void;
   onCopyPrompt:   (item: BackfillItem) => void;
+  onEdit:         (item: BackfillItem) => void;
   copiedId:       string | null;
 }) {
   const copied = copiedId === item.id;
@@ -482,21 +690,34 @@ function BackfillRow({
 
       {/* actions */}
       <td style={{ padding: '7px 8px', verticalAlign: 'top' }}>
-        <button
-          className="btn btn-sm btn-ghost"
-          style={{ fontSize: 10.5, padding: '2px 8px', whiteSpace: 'nowrap' }}
-          onClick={() => onCopyPrompt(item)}
-          title="Copy a closeout prompt for Claude Code / OpenCode"
-        >
-          {copied ? (
-            <span style={{ color: 'var(--green)' }}>Copied!</span>
-          ) : (
-            <>
-              <Icon name="copy" size={11} style={{ marginRight: 3 }} />
-              Copy prompt
-            </>
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'nowrap' }}>
+          {canEdit && (
+            <button
+              className="btn btn-sm btn-ghost"
+              style={{ fontSize: 10.5, padding: '2px 8px', whiteSpace: 'nowrap' }}
+              onClick={() => onEdit(item)}
+              title="Edit this backfill item's fields"
+            >
+              <Icon name="edit" size={11} style={{ marginRight: 3 }} />
+              Edit
+            </button>
           )}
-        </button>
+          <button
+            className="btn btn-sm btn-ghost"
+            style={{ fontSize: 10.5, padding: '2px 8px', whiteSpace: 'nowrap' }}
+            onClick={() => onCopyPrompt(item)}
+            title="Copy a closeout prompt for Claude Code / OpenCode"
+          >
+            {copied ? (
+              <span style={{ color: 'var(--green)' }}>Copied!</span>
+            ) : (
+              <>
+                <Icon name="copy" size={11} style={{ marginRight: 3 }} />
+                Copy prompt
+              </>
+            )}
+          </button>
+        </div>
       </td>
     </tr>
   );
@@ -528,6 +749,11 @@ export function BackfillPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [addLoading,   setAddLoading]   = useState(false);
   const [addError,     setAddError]     = useState<string | null>(null);
+
+  // edit item modal
+  const [editTarget,   setEditTarget]   = useState<BackfillItem | null>(null);
+  const [editLoading,  setEditLoading]  = useState(false);
+  const [editError,    setEditError]    = useState<string | null>(null);
 
   // create file
   const [createFileLoading, setCreateFileLoading] = useState(false);
@@ -563,6 +789,7 @@ export function BackfillPage() {
   const isFallbackOnly = data?.exists === true && data.path === 'ops/backfill-last-year.md';
   const isPrimary      = data?.exists === true && data.path === 'ops/backfill.md';
   const canAddItems    = isPrimary && data?.parseMode === 'markdown-table';
+  const canEditItems   = isPrimary && data?.parseMode === 'markdown-table';
 
   // ── derive filter options from loaded items ───────────────────────────────
   const items = data?.items ?? [];
@@ -611,6 +838,21 @@ export function BackfillPage() {
       setAddError(err instanceof Error ? err.message : 'Failed to add item.');
     } finally {
       setAddLoading(false);
+    }
+  }
+
+  async function handleEditItem(payload: UpdateBackfillItemRequest) {
+    if (!editTarget) return;
+    setEditLoading(true);
+    setEditError(null);
+    try {
+      await api.updateBackfillItem(editTarget.id, payload);
+      setEditTarget(null);
+      await load();
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : 'Failed to save changes.');
+    } finally {
+      setEditLoading(false);
     }
   }
 
@@ -737,8 +979,9 @@ export function BackfillPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <StatusDot tone="amber" />
             <span>
+              Fallback file is read-only.
               Reading from <span className="mono" style={{ fontSize: 10.5 }}>ops/backfill-last-year.md</span>.
-              New items can only be added to <span className="mono" style={{ fontSize: 10.5 }}>ops/backfill.md</span>.
+              Create <span className="mono" style={{ fontSize: 10.5 }}>ops/backfill.md</span> to add or edit current Backfill items.
             </span>
           </div>
           {createFileError && (
@@ -893,8 +1136,10 @@ export function BackfillPage() {
                     <BackfillRow
                       key={item.id}
                       item={item}
+                      canEdit={canEditItems}
                       onStatusChange={handleStatusChange}
                       onCopyPrompt={handleCopyPrompt}
+                      onEdit={(it) => { setEditError(null); setEditTarget(it); }}
                       copiedId={copiedId}
                     />
                   ))}
@@ -932,6 +1177,17 @@ export function BackfillPage() {
           error={addError}
           onSubmit={handleAddItem}
           onCancel={() => { if (!addLoading) { setShowAddModal(false); setAddError(null); } }}
+        />
+      )}
+
+      {/* edit item modal */}
+      {editTarget && (
+        <EditBackfillItemModal
+          item={editTarget}
+          loading={editLoading}
+          error={editError}
+          onSubmit={handleEditItem}
+          onCancel={() => { if (!editLoading) { setEditTarget(null); setEditError(null); } }}
         />
       )}
 

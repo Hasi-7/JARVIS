@@ -457,6 +457,8 @@ export type ResumePipelineStatus =
   | 'new' | 'tailoring' | 'applied' | 'interview'
   | 'offer' | 'rejected' | 'archived';
 
+export type ResumePipelinePriority = 'high' | 'medium' | 'low';
+
 export interface ResumePipelineItem {
   id:       string;
   target:   string;
@@ -480,6 +482,41 @@ export interface ResumePipelineResponse {
 }
 
 export interface UpdateResumePipelineStatusResponse {
+  ok:        boolean;
+  item:      ResumePipelineItem;
+  path:      string;
+  updatedAt: string;
+}
+
+export interface CreateResumePipelineItemRequest {
+  target:    string;
+  company?:  string | null;
+  role?:     string | null;
+  status?:   ResumePipelineStatus | null;
+  priority?: ResumePipelinePriority | null;
+  deadline?: string | null;
+  link?:     string | null;
+  notes?:    string | null;
+}
+
+export interface CreateResumePipelineItemResponse {
+  ok:        boolean;
+  item:      ResumePipelineItem;
+  path:      string;
+  updatedAt: string;
+}
+
+export interface UpdateResumePipelineItemRequest {
+  target:    string;
+  company?:  string | null;
+  role?:     string | null;
+  priority?: ResumePipelinePriority | null;
+  deadline?: string | null;
+  link?:     string | null;
+  notes?:    string | null;
+}
+
+export interface UpdateResumePipelineItemResponse {
   ok:        boolean;
   item:      ResumePipelineItem;
   path:      string;
@@ -532,6 +569,22 @@ export interface CreateBackfillItemRequest {
 }
 
 export interface CreateBackfillItemResponse {
+  ok:        boolean;
+  item:      BackfillItem;
+  path:      string;
+  updatedAt: string;
+}
+
+export interface UpdateBackfillItemRequest {
+  item:   string;
+  type?:  BackfillType | null;
+  value?: BackfillValue | null;
+  path?:  string | null;
+  agent?: BackfillAgent | null;
+  notes?: string | null;
+}
+
+export interface UpdateBackfillItemResponse {
   ok:        boolean;
   item:      BackfillItem;
   path:      string;
@@ -689,6 +742,62 @@ export interface DashboardTodayPlan {
   generatedAt: string;
 }
 
+// ── active work drill-down ────────────────────────────────────────────────────
+
+export interface DashboardActiveWorkBackfillItem {
+  id:       string;
+  title:    string;
+  status:   string;
+  priority: string | null;
+  type:     string | null;
+  path:     string | null;
+  reason:   string;
+}
+
+export interface DashboardActiveWorkEscalationItem {
+  id:       string;
+  title:    string;
+  status:   string;
+  priority: string | null;
+  target:   string | null;
+  path:     string | null;
+  reason:   string;
+}
+
+export interface DashboardActiveWorkResumeItem {
+  id:       string;
+  title:    string;
+  status:   string;
+  priority: string | null;
+  company:  string | null;
+  role:     string | null;
+  reason:   string;
+}
+
+export interface DashboardActiveWorkCalendarItem {
+  id:     string;
+  title:  string;
+  status: string;
+  date:   string | null;
+  time:   string | null;
+  reason: string;
+}
+
+export interface DashboardActiveWorkRawItem {
+  id:     string;
+  title:  string;
+  status: string;
+  reason: string;
+}
+
+export interface DashboardActiveWork {
+  backfill:    DashboardActiveWorkBackfillItem[];
+  escalations: DashboardActiveWorkEscalationItem[];
+  resume:      DashboardActiveWorkResumeItem[];
+  calendar:    DashboardActiveWorkCalendarItem[];
+  raw:         DashboardActiveWorkRawItem[];
+}
+
 export interface DashboardSummary {
   raw:         DashboardRawSummary;
   tasks:       DashboardTaskSummary;
@@ -699,6 +808,7 @@ export interface DashboardSummary {
   escalations: DashboardEscalationSummary;
   runtime:     DashboardRuntimeSummary;
   todayPlan:   DashboardTodayPlan;
+  activeWork:  DashboardActiveWork;
   errors:      DashboardSummaryError[];
 }
 
@@ -813,11 +923,21 @@ export const api = {
 
   // resume pipeline
   getVaultResumePipeline: () => get<ResumePipelineResponse>('/api/vault/resume-pipeline'),
+  createResumePipelineFile: () =>
+    fetchWithBody<ResumePipelineResponse>('POST', '/api/vault/resume-pipeline/create', {}),
+  createResumePipelineItem: (payload: CreateResumePipelineItemRequest) =>
+    fetchWithBody<CreateResumePipelineItemResponse>('POST', '/api/vault/resume-pipeline', payload),
   updateResumePipelineStatus: (itemId: string, status: ResumePipelineStatus) =>
     fetchWithBody<UpdateResumePipelineStatusResponse>(
       'PATCH',
       `/api/vault/resume-pipeline/${encodeURIComponent(itemId)}/status`,
       { status },
+    ),
+  updateResumePipelineItem: (itemId: string, payload: UpdateResumePipelineItemRequest) =>
+    fetchWithBody<UpdateResumePipelineItemResponse>(
+      'PATCH',
+      `/api/vault/resume-pipeline/${encodeURIComponent(itemId)}`,
+      payload,
     ),
 
   // backfill
@@ -831,6 +951,12 @@ export const api = {
       'PATCH',
       `/api/vault/backfill/${encodeURIComponent(itemId)}/status`,
       { status },
+    ),
+  updateBackfillItem: (itemId: string, payload: UpdateBackfillItemRequest) =>
+    fetchWithBody<UpdateBackfillItemResponse>(
+      'PATCH',
+      `/api/vault/backfill/${encodeURIComponent(itemId)}`,
+      payload,
     ),
 
   // AI classification

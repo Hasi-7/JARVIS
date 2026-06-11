@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   TODAY, SYSTEM, AGENT_STATES, AGENT_MODES,
   QUICK_ACTIONS,
@@ -12,7 +12,12 @@ import { Icon } from '@/components/ui/Icon';
 import { StatusCard } from '@/components/dashboard/StatusCard';
 import { SystemRow } from '@/components/dashboard/SystemRow';
 import { api } from '@/lib/api';
-import type { DashboardSummary, DashboardTodayPlanItem, ConversationSummary } from '@/lib/api';
+import type {
+  DashboardSummary,
+  DashboardTodayPlanItem,
+  DashboardActiveWork,
+  ConversationSummary,
+} from '@/lib/api';
 import type { RouteId, SystemService } from '@/types';
 
 function taskStatusColor(status: string): string {
@@ -253,6 +258,317 @@ function RecentAiWorkPanel({
                 {convRelTime(conv.updatedAt)}
               </span>
             </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// ── Active Work panel ─────────────────────────────────────────────────────────
+
+type ActiveWorkNavId = 'backfill' | 'escalation' | 'resume' | 'calendar' | 'inbox';
+
+interface ActiveWorkGroup<T> {
+  label:    string;
+  icon:     string;
+  nav:      ActiveWorkNavId;
+  items:    T[];
+  renderItem: (item: T) => React.ReactNode;
+}
+
+function statusChipStyle(status: string): React.CSSProperties {
+  if (status === 'blocked')     return { color: 'var(--red)',    background: 'var(--red-bg)',  border: '1px solid var(--red-line)' };
+  if (status === 'in-progress') return { color: 'var(--live)',   background: 'var(--live-bg)', border: '1px solid var(--live-line)' };
+  if (status === 'interview')   return { color: 'var(--violet)', background: 'transparent',   border: '1px solid var(--violet)' };
+  if (status === 'ready')       return { color: 'var(--green)',  background: 'transparent',   border: '1px solid var(--green)' };
+  return { color: 'var(--txt-3)', background: 'transparent', border: '1px solid var(--line)' };
+}
+
+function priorityChip(priority: string | null | undefined): React.ReactNode {
+  if (!priority) return null;
+  const color = priority === 'high' ? 'var(--amber)' : priority === 'low' ? 'var(--txt-3)' : 'var(--txt-2)';
+  return (
+    <span style={{ fontSize: 10, fontWeight: 600, color, marginLeft: 4 }}>
+      {priority === 'high' ? '↑' : priority === 'low' ? '↓' : '·'} {priority}
+    </span>
+  );
+}
+
+function ActiveWorkRow({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      className="btn"
+      onClick={onClick}
+      style={{
+        display: 'flex',
+        alignItems: 'flex-start',
+        flexDirection: 'column',
+        gap: 2,
+        padding: '7px 10px',
+        textAlign: 'left',
+        width: '100%',
+        borderBottom: '1px solid var(--line-soft)',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ActiveWorkGroupSection<T>({
+  group,
+  onNavigate,
+}: {
+  group: ActiveWorkGroup<T>;
+  onNavigate: (nav: ActiveWorkNavId) => void;
+}) {
+  if (group.items.length === 0) return null;
+  return (
+    <div>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '6px 10px 4px',
+          borderBottom: '1px solid var(--line-soft)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Icon name={group.icon as Parameters<typeof Icon>[0]['name']} size={12} style={{ color: 'var(--txt-3)' }} />
+          <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--txt-2)' }}>
+            {group.label}
+          </span>
+          <span style={{
+            fontSize: 10,
+            background: 'var(--surface-2)',
+            border: '1px solid var(--line)',
+            borderRadius: 3,
+            padding: '0 4px',
+            color: 'var(--txt-3)',
+          }}>
+            {group.items.length}
+          </span>
+        </div>
+        <button
+          className="btn btn-sm btn-ghost"
+          onClick={() => onNavigate(group.nav)}
+          style={{ fontSize: 11, padding: '2px 6px' }}
+        >
+          View all <Icon name="chevron" size={11} />
+        </button>
+      </div>
+      <div>
+        {group.items.map((item, i) => (
+          <div key={i} onClick={() => onNavigate(group.nav)}>
+            {group.renderItem(item)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ActiveWorkPanel({
+  loading,
+  activeWork,
+  failed,
+  onNavigate,
+}: {
+  loading:    boolean;
+  activeWork: DashboardActiveWork | null;
+  failed:     boolean;
+  onNavigate: (nav: ActiveWorkNavId) => void;
+}) {
+  const totalItems = activeWork
+    ? activeWork.backfill.length + activeWork.escalations.length +
+      activeWork.resume.length + activeWork.calendar.length + activeWork.raw.length
+    : 0;
+
+  const groups: ActiveWorkGroup<unknown>[] = activeWork ? [
+    {
+      label: 'Backfill',
+      icon: 'layers',
+      nav: 'backfill',
+      items: activeWork.backfill,
+      renderItem: (item) => {
+        const it = item as import('@/lib/api').DashboardActiveWorkBackfillItem;
+        return (
+          <ActiveWorkRow onClick={() => onNavigate('backfill')}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
+              <span
+                style={{
+                  fontSize: 10, fontWeight: 600, padding: '1px 5px', borderRadius: 3,
+                  ...statusChipStyle(it.status),
+                }}
+              >
+                {it.reason}
+              </span>
+              {priorityChip(it.priority)}
+              {it.type && (
+                <span style={{ fontSize: 10, color: 'var(--txt-3)', marginLeft: 'auto' }}>{it.type}</span>
+              )}
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--txt-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+              {it.title}
+            </span>
+          </ActiveWorkRow>
+        );
+      },
+    },
+    {
+      label: 'Escalations',
+      icon: 'bolt',
+      nav: 'escalation',
+      items: activeWork.escalations,
+      renderItem: (item) => {
+        const it = item as import('@/lib/api').DashboardActiveWorkEscalationItem;
+        return (
+          <ActiveWorkRow onClick={() => onNavigate('escalation')}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span
+                style={{
+                  fontSize: 10, fontWeight: 600, padding: '1px 5px', borderRadius: 3,
+                  ...statusChipStyle(it.status),
+                }}
+              >
+                {it.reason}
+              </span>
+              {priorityChip(it.priority)}
+              {it.target && (
+                <span className="mono" style={{ fontSize: 10, color: 'var(--txt-3)' }}>{it.target}</span>
+              )}
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--txt-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+              {it.title}
+            </span>
+          </ActiveWorkRow>
+        );
+      },
+    },
+    {
+      label: 'Resume',
+      icon: 'doc',
+      nav: 'resume',
+      items: activeWork.resume,
+      renderItem: (item) => {
+        const it = item as import('@/lib/api').DashboardActiveWorkResumeItem;
+        return (
+          <ActiveWorkRow onClick={() => onNavigate('resume')}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span
+                style={{
+                  fontSize: 10, fontWeight: 600, padding: '1px 5px', borderRadius: 3,
+                  ...statusChipStyle(it.status),
+                }}
+              >
+                {it.reason}
+              </span>
+              {priorityChip(it.priority)}
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--txt-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+              {it.title}
+            </span>
+            {(it.company || it.role) && (
+              <span style={{ fontSize: 10.5, color: 'var(--txt-3)' }}>
+                {[it.company, it.role].filter(Boolean).join(' · ')}
+              </span>
+            )}
+          </ActiveWorkRow>
+        );
+      },
+    },
+    {
+      label: 'Calendar',
+      icon: 'cal',
+      nav: 'calendar',
+      items: activeWork.calendar,
+      renderItem: (item) => {
+        const it = item as import('@/lib/api').DashboardActiveWorkCalendarItem;
+        return (
+          <ActiveWorkRow onClick={() => onNavigate('calendar')}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 10, fontWeight: 600, padding: '1px 5px', borderRadius: 3, color: 'var(--amber)', border: '1px solid var(--amber)', background: 'transparent' }}>
+                {it.reason}
+              </span>
+              {it.date && (
+                <span className="mono" style={{ fontSize: 10, color: 'var(--txt-3)' }}>{it.date}{it.time ? ` ${it.time}` : ''}</span>
+              )}
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--txt-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+              {it.title}
+            </span>
+          </ActiveWorkRow>
+        );
+      },
+    },
+    {
+      label: 'Raw Inbox',
+      icon: 'upload',
+      nav: 'inbox',
+      items: activeWork.raw,
+      renderItem: (item) => {
+        const it = item as import('@/lib/api').DashboardActiveWorkRawItem;
+        return (
+          <ActiveWorkRow onClick={() => onNavigate('inbox')}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span
+                style={{
+                  fontSize: 10, fontWeight: 600, padding: '1px 5px', borderRadius: 3,
+                  color: it.status === 'edited' ? 'var(--amber)' : 'var(--txt-2)',
+                  border: `1px solid ${it.status === 'edited' ? 'var(--amber)' : 'var(--line)'}`,
+                  background: 'transparent',
+                }}
+              >
+                {it.reason}
+              </span>
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--txt-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>
+              {it.title}
+            </span>
+          </ActiveWorkRow>
+        );
+      },
+    },
+  ] : [];
+
+  const visibleGroups = groups.filter((g) => g.items.length > 0);
+
+  return (
+    <div className="panel" style={{ overflow: 'hidden' }}>
+      <div style={{ padding: 'var(--s4) var(--s4) var(--s3)' }}>
+        <PanelHeader
+          icon="merge"
+          title="Active work"
+          sub={
+            loading ? 'Loading…' :
+            failed   ? 'unavailable' :
+            activeWork === null ? undefined :
+            totalItems === 0 ? 'no active items' :
+            `${totalItems} item${totalItems === 1 ? '' : 's'} need attention`
+          }
+        />
+      </div>
+
+      {loading ? (
+        <div style={{ color: 'var(--txt-3)', fontSize: 12, padding: '0 var(--s4) var(--s4)' }}>Loading…</div>
+      ) : failed ? (
+        <div style={{ color: 'var(--txt-3)', fontSize: 12, padding: '0 var(--s4) var(--s4)' }}>
+          Could not load active work — backend unavailable.
+        </div>
+      ) : activeWork !== null && visibleGroups.length === 0 ? (
+        <div style={{ color: 'var(--txt-3)', fontSize: 12, padding: '0 var(--s4) var(--s4)' }}>
+          No active work items found.
+        </div>
+      ) : activeWork !== null ? (
+        <div style={{ borderTop: '1px solid var(--line-soft)' }}>
+          {visibleGroups.map((g) => (
+            <ActiveWorkGroupSection
+              key={g.label}
+              group={g}
+              onNavigate={onNavigate}
+            />
           ))}
         </div>
       ) : null}
@@ -607,6 +923,14 @@ export function DashboardPage() {
               </div>
             )}
           </div>
+
+          {/* active work drill-down — real data */}
+          <ActiveWorkPanel
+            loading={summaryLoading}
+            activeWork={summary?.activeWork ?? null}
+            failed={!summaryLoading && summaryError !== null}
+            onNavigate={(nav) => navigate(nav as RouteId)}
+          />
 
           {/* two-up: command output + recent AI work */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--s5)' }}>

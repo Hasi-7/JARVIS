@@ -3,10 +3,13 @@ dashboard.py — Read-only aggregate for GET /api/dashboard/summary.
 
 Aggregates counts from staged files, proposals, tasks, calendar candidates,
 entities (projects/courses/hackathons/business), backfill, resume pipeline,
-and runtime status (brain CLI path, vault existence, Ollama agent).
+escalations, and runtime status (brain CLI path, vault existence, Ollama agent).
 
-Also builds todayPlan — up to 5 active tasks selected deterministically by
-priority: blocked → in-progress → due today/overdue → high priority → open.
+Also builds:
+- todayPlan — up to 5 active tasks selected deterministically by priority:
+  blocked → in-progress → due today/overdue → high priority → open.
+- activeWork — up to 3 items per active workflow (backfill, escalations,
+  resume, calendar, raw), sorted by status urgency and priority.
 
 Safety: completely read-only.
 - No file writes.
@@ -147,6 +150,196 @@ def _build_today_plan(task_list: list) -> list:
     return result
 
 
+# ── active work helpers ───────────────────────────────────────────────────────
+
+_MAX_ACTIVE_ITEMS = 3
+_VALUE_RANK    = {"high": 0, "medium": 1, "low": 2}
+_PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
+
+_BACKFILL_STATUS_RANK    = {"in-progress": 0, "triaged": 1, "new": 2}
+_ESCALATION_STATUS_RANK  = {"blocked": 0, "ready": 1, "in-progress": 2, "new": 3}
+_RESUME_STATUS_RANK      = {"interview": 0, "applied": 1, "tailoring": 2, "new": 3}
+
+_BACKFILL_ACTIVE   = frozenset({"new", "triaged", "in-progress"})
+_ESCALATION_ACTIVE = frozenset({"new", "ready", "in-progress", "blocked"})
+_RESUME_ACTIVE     = frozenset({"new", "tailoring", "applied", "interview"})
+_RAW_ACTIVE        = frozenset({"proposed", "edited"})
+
+
+def _build_active_work(
+    staged_entries: list,
+    proposals: list,
+    calendar_candidates: list,
+    backfill_items: list,
+    resume_items: list,
+    escalation_items: list,
+) -> tuple[dict, list]:
+    """
+    Build per-workflow active item lists for the dashboard drill-down.
+
+    Returns (active_work_dict, errors_list). Each source is wrapped in its own
+    try/except so one failure does not poison the others.
+
+    Safety: read-only. No vault writes, no commands, no Ollama calls.
+    """
+    result: dict = {
+        "backfill":    [],
+        "escalations": [],
+        "resume":      [],
+        "calendar":    [],
+        "raw":         [],
+    }
+    errors: list = []
+
+    # ── backfill ──────────────────────────────────────────────────────────────
+    try:
+        active = [
+            (idx, it)
+            for idx, it in enumerate(backfill_items)
+            if (it.get("status") or "").lower() in _BACKFILL_ACTIVE
+        ]
+        active.sort(key=lambda t: (
+            _BACKFILL_STATUS_RANK.get((t[1].get("status") or "").lower(), 9),
+            _VALUE_RANK.get((t[1].get("value") or "").lower(), 9),
+            t[0],
+        ))
+        _STATUS_LABEL = {"in-progress": "In progress", "triaged": "Triaged", "new": "New"}
+        for _, it in active[:_MAX_ACTIVE_ITEMS]:
+            status = (it.get("status") or "").lower()
+            result["backfill"].append({
+                "id":       it.get("id", ""),
+                "title":    it.get("item") or "",
+                "status":   status,
+                "priority": it.get("value"),
+                "type":     it.get("type"),
+                "path":     it.get("path"),
+                "reason":   _STATUS_LABEL.get(status, status),
+            })
+    except Exception as exc:
+        logger.warning("Active work backfill failed: %s", exc)
+        errors.append({"source": "activeWork.backfill", "message": "Could not build active backfill list."})
+
+    # ── escalations ───────────────────────────────────────────────────────────
+    try:
+        active = [
+            (idx, it)
+            for idx, it in enumerate(escalation_items)
+            if (it.get("status") or "").lower() in _ESCALATION_ACTIVE
+        ]
+        active.sort(key=lambda t: (
+            _ESCALATION_STATUS_RANK.get((t[1].get("status") or "").lower(), 9),
+            _PRIORITY_RANK.get((t[1].get("priority") or "").lower(), 9),
+            t[0],
+        ))
+        _STATUS_LABEL = {"blocked": "Blocked", "ready": "Ready", "in-progress": "In progress", "new": "New"}
+        for _, it in active[:_MAX_ACTIVE_ITEMS]:
+            status = (it.get("status") or "").lower()
+            result["escalations"].append({
+                "id":       it.get("id", ""),
+                "title":    it.get("task") or "",
+                "status":   status,
+                "priority": it.get("priority"),
+                "target":   it.get("target"),
+                "path":     it.get("path"),
+                "reason":   _STATUS_LABEL.get(status, status),
+            })
+    except Exception as exc:
+        logger.warning("Active work escalations failed: %s", exc)
+        errors.append({"source": "activeWork.escalations", "message": "Could not build active escalations list."})
+
+    # ── resume ────────────────────────────────────────────────────────────────
+    try:
+        today = date.today()
+
+        def _deadline_days(it: dict) -> int:
+            d = _parse_due(it.get("deadline"))
+            return (d - today).days if d else 9999
+
+        active = [
+            (idx, it)
+            for idx, it in enumerate(resume_items)
+            if (it.get("status") or "").lower() in _RESUME_ACTIVE
+        ]
+        active.sort(key=lambda t: (
+            _RESUME_STATUS_RANK.get((t[1].get("status") or "").lower(), 9),
+            _PRIORITY_RANK.get((t[1].get("priority") or "").lower(), 9),
+            _deadline_days(t[1]),
+            t[0],
+        ))
+        _STATUS_LABEL = {"interview": "Interview", "applied": "Applied", "tailoring": "Tailoring", "new": "New"}
+        for _, it in active[:_MAX_ACTIVE_ITEMS]:
+            status = (it.get("status") or "").lower()
+            result["resume"].append({
+                "id":       it.get("id", ""),
+                "title":    it.get("target") or "",
+                "status":   status,
+                "priority": it.get("priority"),
+                "company":  it.get("company"),
+                "role":     it.get("role"),
+                "reason":   _STATUS_LABEL.get(status, status),
+            })
+    except Exception as exc:
+        logger.warning("Active work resume failed: %s", exc)
+        errors.append({"source": "activeWork.resume", "message": "Could not build active resume list."})
+
+    # ── calendar ──────────────────────────────────────────────────────────────
+    try:
+        today = date.today()
+        pending = [
+            (idx, c)
+            for idx, c in enumerate(calendar_candidates)
+            if (c.get("approved") or "").strip().lower() != "yes"
+        ]
+
+        def _cal_sort_key(t: tuple) -> tuple:
+            idx, c = t
+            d = _parse_due(c.get("date"))
+            return (0, (d - today).days, idx) if d else (1, 0, idx)
+
+        pending.sort(key=_cal_sort_key)
+        for _, c in pending[:_MAX_ACTIVE_ITEMS]:
+            result["calendar"].append({
+                "id":     c.get("id", ""),
+                "title":  c.get("title") or "",
+                "status": "pending",
+                "date":   c.get("date"),
+                "time":   c.get("time"),
+                "reason": "Pending approval",
+            })
+    except Exception as exc:
+        logger.warning("Active work calendar failed: %s", exc)
+        errors.append({"source": "activeWork.calendar", "message": "Could not build pending calendar list."})
+
+    # ── raw ───────────────────────────────────────────────────────────────────
+    try:
+        staged_by_id = {e.id: e.original_name for e in staged_entries}
+        active = [
+            (idx, p)
+            for idx, p in enumerate(proposals)
+            if (p.status or "").lower() in _RAW_ACTIVE
+        ]
+        # edited first, then original order within each group
+        active.sort(key=lambda t: (0 if (t[1].status or "").lower() == "edited" else 1, t[0]))
+        for _, p in active[:_MAX_ACTIVE_ITEMS]:
+            title = (
+                staged_by_id.get(p.file_id)
+                or (p.entity if p.entity and p.entity != "Unassigned" else None)
+                or p.proposed_destination
+                or p.file_id
+            )
+            result["raw"].append({
+                "id":     p.file_id,
+                "title":  title or "",
+                "status": (p.status or "").lower(),
+                "reason": "Edited — needs review" if (p.status or "").lower() == "edited" else "Needs review",
+            })
+    except Exception as exc:
+        logger.warning("Active work raw failed: %s", exc)
+        errors.append({"source": "activeWork.raw", "message": "Could not build active raw inbox list."})
+
+    return result, errors
+
+
 # ── zero-value helpers ────────────────────────────────────────────────────────
 
 def _zero_raw() -> dict:
@@ -183,23 +376,33 @@ def _zero_escalations() -> dict:
 
 def get_dashboard_summary() -> dict:
     """
-    Return a snapshot of all dashboard metrics.
+    Return a snapshot of all dashboard metrics including activeWork drill-down lists.
 
     Each subsystem is wrapped individually — a failure in one section
-    appends to `errors` and leaves that section at zero counts.
+    appends to `errors` and leaves that section at zero counts / empty list.
     The endpoint never raises; it always returns a complete shape.
+
+    Safety: completely read-only. No writes, no brain commands, no Ollama calls.
     """
     cfg = get_config()
     vault_path = cfg.vault_path
     errors: list = []
 
+    # Data captured once and reused for both counts and activeWork
+    _staged_entries: list = []
+    _proposals:      list = []
+    _cal_candidates: list = []
+    _backfill_items: list = []
+    _resume_items:   list = []
+    _escalation_items: list = []
+
     # ── raw inbox ─────────────────────────────────────────────────────────────
     raw = _zero_raw()
     try:
-        staged_entries = list_staged()
-        raw["staged"] = len(staged_entries)
-        proposals = list_proposals()
-        for p in proposals:
+        _staged_entries = list_staged()
+        raw["staged"] = len(_staged_entries)
+        _proposals = list_proposals()
+        for p in _proposals:
             s = p.status.lower()
             if s == "proposed":
                 raw["proposed"] += 1
@@ -242,9 +445,9 @@ def get_dashboard_summary() -> dict:
     # ── calendar candidates ───────────────────────────────────────────────────
     calendar = _zero_calendar()
     try:
-        candidates = get_calendar_candidates(vault_path).get("candidates", [])
-        calendar["total"] = len(candidates)
-        for c in candidates:
+        _cal_candidates = get_calendar_candidates(vault_path).get("candidates", [])
+        calendar["total"] = len(_cal_candidates)
+        for c in _cal_candidates:
             if (c.get("approved") or "").strip().lower() == "yes":
                 calendar["approved"] += 1
             else:
@@ -271,9 +474,9 @@ def get_dashboard_summary() -> dict:
     # ── backfill ──────────────────────────────────────────────────────────────
     backfill = _zero_backfill()
     try:
-        items = get_backfill(vault_path).get("items", [])
-        backfill["total"] = len(items)
-        for item in items:
+        _backfill_items = get_backfill(vault_path).get("items", [])
+        backfill["total"] = len(_backfill_items)
+        for item in _backfill_items:
             s = (item.get("status") or "").lower()
             if s == "new":
                 backfill["new"] += 1
@@ -293,9 +496,9 @@ def get_dashboard_summary() -> dict:
     # ── resume pipeline ───────────────────────────────────────────────────────
     resume = _zero_resume()
     try:
-        items = get_resume_pipeline(vault_path).get("items", [])
-        resume["total"] = len(items)
-        for item in items:
+        _resume_items = get_resume_pipeline(vault_path).get("items", [])
+        resume["total"] = len(_resume_items)
+        for item in _resume_items:
             s = (item.get("status") or "").lower()
             if s == "new":
                 resume["new"] += 1
@@ -319,9 +522,9 @@ def get_dashboard_summary() -> dict:
     # ── escalations ───────────────────────────────────────────────────────────
     escalations = _zero_escalations()
     try:
-        items = get_escalations(vault_path).get("items", [])
-        escalations["total"] = len(items)
-        for item in items:
+        _escalation_items = get_escalations(vault_path).get("items", [])
+        escalations["total"] = len(_escalation_items)
+        for item in _escalation_items:
             s = (item.get("status") or "").lower()
             if s == "new":
                 escalations["new"] += 1
@@ -364,6 +567,17 @@ def get_dashboard_summary() -> dict:
     except Exception:
         pass
 
+    # ── active work ───────────────────────────────────────────────────────────
+    active_work, aw_errors = _build_active_work(
+        staged_entries=_staged_entries,
+        proposals=_proposals,
+        calendar_candidates=_cal_candidates,
+        backfill_items=_backfill_items,
+        resume_items=_resume_items,
+        escalation_items=_escalation_items,
+    )
+    errors.extend(aw_errors)
+
     return {
         "raw":         raw,
         "tasks":       tasks_counts,
@@ -383,5 +597,6 @@ def get_dashboard_summary() -> dict:
             "source":      today_plan_source,
             "generatedAt": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         },
+        "activeWork": active_work,
         "errors": errors,
     }

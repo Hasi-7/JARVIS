@@ -125,16 +125,30 @@ Brain UI can read metadata from your configured Obsidian vault to populate the W
 **Endpoints:**
 
 ```
-GET /api/vault/summary       — vault exists + top-level folder presence
-GET /api/vault/projects      — project items from wiki/projects + raw/projects
-GET /api/vault/courses       — course items from wiki/courses + raw/courses
-GET /api/vault/hackathons    — hackathon items
-GET /api/vault/business      — business entity items
-GET /api/vault/ops/{kind}    — single ops file: resume-pipeline | backfill | tasks
-GET /api/vault/backfill      — structured backfill items from ops/backfill.md (or ops/backfill-last-year.md)
-PATCH /api/vault/backfill/{id}/status — update one backfill item's status (backup-safe)
-GET /api/vault/resume-pipeline — structured resume/application rows from ops/resume-pipeline.md
-PATCH /api/vault/resume-pipeline/{id}/status — update one resume item's status (backup-safe)
+GET  /api/vault/summary       — vault exists + top-level folder presence
+GET  /api/vault/projects      — project items from wiki/projects + raw/projects
+GET  /api/vault/courses       — course items from wiki/courses + raw/courses
+GET  /api/vault/hackathons    — hackathon items
+GET  /api/vault/business      — business entity items
+GET  /api/vault/ops/{kind}    — single ops file: resume-pipeline | backfill | tasks
+
+GET  /api/vault/backfill               — structured backfill items from ops/backfill.md (or ops/backfill-last-year.md fallback)
+POST /api/vault/backfill/create        — create ops/backfill.md starter (never overwrites)
+POST /api/vault/backfill               — append a new backfill row (backup-safe)
+PATCH /api/vault/backfill/{id}/status  — update one backfill item's status (backup-safe)
+PATCH /api/vault/backfill/{id}         — edit non-status fields: item, type, value, path, agent, notes (backup-safe)
+
+GET  /api/vault/resume-pipeline               — structured resume/application rows from ops/resume-pipeline.md
+POST /api/vault/resume-pipeline/create        — create ops/resume-pipeline.md starter (never overwrites)
+POST /api/vault/resume-pipeline               — append a new resume row (backup-safe)
+PATCH /api/vault/resume-pipeline/{id}/status  — update one resume item's status (backup-safe)
+PATCH /api/vault/resume-pipeline/{id}         — edit non-status fields: target, company, role, priority, deadline, link, notes (backup-safe)
+
+GET  /api/vault/escalations               — structured escalation items from ops/escalation-queue.md
+POST /api/vault/escalations/create        — create ops/escalation-queue.md starter (never overwrites)
+POST /api/vault/escalations               — append a new escalation item (backup-safe)
+PATCH /api/vault/escalations/{id}/status  — update one escalation item's status (backup-safe)
+PATCH /api/vault/escalations/{id}         — edit non-status fields: task, target, priority, source, path, notes (backup-safe)
 ```
 
 **Merge logic:** `.md` files from `wiki/` and subdirectories from `raw/` with the same lowercase name are merged into a single item. Items with wiki notes show a text preview.
@@ -318,9 +332,24 @@ GET /api/dashboard/summary
 | `runtime.brain` | `available` if `brain.cmd` path exists; `unavailable` otherwise |
 | `runtime.agent` | `available` if Ollama is reachable and model is installed; `unavailable` otherwise |
 | `runtime.vaultExists` | `true` if configured vault path is a directory |
+| `activeWork.backfill[]` | Up to 3 active backfill items (new/triaged/in-progress), sorted by status urgency then value |
+| `activeWork.escalations[]` | Up to 3 active escalations (new/ready/in-progress/blocked), sorted blocked first then priority |
+| `activeWork.resume[]` | Up to 3 active resume items (new/tailoring/applied/interview), sorted interview first then priority |
+| `activeWork.calendar[]` | Up to 3 unapproved calendar candidates, sorted by date |
+| `activeWork.raw[]` | Up to 3 pending raw proposals (proposed/edited), edited first |
 | `errors[]` | Partial-failure log — one entry per subsystem that fails |
 
 **Partial failure handling:** if one subsystem fails, its section is zeroed and an entry is appended to `errors`. Other sections still load. The endpoint never returns a 500.
+
+### Dashboard Active Work panel
+
+The Dashboard **Active Work** panel shows compact read-only lists of items that need attention across five workflows: Backfill, Escalations, Resume Pipeline, Calendar, and Raw Inbox.
+
+- Each group shows up to 3 items with a status chip, priority indicator, and secondary metadata.
+- Clicking any item or "View all" navigates to the dedicated workflow page. **No status changes occur from Dashboard.**
+- Empty state: if all lists are empty, "No active work items found." is shown.
+- Partial errors: if one source fails, its list is empty and an error is appended to `errors[]`. Other groups still render.
+- The panel respects the same loading/error behavior as the rest of the dashboard summary.
 
 ### Dashboard metric wiring
 
@@ -367,7 +396,6 @@ The Dashboard "Recent AI work" panel loads from `GET /api/conversations` indepen
 
 | Section | Status |
 |---|---|
-| Escalations count | Always `0` — no escalation queue exists yet |
 | OpenClaw, NemoClaw, Browser, Computer use, MCP in runtime status | Mocked — not wired |
 
 ---
@@ -404,6 +432,7 @@ The Dashboard "Recent AI work" panel loads from `GET /api/conversations` indepen
 | Dashboard runtime: Local model row | **Real** — reflects Ollama availability |
 | Tasks page — read | **Real** — reads `ops/task-db.md` or `ops/tasks.md`, parses table/checklist |
 | Tasks page — status edit | **Real** — `PATCH /api/vault/tasks/{id}/status`, backup + conflict detection |
+| Tasks page — create task | **Real** — `POST /api/vault/tasks`, appends row to task file, backup before write |
 | Calendar page — candidates read | **Real** — reads `ops/calendar-candidates.md`, parses Markdown tables |
 | Calendar page — starter/create | **Real** — creates missing `ops/calendar-candidates.md` only by explicit button |
 | Calendar page — add candidate | **Real** — appends one candidate row after creating a backup |
@@ -415,15 +444,21 @@ The Dashboard "Recent AI work" panel loads from `GET /api/conversations` indepen
 | Backfill page — status edit | **Real** — `PATCH /api/vault/backfill/{id}/status`, backup + conflict detection |
 | Backfill page — create starter file | **Real** — `POST /api/vault/backfill/create`, never overwrites existing |
 | Backfill page — add item | **Real** — `POST /api/vault/backfill`, appends row to `ops/backfill.md`, backup before write |
+| Backfill page — field edit | **Real** — `PATCH /api/vault/backfill/{id}`, edits non-status fields, backup + conflict detection |
 | Backfill page — closeout prompt | **Real** (frontend only) — generates prompt, copies to clipboard, no agent launched |
 | Resume Pipeline page — structured table | **Real** — reads `ops/resume-pipeline.md`, parses Markdown table |
+| Resume Pipeline page — create starter file | **Real** — `POST /api/vault/resume-pipeline/create`, never overwrites existing |
+| Resume Pipeline page — add item | **Real** — `POST /api/vault/resume-pipeline`, appends row to `ops/resume-pipeline.md`, backup before write |
 | Resume Pipeline page — status edit | **Real** — `PATCH /api/vault/resume-pipeline/{id}/status`, backup + conflict detection |
+| Resume Pipeline page — field edit | **Real** — `PATCH /api/vault/resume-pipeline/{id}`, edits non-status fields, backup + conflict detection |
 | Resume Pipeline page — tailoring prompt | **Real** (frontend only) — generates tailoring prompt, copies to clipboard, no AI called |
 | Dashboard Recent AI work | **Real** — `GET /api/conversations`, up to 5 latest conversations, read-only |
+| Dashboard Active Work panel | **Real** — `activeWork` section of `GET /api/dashboard/summary`; up to 3 items per workflow; read-only |
 | Escalation Queue — read | **Real** — `GET /api/vault/escalations`, parses `ops/escalation-queue.md` |
 | Escalation Queue — create file | **Real** — `POST /api/vault/escalations/create`, creates starter if missing |
 | Escalation Queue — add item | **Real** — `POST /api/vault/escalations`, appends row with backup |
 | Escalation Queue — status edit | **Real** — `PATCH /api/vault/escalations/{id}/status`, status cell only with backup |
+| Escalation Queue — field edit | **Real** — `PATCH /api/vault/escalations/{id}`, edits non-status fields, backup + conflict detection |
 | Escalation Queue — copy handoff prompt | **Real** (frontend only) — copies prompt to clipboard, no process launched |
 | Dashboard Escalations count | **Real** — `summary.escalations.active` (new + ready + in-progress + blocked) |
 | OpenClaw | Mocked — not wired |
@@ -946,9 +981,21 @@ GET /api/vault/resume-pipeline
   → { path, exists, lastModified, parseMode, preview, items[] }
   parseMode: "markdown-table" | "preview-only" | "missing"
 
+POST /api/vault/resume-pipeline/create
+  → same shape as GET; creates ops/resume-pipeline.md if missing, never overwrites
+
+POST /api/vault/resume-pipeline
+  Body: { target, company?, role?, status?, priority?, deadline?, link?, notes? }
+  → { ok, item, path, updatedAt }
+
 PATCH /api/vault/resume-pipeline/{itemId}/status
   Body: { "status": "new | tailoring | applied | interview | offer | rejected | archived" }
   → { ok, item, path, updatedAt }
+
+PATCH /api/vault/resume-pipeline/{itemId}
+  Body: { target, company?, role?, priority?, deadline?, link?, notes? }
+  → { ok, item, path, updatedAt }
+  status is preserved; use /status to change it
 ```
 
 ---
@@ -1056,6 +1103,20 @@ New items are added from the Backfill page using the **New Backfill Item** butto
 
 If `ops/backfill.md` does not exist (but the fallback file may), a **Create Backfill file** / **Create ops/backfill.md** button appears. Clicking it creates the starter file and enables adding items.
 
+### Editing existing items
+
+Each row has an **Edit** button that opens a modal pre-populated with the current values. The user can update item name, type, value, agent, path, and notes.
+
+Status is intentionally excluded from the edit modal — use the inline status dropdown on each row.
+
+Edit is hidden/disabled when the displayed data comes from `ops/backfill-last-year.md` (the fallback file is read-only).
+
+### Workflow
+
+```text
+capture row → edit/refine fields → triage status → copy closeout prompt
+```
+
 No repo scanning, agent launching, or shell execution occurs at any point.
 
 ### Endpoints
@@ -1074,6 +1135,13 @@ POST /api/vault/backfill
   Appends row to ops/backfill.md. Backup created before write.
   Rejects if only fallback file exists, if file is malformed, or if enums are invalid.
 
+PATCH /api/vault/backfill/{itemId}
+  Body: { item, type?, value?, path?, agent?, notes? }
+  → { ok, item, path, updatedAt }
+  Edits non-status fields of one row in ops/backfill.md.
+  status and unknown columns are preserved.
+  Backup created before write. Rejects fallback-only, malformed, or missing file.
+
 PATCH /api/vault/backfill/{itemId}/status
   Body: { "status": "new | triaged | in-progress | done | skipped" }
   → { ok, item, path, updatedAt }
@@ -1088,11 +1156,11 @@ Errors return HTTP 400 with a descriptive message. File is never modified on err
 - OpenClaw / NemoClaw integrations
 - Real research runs
 - Google Calendar API writes or automatic calendar imports
-- Adding or deleting calendar candidates from the UI
-- Editing arbitrary backfill fields (type, value, path, notes) after creation
+- Deleting calendar candidates from the UI (adding is implemented via `POST /api/vault/calendar-candidates`)
 - Deleting backfill rows from the UI
-- Adding or deleting resume pipeline rows from the UI
-- Editing resume pipeline fields other than status from the UI
+- Deleting resume pipeline rows from the UI
+- Deleting escalation queue items from the UI
+- Deleting tasks from the UI
 - Automatic job application or browser automation
 - AI resume rewriting (tailoring prompt generation only — no AI called)
 - Arbitrary vault Markdown editing
@@ -1101,3 +1169,8 @@ Errors return HTTP 400 with a descriptive message. File is never modified on err
 - Archive restore (manual only — files are in `backend/data/archive/`)
 - Bulk archive
 - Automatic closeout (Claude/OpenCode are never launched by the app)
+- Dashboard deep-link from Recent AI Work row to a specific conversation in AgentPage
+
+## Technical Debt
+
+Several vault workflows use similar Markdown table parse/update/backup logic. A future refactor may extract shared helpers once behavior stabilizes.

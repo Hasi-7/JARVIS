@@ -475,6 +475,24 @@ class CreateBackfillItemResponse(BaseModel):
     updatedAt: str
 
 
+class UpdateBackfillItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item:  str
+    type:  Optional[str] = None   # project|repo|hackathon|course|business|other
+    value: Optional[str] = None   # high|medium|low|null
+    path:  Optional[str] = None
+    agent: Optional[str] = None   # claude-code|opencode|manual|null
+    notes: Optional[str] = None
+
+
+class UpdateBackfillItemResponse(BaseModel):
+    ok:        bool
+    item:      BackfillItem
+    path:      str
+    updatedAt: str
+
+
 # ── resume pipeline ───────────────────────────────────────────────────────────
 
 class ResumePipelineItem(BaseModel):
@@ -504,6 +522,45 @@ class UpdateResumePipelineStatusRequest(BaseModel):
 
 
 class UpdateResumePipelineStatusResponse(BaseModel):
+    ok:        bool
+    item:      ResumePipelineItem
+    path:      str
+    updatedAt: str
+
+
+class CreateResumePipelineItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target:   str
+    company:  Optional[str] = None
+    role:     Optional[str] = None
+    status:   Optional[str] = None   # new|tailoring|applied|interview|offer|rejected|archived
+    priority: Optional[str] = None   # high|medium|low
+    deadline: Optional[str] = None
+    link:     Optional[str] = None
+    notes:    Optional[str] = None
+
+
+class CreateResumePipelineItemResponse(BaseModel):
+    ok:        bool
+    item:      ResumePipelineItem
+    path:      str
+    updatedAt: str
+
+
+class UpdateResumePipelineItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target:   str
+    company:  Optional[str] = None
+    role:     Optional[str] = None
+    priority: Optional[str] = None   # high|medium|low|null
+    deadline: Optional[str] = None
+    link:     Optional[str] = None
+    notes:    Optional[str] = None
+
+
+class UpdateResumePipelineItemResponse(BaseModel):
     ok:        bool
     item:      ResumePipelineItem
     path:      str
@@ -686,6 +743,62 @@ class DashboardTodayPlan(BaseModel):
     generatedAt: str = ""
 
 
+# ── active work drill-down ────────────────────────────────────────────────────
+
+class DashboardActiveWorkBackfillItem(BaseModel):
+    id:       str
+    title:    str
+    status:   str
+    priority: Optional[str] = None
+    type:     Optional[str] = None
+    path:     Optional[str] = None
+    reason:   str
+
+
+class DashboardActiveWorkEscalationItem(BaseModel):
+    id:       str
+    title:    str
+    status:   str
+    priority: Optional[str] = None
+    target:   Optional[str] = None
+    path:     Optional[str] = None
+    reason:   str
+
+
+class DashboardActiveWorkResumeItem(BaseModel):
+    id:       str
+    title:    str
+    status:   str
+    priority: Optional[str] = None
+    company:  Optional[str] = None
+    role:     Optional[str] = None
+    reason:   str
+
+
+class DashboardActiveWorkCalendarItem(BaseModel):
+    id:     str
+    title:  str
+    status: str
+    date:   Optional[str] = None
+    time:   Optional[str] = None
+    reason: str
+
+
+class DashboardActiveWorkRawItem(BaseModel):
+    id:     str
+    title:  str
+    status: str
+    reason: str
+
+
+class DashboardActiveWork(BaseModel):
+    backfill:    List[DashboardActiveWorkBackfillItem]    = []
+    escalations: List[DashboardActiveWorkEscalationItem] = []
+    resume:      List[DashboardActiveWorkResumeItem]      = []
+    calendar:    List[DashboardActiveWorkCalendarItem]    = []
+    raw:         List[DashboardActiveWorkRawItem]         = []
+
+
 class DashboardSummaryResponse(BaseModel):
     raw: DashboardRawSummary = DashboardRawSummary()
     tasks: DashboardTaskSummary = DashboardTaskSummary()
@@ -696,4 +809,5 @@ class DashboardSummaryResponse(BaseModel):
     escalations: DashboardEscalationSummary = DashboardEscalationSummary()
     runtime: DashboardRuntimeSummary = DashboardRuntimeSummary()
     todayPlan: DashboardTodayPlan = DashboardTodayPlan()
+    activeWork: DashboardActiveWork = DashboardActiveWork()
     errors: List[DashboardSummaryError] = []

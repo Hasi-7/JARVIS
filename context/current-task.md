@@ -1,85 +1,68 @@
 # Current Task
 
-## Goal
-
-Sprint 26 complete: Backfill row creation from the UI — safe capture of prior work.
-
-Next possibilities:
-- Backfill field editing (type, value, path, notes, agent) after creation
-- Resume Pipeline row creation (same pattern as Backfill)
-- Escalation Queue: mark items done from Dashboard quick actions
-- Dashboard refresh interval / background polling
-
-## Relevant Files
-
-- PRD.md
-- DESIGN.md
-- backend/app/vault.py
-- backend/app/models.py
-- backend/app/main.py
-- src/lib/api.ts
-- src/pages/BackfillPage.tsx
-- backend/tests/test_backfill_creation.py  ← new
-- context/current-task.md
-
 ## Current State
 
-- `GET /api/vault/backfill` reads `ops/backfill.md` or `ops/backfill-last-year.md`
-- `POST /api/vault/backfill/create` creates `ops/backfill.md` starter file if missing (never overwrites)
-- `POST /api/vault/backfill` appends a new row to `ops/backfill.md` with backup
-- `PATCH /api/vault/backfill/{id}/status` updates status cell with backup
-- `ops/backfill-last-year.md` is always read-only — appends rejected with clear message
-- BackfillPage: missing state shows "Create Backfill file" button
-- BackfillPage: fallback-only state (last-year file) shows notice + "Create ops/backfill.md" button
-- BackfillPage: "New Backfill Item" button appears when primary file is in markdown-table mode
-- BackfillPage: Add Item modal with item/type/status/value/agent/path/notes fields
-- BackfillPage: safety note in modal; error stays in modal on failure; modal closes and list reloads on success
-- Closeout prompt, filters, status editing all still work unchanged
-- 53/53 backend tests pass; npm run build passes
+Dashboard Active Work drill-down is complete. The Dashboard now shows compact read-only lists of active items (up to 3 per workflow) behind the count-strip numbers. 143/143 backend tests pass, npm run build clean.
 
-## Constraints
+## Real Workflows
 
-- No Claude Code/OpenCode launch from Brain UI.
-- No shell commands.
-- No repo modifications.
-- Backups before every write.
-- Only `ops/backfill.md` is ever written.
-- Allowed statuses: new | triaged | in-progress | done | skipped.
-- Allowed types: project | repo | hackathon | course | business | other.
-- Allowed values: high | medium | low.
-- Allowed agents: claude-code | opencode | manual.
+| Workflow | What is wired |
+|---|---|
+| **Dashboard** | `GET /api/dashboard/summary` — aggregated counts, Today's Plan (deterministic), Recent AI Work, Active Work drill-down (backfill/escalations/resume/calendar/raw) |
+| **Raw Inbox** | Stage / heuristic classify / AI classify (metadata only) / edit / approve / batch-approve / route to vault / brain sync-raw / archive staged original |
+| **Tasks** | Read (`ops/task-db.md` or `ops/tasks.md`), status edit, create new row — `GET /PATCH /POST /api/vault/tasks` |
+| **Calendar Candidates** | Read / create file / add candidate / edit / approve / export-open manual — `ops/calendar-candidates.md` |
+| **Entity creation** | Projects, Courses, Hackathons (brain CLI), Business (filesystem scaffold) |
+| **Backfill** | Read / create file / add item / status edit / field edit — `ops/backfill.md` (or read-only fallback `ops/backfill-last-year.md`) |
+| **Resume Pipeline** | Read / create file / add item / status edit / field edit / tailoring prompt — `ops/resume-pipeline.md` |
+| **Escalation Queue** | Read / create file / add item / status edit / field edit / handoff prompt — `ops/escalation-queue.md` |
+| **Local Agent** | Ollama streaming chat, conversation history, context window, `GET /api/agent/status` |
+| **Settings / Config** | Vault path + brain.cmd path, env-var/file/default layering |
 
-## Do Not Touch
+## Still Not Implemented
 
-- Raw Inbox routing/sync/archive behavior
-- Calendar candidates workflow
-- Tasks write behavior (still only editable from Tasks page)
-- Entity creation command mapping
-- Conversation files (read-only from Dashboard)
-- `ops/backfill-last-year.md` (read-only fallback, never written)
+- OpenClaw / NemoClaw / OpenShell runtime wiring
+- MCP gateway
+- Browser harness / computer use
+- Gmail intake
+- Google Calendar API writes or automatic import
+- Autonomous Claude Code / OpenCode launch (prompt generation only — no process launched)
+- Arbitrary shell execution or file modification
+- Repo scanning / automatic closeout
+- Job application automation
+- Dashboard quick actions (status changes from Dashboard)
+- Dashboard deep-link from Recent AI Work row into AgentPage for a specific conversation
 
-## Acceptance Criteria — all met
+## Safety Constraints
 
-- `POST /api/vault/backfill/create` creates `ops/backfill.md` only when missing. ✓
-- Existing `ops/backfill.md` is not overwritten. ✓
-- `POST /api/vault/backfill` appends a valid row to `ops/backfill.md`. ✓
-- Append rejects if only fallback file exists (clear message). ✓
-- Append rejects malformed `ops/backfill.md`. ✓
-- Backup created before append. ✓
-- Invalid status/type/value/agent rejected (400). ✓
-- Raw newlines rejected. ✓
-- Pipe characters sanitized. ✓
-- No repo/path is modified. ✓
-- Backfill page has "New Backfill Item" action (enabled when primary file + markdown-table). ✓
-- Create-file button works when missing or fallback-only. ✓
-- Add modal validates required fields. ✓
-- Successful add reloads list. ✓
-- Errors visible in modal. ✓
-- Existing filters/status/prompt behavior still works. ✓
-- npm run build passes. ✓
-- 53/53 backend tests pass. ✓
+- No Claude Code / OpenCode process launched by Brain UI at any point.
+- No shell commands beyond the strict `brain` allowlist.
+- Every vault write: re-read → re-parse → conflict check → backup → write.
+- `ops/backfill-last-year.md` permanently read-only.
+- `POST **/create` endpoints never overwrite existing files.
+- Path traversal rejected on all vault operations.
+- `extra="forbid"` on all Pydantic create/update request models.
+- Dashboard summary endpoint is entirely read-only — no mutations in activeWork building.
+
+## Next Recommended Sprints
+
+1. **Dashboard quick actions** — mark a backfill or escalation item done/in-progress directly from the Dashboard Active Work panel (requires mutation endpoints from Dashboard, not part of this sprint).
+2. **Deep-link from Dashboard → AgentPage** — clicking a Recent AI Work row should open AgentPage with that conversation selected.
+3. **Dashboard refresh interval** — optional background polling for dashboard summary (configurable interval, off by default).
+4. **Filtered today view** — Tasks page "Today" filter showing only blocked/overdue/due-today items, matching the Dashboard Today's Plan logic.
+5. **Bulk status update** — select multiple backfill or resume-pipeline rows and change status in one action.
 
 ## Test Plan
 
-- python -m pytest backend/tests/
-- npm run build
+```bash
+# Backend (includes 25 new activeWork tests)
+python -m pytest backend/tests/ -q
+# Expected: 143 passed, 1 warning
+
+# Frontend
+npm run build
+# Expected: 83 modules, 0 TypeScript errors, built in ~1s
+
+# Python compile check
+python -m py_compile backend\app\dashboard.py backend\app\vault.py backend\app\main.py backend\app\models.py
+```

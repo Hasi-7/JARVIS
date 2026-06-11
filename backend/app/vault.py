@@ -1026,6 +1026,213 @@ def update_backfill_status(vault_path: str, item_id: str, new_status: str) -> di
     }
 
 
+def update_backfill_item(
+    vault_path: str,
+    item_id:    str,
+    item:       str,
+    item_type:  Optional[str] = None,
+    value:      Optional[str] = None,
+    path:       Optional[str] = None,
+    agent:      Optional[str] = None,
+    notes:      Optional[str] = None,
+) -> dict:
+    """
+    Update the non-status fields of a single backfill item in ops/backfill.md.
+
+    Editable fields: item, type, value, path, agent, notes.
+    Preserved fields: status, unknown columns.
+
+    Safety contract:
+    - Only writes to ops/backfill.md (never to ops/backfill-last-year.md).
+    - item must be non-empty.
+    - Enum fields validated against allowlists.
+    - Rejects raw newlines in all fields.
+    - Sanitizes pipe characters in all table cells.
+    - File re-read and re-parsed on every call (no stale state).
+    - Target row verified by item name before write (conflict detection).
+    - Backup created before every write; aborted if backup fails.
+    - Reject if ops/backfill.md is missing or malformed.
+    - No shell commands. No Claude Code/OpenCode launched. No repo files modified.
+
+    Raises ValueError with a descriptive message on any safety check failure.
+    Returns {"ok": True, "item": {...}, "path": str, "updatedAt": str}.
+    """
+    # ── validate item_id ─────────────────────────────────────────────────────
+    if not (item_id.startswith("b") and item_id[1:].isdigit() and len(item_id) > 1):
+        raise ValueError(
+            f"Invalid item id {item_id!r}. Expected format: b<number> (e.g. b1)."
+        )
+    item_index = int(item_id[1:]) - 1
+    if item_index < 0:
+        raise ValueError(f"Invalid item id {item_id!r}.")
+
+    # ── validate item field ───────────────────────────────────────────────────
+    item = (item or "").strip()
+    if not item:
+        raise ValueError("item is required and cannot be empty.")
+    if "\n" in item or "\r" in item:
+        raise ValueError("Field 'item' must not contain newlines.")
+
+    # ── validate enum fields ─────────────────────────────────────────────────
+    item_type = (item_type or "other").strip().lower()
+    if item_type not in ALLOWED_BACKFILL_TYPES:
+        raise ValueError(
+            f"Invalid type {item_type!r}. Allowed: {sorted(ALLOWED_BACKFILL_TYPES)}"
+        )
+
+    if value is not None:
+        value = (value or "").strip().lower()
+        if value and value not in ALLOWED_BACKFILL_VALUES:
+            raise ValueError(
+                f"Invalid value {value!r}. Allowed: {sorted(ALLOWED_BACKFILL_VALUES)}"
+            )
+        if not value:
+            value = None
+
+    if agent is not None:
+        agent = (agent or "").strip().lower()
+        if agent and agent not in ALLOWED_BACKFILL_AGENTS:
+            raise ValueError(
+                f"Invalid agent {agent!r}. Allowed: {sorted(ALLOWED_BACKFILL_AGENTS)}"
+            )
+        if not agent:
+            agent = None
+
+    # ── validate optional text fields ────────────────────────────────────────
+    for field_name, field_val in (("path", path), ("notes", notes)):
+        if field_val and ("\n" in str(field_val) or "\r" in str(field_val)):
+            raise ValueError(f"Field '{field_name}' must not contain newlines.")
+
+    # ── locate file — only ops/backfill.md ───────────────────────────────────
+    root_path: Path = Path(vault_path)
+    primary = _safe_subpath(root_path, _BACKFILL_PRIMARY)
+    if primary is None:
+        raise ValueError("Invalid backfill file path.")
+
+    if not primary.is_file():
+        fallback = _safe_subpath(root_path, _BACKFILL_CANDIDATES[1])
+        if fallback is not None and fallback.is_file():
+            raise ValueError("Backfill edits require ops/backfill.md.")
+        raise ValueError("Backfill file does not exist. Create it first.")
+
+    # ── read full file ────────────────────────────────────────────────────────
+    try:
+        full_content = primary.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        raise ValueError(f"Could not read backfill file: {exc}") from exc
+
+    # ── parse ─────────────────────────────────────────────────────────────────
+    lines = full_content[:_PARSE_CHARS_BF].splitlines()
+    items = _parse_table_backfill(lines)
+    if not items:
+        raise ValueError(
+            "Backfill file does not contain a Markdown table — cannot edit. "
+            "The file may be malformed."
+        )
+    if item_index >= len(items):
+        raise ValueError(
+            f"Item '{item_id}' not found. File has {len(items)} item(s). "
+            "Refresh and try again."
+        )
+
+    target        = items[item_index]
+    item_col_idx  = target["_itemColIdx"]
+    col_map       = target["_colMap"]
+
+    # ── locate and verify the line ────────────────────────────────────────────
+    all_lines = full_content.splitlines(keepends=True)
+    line_num: int = target["_lineNum"]
+    if line_num >= len(all_lines):
+        raise ValueError(
+            f"Item line {line_num} not found (file has {len(all_lines)} lines). "
+            "File may have changed — refresh and try again."
+        )
+
+    orig_line = all_lines[line_num]
+    if not _ROW_RE.match(orig_line.rstrip('\r\n')):
+        raise ValueError(
+            f"Line {line_num} no longer looks like a table row. "
+            "File may have changed — refresh and try again."
+        )
+
+    orig_cells = [c.strip() for c in orig_line.strip().rstrip('\r\n').strip('|').split('|')]
+
+    # Conflict detection: verify item name still matches.
+    if item_col_idx >= 0 and item_col_idx < len(orig_cells):
+        if orig_cells[item_col_idx] != target["item"]:
+            raise ValueError(
+                "Item name mismatch — file has changed since last load. "
+                "Refresh and try again."
+            )
+
+    # ── build updated cells ───────────────────────────────────────────────────
+    new_cell_values: dict = {
+        "item":   _sanitize_table_cell(item),
+        "type":   _sanitize_table_cell(item_type),
+        "value":  _sanitize_table_cell(value or ""),
+        "path":   _sanitize_table_cell(path  or ""),
+        "agent":  _sanitize_table_cell(agent or ""),
+        "notes":  _sanitize_table_cell(notes or ""),
+    }
+
+    new_cells: list = []
+    for i, col in enumerate(col_map):
+        orig_val = orig_cells[i] if i < len(orig_cells) else ""
+        if col == "status":
+            new_cells.append(orig_val)          # always preserve status
+        elif col in new_cell_values:
+            new_cells.append(new_cell_values[col])   # update editable field
+        else:
+            new_cells.append(orig_val)          # preserve unknown column
+
+    new_row  = '| ' + ' | '.join(new_cells) + ' |'
+    line_end = _line_ending(orig_line)
+    new_line = new_row + line_end
+
+    # ── backup then write ─────────────────────────────────────────────────────
+    try:
+        _backup_backfill_file(primary)
+    except Exception as exc:
+        raise ValueError(f"Backup failed — write aborted: {exc}") from exc
+
+    all_lines[line_num] = new_line
+    try:
+        primary.write_text(''.join(all_lines), encoding="utf-8")
+    except Exception as exc:
+        raise ValueError(f"Could not write backfill file: {exc}") from exc
+
+    logger.info(
+        "Backfill item edited: id=%s  item=%r  type=%r  file=%s",
+        item_id, item, item_type, _BACKFILL_PRIMARY,
+    )
+
+    # Determine preserved status from original cells.
+    status_col_idx = target["_statusColIdx"]
+    current_status = (
+        orig_cells[status_col_idx].strip()
+        if status_col_idx >= 0 and status_col_idx < len(orig_cells)
+        else target.get("status") or "new"
+    )
+
+    updated_item = {
+        "id":     item_id,
+        "item":   item,
+        "type":   item_type,
+        "status": current_status,
+        "value":  value,
+        "path":   path,
+        "notes":  notes,
+        "agent":  agent,
+        "raw":    new_row,
+    }
+    return {
+        "ok":        True,
+        "item":      updated_item,
+        "path":      _BACKFILL_PRIMARY,
+        "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
 # ── backfill creation helpers ─────────────────────────────────────────────────
 
 def _has_bf_table_header(lines: list) -> bool:
@@ -1486,6 +1693,14 @@ ALLOWED_RESUME_STATUSES: frozenset = frozenset({
     "new", "tailoring", "applied", "interview", "offer", "rejected", "archived"
 })
 
+ALLOWED_RESUME_PRIORITIES: frozenset = frozenset({"high", "medium", "low"})
+
+_RESUME_STARTER_CONTENT = (
+    "# Resume Pipeline\n\n"
+    "| Target | Company | Role | Status | Priority | Deadline | Link | Notes |\n"
+    "|---|---|---|---|---|---|---|---|\n"
+)
+
 _RESUME_COL_ALIASES: dict = {
     # target
     "target": "target", "name": "target", "title": "target", "job": "target",
@@ -1623,7 +1838,7 @@ def get_resume_pipeline(vault_path: str) -> dict:
         "lastModified": _last_modified_iso(rp_path),
         "preview":      preview,
         "items":        _strip_rp_internal(items),
-        "parseMode":    "markdown-table" if items else "preview-only",
+        "parseMode":    "markdown-table" if (items or _has_rp_table_header(lines)) else "preview-only",
     }
 
 
@@ -1777,6 +1992,392 @@ def update_resume_pipeline_status(vault_path: str, item_id: str, new_status: str
         "deadline": item["deadline"],
         "link":     item["link"],
         "notes":    item["notes"],
+        "raw":      new_row,
+    }
+    return {
+        "ok":        True,
+        "item":      updated_item,
+        "path":      _RESUME_FILE,
+        "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+# ── resume pipeline creation + field edit ─────────────────────────────────────
+
+def _has_rp_table_header(lines: list) -> bool:
+    for i in range(len(lines) - 1):
+        if _ROW_RE.match(lines[i]) and _SEP_RE.match(lines[i + 1]):
+            return True
+    return False
+
+
+def _read_rp_col_map(lines: list) -> list:
+    """Return the normalized column order from the resume-pipeline Markdown table header."""
+    for i in range(len(lines) - 1):
+        if _ROW_RE.match(lines[i]) and _SEP_RE.match(lines[i + 1]):
+            raw_cols = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+            return [_norm_rp_col(c) for c in raw_cols]
+    return ["target", "company", "role", "status", "priority", "deadline", "link", "notes"]
+
+
+def create_resume_pipeline_file(vault_path: str) -> dict:
+    """
+    Create ops/resume-pipeline.md with a starter Markdown table if it is missing.
+
+    Does not overwrite an existing file.
+
+    Safety contract:
+    - Only writes to ops/resume-pipeline.md.
+    - Never overwrites an existing file.
+    - Creates ops/ directory only if needed.
+    - No shell commands. No AI calls. No browser automation.
+
+    Returns the same shape as get_resume_pipeline().
+    Raises ValueError on any I/O failure.
+    """
+    root    = Path(vault_path)
+    rp_path = _safe_subpath(root, _RESUME_FILE)
+    if rp_path is None:
+        raise ValueError("Invalid resume-pipeline file path.")
+
+    if rp_path.exists():
+        return get_resume_pipeline(vault_path)
+
+    ops_dir = _safe_subpath(root, "ops")
+    if ops_dir is None:
+        raise ValueError("Invalid vault ops path.")
+
+    try:
+        ops_dir.mkdir(parents=True, exist_ok=True)
+        rp_path.write_text(_RESUME_STARTER_CONTENT, encoding="utf-8")
+    except Exception as exc:
+        raise ValueError(f"Could not create resume-pipeline file: {exc}") from exc
+
+    logger.info("Resume pipeline starter file created: %s", rp_path)
+    return get_resume_pipeline(vault_path)
+
+
+def create_resume_pipeline_item(
+    vault_path: str,
+    target:     str,
+    company:    Optional[str] = None,
+    role:       Optional[str] = None,
+    status:     Optional[str] = None,
+    priority:   Optional[str] = None,
+    deadline:   Optional[str] = None,
+    link:       Optional[str] = None,
+    notes:      Optional[str] = None,
+) -> dict:
+    """
+    Append one resume-pipeline item row to ops/resume-pipeline.md.
+
+    Safety contract:
+    - Only writes to ops/resume-pipeline.md.
+    - File must already exist and contain a Markdown table header.
+    - target must be non-empty.
+    - Rejects raw newlines in all fields.
+    - Sanitizes pipe characters in all table cells.
+    - status defaults to 'new'; enum fields validated against allowlists.
+    - Backup created before writing; aborted if backup fails.
+    - Only appends; never rewrites existing rows.
+    - No AI calls. No browser automation. No application submission.
+
+    Raises ValueError on any validation or I/O failure.
+    Returns {"ok": True, "item": {...}, "path": str, "updatedAt": str}.
+    """
+    # ── validate inputs ───────────────────────────────────────────────────────
+    target = (target or "").strip()
+    if not target:
+        raise ValueError("target is required and cannot be empty.")
+    if "\n" in target or "\r" in target:
+        raise ValueError("Field 'target' must not contain newlines.")
+
+    for field_name, field_val in (
+        ("company", company), ("role", role),
+        ("deadline", deadline), ("link", link), ("notes", notes),
+    ):
+        if field_val and ("\n" in str(field_val) or "\r" in str(field_val)):
+            raise ValueError(f"Field '{field_name}' must not contain newlines.")
+
+    status = (status or "new").strip().lower()
+    if status not in ALLOWED_RESUME_STATUSES:
+        raise ValueError(
+            f"Invalid status {status!r}. Allowed: {sorted(ALLOWED_RESUME_STATUSES)}"
+        )
+
+    if priority is not None:
+        priority = (priority or "").strip().lower()
+        if priority and priority not in ALLOWED_RESUME_PRIORITIES:
+            raise ValueError(
+                f"Invalid priority {priority!r}. Allowed: {sorted(ALLOWED_RESUME_PRIORITIES)}"
+            )
+        if not priority:
+            priority = None
+
+    # ── locate file ───────────────────────────────────────────────────────────
+    root_path: Path = Path(vault_path)
+    rp_path = _safe_subpath(root_path, _RESUME_FILE)
+    if rp_path is None:
+        raise ValueError("Invalid resume-pipeline file path.")
+
+    if not rp_path.is_file():
+        raise ValueError("Resume pipeline file does not exist. Create it first.")
+
+    # ── read + parse ──────────────────────────────────────────────────────────
+    try:
+        full_content = rp_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        raise ValueError(f"Could not read resume-pipeline file: {exc}") from exc
+
+    lines = full_content[:_PARSE_CHARS_RP].splitlines()
+    if not _has_rp_table_header(lines):
+        raise ValueError(
+            "Resume pipeline file does not contain a Markdown table — cannot append. "
+            "The file may be malformed."
+        )
+
+    existing = _parse_table_resume(lines)
+    col_map  = _read_rp_col_map(lines)
+    new_id   = f"r{len(existing) + 1}"
+
+    # ── build new row ─────────────────────────────────────────────────────────
+    cell_values: dict = {
+        "target":   _sanitize_table_cell(target),
+        "company":  _sanitize_table_cell(company  or ""),
+        "role":     _sanitize_table_cell(role      or ""),
+        "status":   _sanitize_table_cell(status),
+        "priority": _sanitize_table_cell(priority  or ""),
+        "deadline": _sanitize_table_cell(deadline  or ""),
+        "link":     _sanitize_table_cell(link      or ""),
+        "notes":    _sanitize_table_cell(notes     or ""),
+    }
+    cells   = [cell_values.get(col, "") for col in col_map]
+    new_row = '| ' + ' | '.join(cells) + ' |'
+
+    # ── backup then append ────────────────────────────────────────────────────
+    try:
+        _backup_resume_file(rp_path)
+    except Exception as exc:
+        raise ValueError(f"Backup failed — write aborted: {exc}") from exc
+
+    append_content = full_content
+    if append_content and not append_content.endswith('\n'):
+        append_content += '\n'
+
+    try:
+        rp_path.write_text(append_content + new_row + '\n', encoding="utf-8")
+    except Exception as exc:
+        raise ValueError(f"Could not write resume-pipeline file: {exc}") from exc
+
+    logger.info(
+        "Resume pipeline item appended: id=%s  target=%r  status=%r",
+        new_id, target, status,
+    )
+
+    new_item = {
+        "id":       new_id,
+        "target":   target,
+        "company":  company,
+        "role":     role,
+        "status":   status,
+        "priority": priority,
+        "deadline": deadline,
+        "link":     link,
+        "notes":    notes,
+        "raw":      new_row,
+    }
+    return {
+        "ok":        True,
+        "item":      new_item,
+        "path":      _RESUME_FILE,
+        "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def update_resume_pipeline_item(
+    vault_path: str,
+    item_id:    str,
+    target:     str,
+    company:    Optional[str] = None,
+    role:       Optional[str] = None,
+    priority:   Optional[str] = None,
+    deadline:   Optional[str] = None,
+    link:       Optional[str] = None,
+    notes:      Optional[str] = None,
+) -> dict:
+    """
+    Update the non-status fields of a single resume-pipeline item.
+
+    Editable fields: target, company, role, priority, deadline, link, notes.
+    Preserved fields: status, unknown columns.
+
+    Safety contract:
+    - Only writes to ops/resume-pipeline.md.
+    - target must be non-empty.
+    - Enum fields validated against allowlists.
+    - Rejects raw newlines in all fields.
+    - Sanitizes pipe characters in all table cells.
+    - File re-read and re-parsed on every call (no stale state).
+    - Target field verified before write (conflict detection).
+    - Backup created before every write; aborted if backup fails.
+    - Reject if file is missing or malformed.
+    - No AI calls. No browser automation. No application submission.
+
+    Raises ValueError with a descriptive message on any safety check failure.
+    Returns {"ok": True, "item": {...}, "path": str, "updatedAt": str}.
+    """
+    # ── validate item_id ─────────────────────────────────────────────────────
+    if not (item_id.startswith("r") and item_id[1:].isdigit() and len(item_id) > 1):
+        raise ValueError(
+            f"Invalid item id {item_id!r}. Expected format: r<number> (e.g. r1)."
+        )
+    item_index = int(item_id[1:]) - 1
+    if item_index < 0:
+        raise ValueError(f"Invalid item id {item_id!r}.")
+
+    # ── validate target ───────────────────────────────────────────────────────
+    target = (target or "").strip()
+    if not target:
+        raise ValueError("target is required and cannot be empty.")
+    if "\n" in target or "\r" in target:
+        raise ValueError("Field 'target' must not contain newlines.")
+
+    # ── validate priority ─────────────────────────────────────────────────────
+    if priority is not None:
+        priority = (priority or "").strip().lower()
+        if priority and priority not in ALLOWED_RESUME_PRIORITIES:
+            raise ValueError(
+                f"Invalid priority {priority!r}. Allowed: {sorted(ALLOWED_RESUME_PRIORITIES)}"
+            )
+        if not priority:
+            priority = None
+
+    # ── validate optional text fields ────────────────────────────────────────
+    for field_name, field_val in (
+        ("company", company), ("role", role),
+        ("deadline", deadline), ("link", link), ("notes", notes),
+    ):
+        if field_val and ("\n" in str(field_val) or "\r" in str(field_val)):
+            raise ValueError(f"Field '{field_name}' must not contain newlines.")
+
+    # ── locate file ───────────────────────────────────────────────────────────
+    root_path: Path = Path(vault_path)
+    rp_path = _safe_subpath(root_path, _RESUME_FILE)
+    if rp_path is None:
+        raise ValueError("Invalid resume-pipeline file path.")
+    if not rp_path.is_file():
+        raise ValueError("Resume pipeline file does not exist. Create it first.")
+
+    # ── read full file ────────────────────────────────────────────────────────
+    try:
+        full_content = rp_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        raise ValueError(f"Could not read resume-pipeline file: {exc}") from exc
+
+    # ── parse ─────────────────────────────────────────────────────────────────
+    lines = full_content[:_PARSE_CHARS_RP].splitlines()
+    items = _parse_table_resume(lines)
+    if not items:
+        raise ValueError(
+            "Resume pipeline file does not contain a Markdown table — cannot edit. "
+            "The file may be malformed."
+        )
+    if item_index >= len(items):
+        raise ValueError(
+            f"Item '{item_id}' not found. File has {len(items)} item(s). "
+            "Refresh and try again."
+        )
+
+    target_item    = items[item_index]
+    target_col_idx = target_item["_targetColIdx"]
+    col_map        = target_item["_colMap"]
+
+    # ── locate and verify the line ────────────────────────────────────────────
+    all_lines = full_content.splitlines(keepends=True)
+    line_num: int = target_item["_lineNum"]
+    if line_num >= len(all_lines):
+        raise ValueError(
+            f"Item line {line_num} not found (file has {len(all_lines)} lines). "
+            "File may have changed — refresh and try again."
+        )
+
+    orig_line = all_lines[line_num]
+    if not _ROW_RE.match(orig_line.rstrip('\r\n')):
+        raise ValueError(
+            f"Line {line_num} no longer looks like a table row. "
+            "File may have changed — refresh and try again."
+        )
+
+    orig_cells = [c.strip() for c in orig_line.strip().rstrip('\r\n').strip('|').split('|')]
+
+    # Conflict detection: verify target name still matches.
+    if target_col_idx >= 0 and target_col_idx < len(orig_cells):
+        if orig_cells[target_col_idx] != target_item["target"]:
+            raise ValueError(
+                "Target name mismatch — file has changed since last load. "
+                "Refresh and try again."
+            )
+
+    # ── build updated cells ───────────────────────────────────────────────────
+    new_cell_values: dict = {
+        "target":   _sanitize_table_cell(target),
+        "company":  _sanitize_table_cell(company  or ""),
+        "role":     _sanitize_table_cell(role      or ""),
+        "priority": _sanitize_table_cell(priority  or ""),
+        "deadline": _sanitize_table_cell(deadline  or ""),
+        "link":     _sanitize_table_cell(link      or ""),
+        "notes":    _sanitize_table_cell(notes     or ""),
+    }
+
+    new_cells: list = []
+    for i, col in enumerate(col_map):
+        orig_val = orig_cells[i] if i < len(orig_cells) else ""
+        if col == "status":
+            new_cells.append(orig_val)               # always preserve status
+        elif col in new_cell_values:
+            new_cells.append(new_cell_values[col])   # update editable field
+        else:
+            new_cells.append(orig_val)               # preserve unknown column
+
+    new_row  = '| ' + ' | '.join(new_cells) + ' |'
+    line_end = _line_ending(orig_line)
+    new_line = new_row + line_end
+
+    # ── backup then write ─────────────────────────────────────────────────────
+    try:
+        _backup_resume_file(rp_path)
+    except Exception as exc:
+        raise ValueError(f"Backup failed — write aborted: {exc}") from exc
+
+    all_lines[line_num] = new_line
+    try:
+        rp_path.write_text(''.join(all_lines), encoding="utf-8")
+    except Exception as exc:
+        raise ValueError(f"Could not write resume-pipeline file: {exc}") from exc
+
+    logger.info(
+        "Resume pipeline item edited: id=%s  target=%r  file=%s",
+        item_id, target, _RESUME_FILE,
+    )
+
+    # Preserve status from original cells.
+    status_col_idx = target_item["_statusColIdx"]
+    current_status = (
+        orig_cells[status_col_idx].strip()
+        if status_col_idx >= 0 and status_col_idx < len(orig_cells)
+        else target_item.get("status") or "new"
+    )
+
+    updated_item = {
+        "id":       item_id,
+        "target":   target,
+        "company":  company,
+        "role":     role,
+        "status":   current_status,
+        "priority": priority,
+        "deadline": deadline,
+        "link":     link,
+        "notes":    notes,
         "raw":      new_row,
     }
     return {

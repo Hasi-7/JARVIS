@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
-import type { ResumePipelineItem, ResumePipelineResponse, ResumePipelineStatus } from '@/lib/api';
+import type {
+  ResumePipelineItem,
+  ResumePipelineResponse,
+  ResumePipelineStatus,
+  ResumePipelinePriority,
+} from '@/lib/api';
 import { createObsidianOpenUrl } from '@/lib/obsidian';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
@@ -12,6 +17,8 @@ import { EmptyState } from '@/components/ui/EmptyState';
 const STATUSES: ResumePipelineStatus[] = [
   'new', 'tailoring', 'applied', 'interview', 'offer', 'rejected', 'archived',
 ];
+
+const PRIORITIES: ResumePipelinePriority[] = ['high', 'medium', 'low'];
 
 const STATUS_TONE: Record<string, string> = {
   new:       'var(--txt-2)',
@@ -24,10 +31,10 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 function statusDot(status: string): 'live' | 'amber' | 'green' | 'grey' | 'red' {
-  if (status === 'offer')                    return 'green';
+  if (status === 'offer')                              return 'green';
   if (status === 'applied' || status === 'interview') return 'amber';
-  if (status === 'tailoring')                return 'live';
-  if (status === 'rejected')                 return 'red';
+  if (status === 'tailoring')                         return 'live';
+  if (status === 'rejected')                          return 'red';
   return 'grey';
 }
 
@@ -63,7 +70,7 @@ function generateTailoringPrompt(item: ResumePipelineItem): string {
   const lines: string[] = [];
   lines.push('# Resume Tailoring Prompt');
   lines.push('');
-  lines.push(`You are helping tailor a resume and prepare an application for the following opportunity.`);
+  lines.push('You are helping tailor a resume and prepare an application for the following opportunity.');
   lines.push('');
   lines.push(`**Target:** ${item.target}`);
   if (item.company)  lines.push(`**Company:** ${item.company}`);
@@ -84,27 +91,16 @@ function generateTailoringPrompt(item: ResumePipelineItem): string {
   return lines.join('\n');
 }
 
-// ── confirm modal ─────────────────────────────────────────────────────────────
+// ── shared modal shell ────────────────────────────────────────────────────────
 
-interface ConfirmState {
-  item:      ResumePipelineItem;
-  newStatus: ResumePipelineStatus;
-}
-
-function StatusConfirmModal({
-  confirm,
-  filePath,
-  loading,
-  error,
-  onApply,
-  onCancel,
+function ModalShell({
+  onClose,
+  disabled,
+  children,
 }: {
-  confirm:  ConfirmState;
-  filePath: string;
-  loading:  boolean;
-  error:    string | null;
-  onApply:  () => void;
-  onCancel: () => void;
+  onClose:  () => void;
+  disabled: boolean;
+  children: React.ReactNode;
 }) {
   return (
     <div
@@ -114,83 +110,452 @@ function StatusConfirmModal({
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         zIndex: 1000,
       }}
-      onClick={(e) => { if (e.target === e.currentTarget && !loading) onCancel(); }}
+      onClick={(e) => { if (e.target === e.currentTarget && !disabled) onClose(); }}
     >
       <div className="panel" style={{
-        width: 460, padding: 'var(--s5)',
+        width: 520, padding: 'var(--s5)',
         display: 'flex', flexDirection: 'column', gap: 'var(--s4)',
-        boxShadow: 'var(--shadow-pop)',
+        boxShadow: 'var(--shadow-pop)', maxHeight: '90vh', overflowY: 'auto',
       }}>
-        <div style={{ fontWeight: 700, fontSize: 14 }}>Update application status</div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s2)' }}>
-          <div style={{ fontSize: 12.5, color: 'var(--txt-0)', fontWeight: 500 }}>
-            {confirm.item.target}
-            {confirm.item.company && (
-              <span style={{ color: 'var(--txt-2)', fontWeight: 400 }}>
-                {' '}— {confirm.item.company}
-              </span>
-            )}
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-            <span style={{ color: STATUS_TONE[confirm.item.status] ?? 'var(--txt-2)' }}>
-              {confirm.item.status}
-            </span>
-            <Icon name="arrow-right" size={12} style={{ color: 'var(--txt-3)' }} />
-            <span style={{ color: STATUS_TONE[confirm.newStatus] ?? 'var(--txt-0)', fontWeight: 600 }}>
-              {confirm.newStatus}
-            </span>
-          </div>
-        </div>
-
-        <div style={{
-          fontSize: 11, color: 'var(--txt-2)',
-          padding: 'var(--s2) var(--s3)',
-          background: 'var(--surface-2)', borderRadius: 'var(--r2)',
-          border: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 3,
-        }}>
-          <div className="mono" style={{ fontSize: 10.5 }}>{filePath}</div>
-          <div style={{ color: 'var(--txt-3)' }}>
-            A backup is created before every write. Only the status cell is modified.
-          </div>
-        </div>
-
-        {error && (
-          <div style={{
-            fontSize: 11.5, color: 'var(--red)',
-            padding: 'var(--s2) var(--s3)',
-            background: 'var(--red-bg)', borderRadius: 'var(--r2)',
-            border: '1px solid var(--red-line)',
-          }}>
-            {error}
-          </div>
-        )}
-
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)' }}>
-          <button className="btn btn-sm btn-ghost" onClick={onCancel} disabled={loading}>
-            Cancel
-          </button>
-          <button className="btn btn-sm btn-primary" onClick={onApply} disabled={loading}>
-            {loading ? 'Saving…' : 'Apply'}
-          </button>
-        </div>
+        {children}
       </div>
     </div>
+  );
+}
+
+// ── status confirm modal ──────────────────────────────────────────────────────
+
+interface ConfirmState {
+  item:      ResumePipelineItem;
+  newStatus: ResumePipelineStatus;
+}
+
+function StatusConfirmModal({
+  confirm, filePath, loading, error, onApply, onCancel,
+}: {
+  confirm:  ConfirmState;
+  filePath: string;
+  loading:  boolean;
+  error:    string | null;
+  onApply:  () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <ModalShell onClose={onCancel} disabled={loading}>
+      <div style={{ fontWeight: 700, fontSize: 14 }}>Update application status</div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s2)' }}>
+        <div style={{ fontSize: 12.5, color: 'var(--txt-0)', fontWeight: 500 }}>
+          {confirm.item.target}
+          {confirm.item.company && (
+            <span style={{ color: 'var(--txt-2)', fontWeight: 400 }}>
+              {' '}— {confirm.item.company}
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+          <span style={{ color: STATUS_TONE[confirm.item.status] ?? 'var(--txt-2)' }}>
+            {confirm.item.status}
+          </span>
+          <Icon name="arrow-right" size={12} style={{ color: 'var(--txt-3)' }} />
+          <span style={{ color: STATUS_TONE[confirm.newStatus] ?? 'var(--txt-0)', fontWeight: 600 }}>
+            {confirm.newStatus}
+          </span>
+        </div>
+      </div>
+
+      <div style={{
+        fontSize: 11, color: 'var(--txt-2)',
+        padding: 'var(--s2) var(--s3)',
+        background: 'var(--surface-2)', borderRadius: 'var(--r2)',
+        border: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 3,
+      }}>
+        <div className="mono" style={{ fontSize: 10.5 }}>{filePath}</div>
+        <div style={{ color: 'var(--txt-3)' }}>
+          A backup is created before every write. Only the status cell is modified.
+        </div>
+      </div>
+
+      {error && (
+        <div style={{
+          fontSize: 11.5, color: 'var(--red)',
+          padding: 'var(--s2) var(--s3)',
+          background: 'var(--red-bg)', borderRadius: 'var(--r2)',
+          border: '1px solid var(--red-line)',
+        }}>
+          {error}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)' }}>
+        <button className="btn btn-sm btn-ghost" onClick={onCancel} disabled={loading}>
+          Cancel
+        </button>
+        <button className="btn btn-sm btn-primary" onClick={onApply} disabled={loading}>
+          {loading ? 'Saving…' : 'Apply'}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+// ── add resume item modal ─────────────────────────────────────────────────────
+
+function AddResumeItemModal({
+  filePath, loading, error, onAdd, onCancel,
+}: {
+  filePath: string;
+  loading:  boolean;
+  error:    string | null;
+  onAdd:    (fields: {
+    target: string; company: string; role: string;
+    status: ResumePipelineStatus; priority: ResumePipelinePriority | '';
+    deadline: string; link: string; notes: string;
+  }) => void;
+  onCancel: () => void;
+}) {
+  const [target,   setTarget]   = useState('');
+  const [company,  setCompany]  = useState('');
+  const [role,     setRole]     = useState('');
+  const [status,   setStatus]   = useState<ResumePipelineStatus>('new');
+  const [priority, setPriority] = useState<ResumePipelinePriority | ''>('');
+  const [deadline, setDeadline] = useState('');
+  const [link,     setLink]     = useState('');
+  const [notes,    setNotes]    = useState('');
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '5px 8px', fontSize: 12,
+    background: 'var(--surface-2)', color: 'var(--txt-0)',
+    border: '1px solid var(--line)', borderRadius: 'var(--r2)',
+    fontFamily: 'var(--font-ui)', boxSizing: 'border-box',
+  };
+
+  const labelStyle: React.CSSProperties = {
+    fontSize: 10.5, fontWeight: 600, color: 'var(--txt-2)',
+    textTransform: 'uppercase', letterSpacing: '0.06em',
+    marginBottom: 3, display: 'block',
+  };
+
+  function Field({ label, children, required }: { label: string; children: React.ReactNode; required?: boolean }) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
+        <label style={labelStyle}>
+          {label}{required && <span style={{ color: 'var(--red)', marginLeft: 2 }}>*</span>}
+        </label>
+        {children}
+      </div>
+    );
+  }
+
+  return (
+    <ModalShell onClose={onCancel} disabled={loading}>
+      <div style={{ fontWeight: 700, fontSize: 14 }}>New Resume Pipeline Item</div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--s3)' }}>
+          <Field label="Target" required>
+            <input
+              style={inputStyle} value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              placeholder="e.g. SWE Intern at Acme"
+              autoFocus
+              disabled={loading}
+            />
+          </Field>
+          <Field label="Company">
+            <input
+              style={inputStyle} value={company}
+              onChange={(e) => setCompany(e.target.value)}
+              placeholder="e.g. Acme Corp"
+              disabled={loading}
+            />
+          </Field>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--s3)' }}>
+          <Field label="Role">
+            <input
+              style={inputStyle} value={role}
+              onChange={(e) => setRole(e.target.value)}
+              placeholder="e.g. Software Engineer Intern"
+              disabled={loading}
+            />
+          </Field>
+          <Field label="Status">
+            <select
+              style={inputStyle} value={status}
+              onChange={(e) => setStatus(e.target.value as ResumePipelineStatus)}
+              disabled={loading}
+            >
+              {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </Field>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--s3)' }}>
+          <Field label="Priority">
+            <select
+              style={inputStyle} value={priority}
+              onChange={(e) => setPriority(e.target.value as ResumePipelinePriority | '')}
+              disabled={loading}
+            >
+              <option value="">— none —</option>
+              {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </Field>
+          <Field label="Deadline">
+            <input
+              style={inputStyle} value={deadline}
+              onChange={(e) => setDeadline(e.target.value)}
+              placeholder="e.g. 2026-09-01"
+              disabled={loading}
+            />
+          </Field>
+        </div>
+
+        <Field label="Link">
+          <input
+            style={inputStyle} value={link}
+            onChange={(e) => setLink(e.target.value)}
+            placeholder="e.g. https://company.com/careers/role"
+            disabled={loading}
+          />
+        </Field>
+
+        <Field label="Notes">
+          <textarea
+            style={{ ...inputStyle, resize: 'vertical', minHeight: 54 }}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Additional notes…"
+            disabled={loading}
+          />
+        </Field>
+      </div>
+
+      <div style={{
+        fontSize: 11, color: 'var(--txt-2)',
+        padding: 'var(--s2) var(--s3)',
+        background: 'var(--surface-2)', borderRadius: 'var(--r2)',
+        border: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 3,
+      }}>
+        <div className="mono" style={{ fontSize: 10.5 }}>{filePath}</div>
+        <div style={{ color: 'var(--txt-3)' }}>
+          A backup is created before writing. Only appends — no existing rows are modified.
+          No AI calls, browser automation, or application submission.
+        </div>
+      </div>
+
+      {error && (
+        <div style={{
+          fontSize: 11.5, color: 'var(--red)',
+          padding: 'var(--s2) var(--s3)',
+          background: 'var(--red-bg)', borderRadius: 'var(--r2)',
+          border: '1px solid var(--red-line)',
+        }}>
+          {error}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)' }}>
+        <button className="btn btn-sm btn-ghost" onClick={onCancel} disabled={loading}>
+          Cancel
+        </button>
+        <button
+          className="btn btn-sm btn-primary"
+          onClick={() => onAdd({ target, company, role, status, priority, deadline, link, notes })}
+          disabled={loading || !target.trim()}
+        >
+          {loading ? 'Adding…' : 'Add item'}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+// ── edit resume item modal ────────────────────────────────────────────────────
+
+function EditResumeItemModal({
+  item, filePath, loading, error, onSave, onCancel,
+}: {
+  item:     ResumePipelineItem;
+  filePath: string;
+  loading:  boolean;
+  error:    string | null;
+  onSave:   (fields: {
+    target: string; company: string; role: string;
+    priority: ResumePipelinePriority | '';
+    deadline: string; link: string; notes: string;
+  }) => void;
+  onCancel: () => void;
+}) {
+  const [target,   setTarget]   = useState(item.target  ?? '');
+  const [company,  setCompany]  = useState(item.company  ?? '');
+  const [role,     setRole]     = useState(item.role     ?? '');
+  const [priority, setPriority] = useState<ResumePipelinePriority | ''>(
+    (item.priority as ResumePipelinePriority) ?? ''
+  );
+  const [deadline, setDeadline] = useState(item.deadline ?? '');
+  const [link,     setLink]     = useState(item.link     ?? '');
+  const [notes,    setNotes]    = useState(item.notes    ?? '');
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '5px 8px', fontSize: 12,
+    background: 'var(--surface-2)', color: 'var(--txt-0)',
+    border: '1px solid var(--line)', borderRadius: 'var(--r2)',
+    fontFamily: 'var(--font-ui)', boxSizing: 'border-box',
+  };
+
+  const labelStyle: React.CSSProperties = {
+    fontSize: 10.5, fontWeight: 600, color: 'var(--txt-2)',
+    textTransform: 'uppercase', letterSpacing: '0.06em',
+    marginBottom: 3, display: 'block',
+  };
+
+  function Field({ label, children, required }: { label: string; children: React.ReactNode; required?: boolean }) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
+        <label style={labelStyle}>
+          {label}{required && <span style={{ color: 'var(--red)', marginLeft: 2 }}>*</span>}
+        </label>
+        {children}
+      </div>
+    );
+  }
+
+  return (
+    <ModalShell onClose={onCancel} disabled={loading}>
+      <div style={{ fontWeight: 700, fontSize: 14 }}>Edit Resume Item</div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--s3)' }}>
+          <Field label="Target" required>
+            <input
+              style={inputStyle} value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              autoFocus
+              disabled={loading}
+            />
+          </Field>
+          <Field label="Company">
+            <input
+              style={inputStyle} value={company}
+              onChange={(e) => setCompany(e.target.value)}
+              disabled={loading}
+            />
+          </Field>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--s3)' }}>
+          <Field label="Role">
+            <input
+              style={inputStyle} value={role}
+              onChange={(e) => setRole(e.target.value)}
+              disabled={loading}
+            />
+          </Field>
+          <Field label="Status (read-only)">
+            <div style={{
+              ...inputStyle,
+              color: STATUS_TONE[item.status] ?? 'var(--txt-2)',
+              background: 'var(--surface-3)',
+              cursor: 'default',
+            }}>
+              {item.status}
+            </div>
+          </Field>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--s3)' }}>
+          <Field label="Priority">
+            <select
+              style={inputStyle} value={priority}
+              onChange={(e) => setPriority(e.target.value as ResumePipelinePriority | '')}
+              disabled={loading}
+            >
+              <option value="">— none —</option>
+              {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </Field>
+          <Field label="Deadline">
+            <input
+              style={inputStyle} value={deadline}
+              onChange={(e) => setDeadline(e.target.value)}
+              placeholder="e.g. 2026-09-01"
+              disabled={loading}
+            />
+          </Field>
+        </div>
+
+        <Field label="Link">
+          <input
+            style={inputStyle} value={link}
+            onChange={(e) => setLink(e.target.value)}
+            disabled={loading}
+          />
+        </Field>
+
+        <Field label="Notes">
+          <textarea
+            style={{ ...inputStyle, resize: 'vertical', minHeight: 54 }}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            disabled={loading}
+          />
+        </Field>
+      </div>
+
+      <div style={{
+        fontSize: 11, color: 'var(--txt-2)',
+        padding: 'var(--s2) var(--s3)',
+        background: 'var(--surface-2)', borderRadius: 'var(--r2)',
+        border: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 3,
+      }}>
+        <div className="mono" style={{ fontSize: 10.5 }}>{filePath}</div>
+        <div style={{ color: 'var(--txt-3)' }}>
+          A backup is created before writing. Status is preserved — use the status dropdown to change it.
+          No AI calls, browser automation, or application submission.
+        </div>
+      </div>
+
+      {error && (
+        <div style={{
+          fontSize: 11.5, color: 'var(--red)',
+          padding: 'var(--s2) var(--s3)',
+          background: 'var(--red-bg)', borderRadius: 'var(--r2)',
+          border: '1px solid var(--red-line)',
+        }}>
+          {error}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)' }}>
+        <button className="btn btn-sm btn-ghost" onClick={onCancel} disabled={loading}>
+          Cancel
+        </button>
+        <button
+          className="btn btn-sm btn-primary"
+          onClick={() => onSave({ target, company, role, priority, deadline, link, notes })}
+          disabled={loading || !target.trim()}
+        >
+          {loading ? 'Saving…' : 'Save changes'}
+        </button>
+      </div>
+    </ModalShell>
   );
 }
 
 // ── row ───────────────────────────────────────────────────────────────────────
 
 function ResumeRow({
-  item,
-  onStatusChange,
-  onCopyPrompt,
-  copiedId,
+  item, onStatusChange, onCopyPrompt, onEdit, copiedId, canEdit,
 }: {
   item:           ResumePipelineItem;
   onStatusChange: (item: ResumePipelineItem, s: ResumePipelineStatus) => void;
   onCopyPrompt:   (item: ResumePipelineItem) => void;
+  onEdit:         (item: ResumePipelineItem) => void;
   copiedId:       string | null;
+  canEdit:        boolean;
 }) {
   const copied = copiedId === item.id;
 
@@ -210,16 +575,16 @@ function ResumeRow({
 
       {/* company */}
       <td style={{ padding: '7px 8px', verticalAlign: 'top' }}>
-        {item.company ? (
-          <span style={{ fontSize: 12, color: 'var(--txt-1)' }}>{item.company}</span>
-        ) : <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>—</span>}
+        {item.company
+          ? <span style={{ fontSize: 12, color: 'var(--txt-1)' }}>{item.company}</span>
+          : <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>—</span>}
       </td>
 
       {/* role */}
       <td style={{ padding: '7px 8px', verticalAlign: 'top' }}>
-        {item.role ? (
-          <span style={{ fontSize: 11.5, color: 'var(--txt-2)' }}>{item.role}</span>
-        ) : <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>—</span>}
+        {item.role
+          ? <span style={{ fontSize: 11.5, color: 'var(--txt-2)' }}>{item.role}</span>
+          : <span style={{ color: 'var(--txt-3)', fontSize: 11 }}>—</span>}
       </td>
 
       {/* status */}
@@ -248,7 +613,7 @@ function ResumeRow({
         {item.priority ? (
           <span style={{
             fontSize: 10.5,
-            color: item.priority.toLowerCase() === 'high' ? 'var(--red)'
+            color: item.priority.toLowerCase() === 'high'   ? 'var(--red)'
               : item.priority.toLowerCase() === 'medium' ? 'var(--amber)'
               : 'var(--txt-2)',
           }}>
@@ -296,21 +661,34 @@ function ResumeRow({
 
       {/* actions */}
       <td style={{ padding: '7px 8px', verticalAlign: 'top' }}>
-        <button
-          className="btn btn-sm btn-ghost"
-          style={{ fontSize: 10.5, padding: '2px 8px', whiteSpace: 'nowrap' }}
-          onClick={() => onCopyPrompt(item)}
-          title="Copy a tailoring prompt for Claude / ChatGPT"
-        >
-          {copied ? (
-            <span style={{ color: 'var(--green)' }}>Copied!</span>
-          ) : (
-            <>
-              <Icon name="copy" size={11} style={{ marginRight: 3 }} />
-              Tailor
-            </>
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          <button
+            className="btn btn-sm btn-ghost"
+            style={{ fontSize: 10.5, padding: '2px 8px', whiteSpace: 'nowrap' }}
+            onClick={() => onCopyPrompt(item)}
+            title="Copy a tailoring prompt for Claude / ChatGPT"
+          >
+            {copied ? (
+              <span style={{ color: 'var(--green)' }}>Copied!</span>
+            ) : (
+              <>
+                <Icon name="copy" size={11} style={{ marginRight: 3 }} />
+                Tailor
+              </>
+            )}
+          </button>
+          {canEdit && (
+            <button
+              className="btn btn-sm btn-ghost"
+              style={{ fontSize: 10.5, padding: '2px 8px' }}
+              onClick={() => onEdit(item)}
+              title="Edit fields"
+            >
+              <Icon name="edit" size={11} style={{ marginRight: 3 }} />
+              Edit
+            </button>
           )}
-        </button>
+        </div>
       </td>
     </tr>
   );
@@ -327,15 +705,29 @@ export function ResumePage() {
   const [error,   setError]   = useState<string | null>(null);
 
   // filters
-  const [fStatus,  setFStatus]  = useState<string>(ALL);
-  const [fCompany, setFCompany] = useState<string>(ALL);
+  const [fStatus,   setFStatus]   = useState<string>(ALL);
+  const [fCompany,  setFCompany]  = useState<string>(ALL);
   const [fPriority, setFPriority] = useState<string>(ALL);
-  const [fSearch,  setFSearch]  = useState('');
+  const [fSearch,   setFSearch]   = useState('');
 
-  // status confirm
+  // status confirm modal
   const [confirm,        setConfirm]        = useState<ConfirmState | null>(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
   const [confirmError,   setConfirmError]   = useState<string | null>(null);
+
+  // create-file button
+  const [createFileLoading, setCreateFileLoading] = useState(false);
+  const [createFileError,   setCreateFileError]   = useState<string | null>(null);
+
+  // add item modal
+  const [showAdd,   setShowAdd]   = useState(false);
+  const [addLoading, setAddLoading] = useState(false);
+  const [addError,   setAddError]   = useState<string | null>(null);
+
+  // edit item modal
+  const [editTarget,  setEditTarget]  = useState<ResumePipelineItem | null>(null);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editError,   setEditError]   = useState<string | null>(null);
 
   // copy prompt
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -357,11 +749,14 @@ export function ResumePage() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => () => { if (copyTimer.current) clearTimeout(copyTimer.current); }, []);
 
-  const vaultPath  = backendConfig?.vaultPath ?? null;
+  const vaultPath   = backendConfig?.vaultPath ?? null;
   const obsidianUrl =
     vaultPath && data?.exists
       ? createObsidianOpenUrl(vaultPath, data.path)
       : null;
+
+  // Only allow edits if file is writable (markdown-table parseMode).
+  const canEdit = data?.parseMode === 'markdown-table';
 
   // ── derive filter options ─────────────────────────────────────────────────
   const items        = data?.items ?? [];
@@ -383,6 +778,7 @@ export function ResumePage() {
   });
 
   // ── handlers ─────────────────────────────────────────────────────────────
+
   function handleStatusChange(item: ResumePipelineItem, newStatus: ResumePipelineStatus) {
     if (newStatus === item.status) return;
     setConfirm({ item, newStatus });
@@ -398,12 +794,7 @@ export function ResumePage() {
       if (res.ok) {
         setData((prev) =>
           prev
-            ? {
-                ...prev,
-                items: prev.items.map((it) =>
-                  it.id === res.item.id ? res.item : it
-                ),
-              }
+            ? { ...prev, items: prev.items.map((it) => it.id === res.item.id ? res.item : it) }
             : prev
         );
         setConfirm(null);
@@ -414,6 +805,89 @@ export function ResumePage() {
       setConfirmError(err instanceof Error ? err.message : 'Update failed.');
     } finally {
       setConfirmLoading(false);
+    }
+  }
+
+  async function handleCreateFile() {
+    setCreateFileLoading(true);
+    setCreateFileError(null);
+    try {
+      const res = await api.createResumePipelineFile();
+      setData(res);
+    } catch (err) {
+      setCreateFileError(err instanceof Error ? err.message : 'Failed to create file.');
+    } finally {
+      setCreateFileLoading(false);
+    }
+  }
+
+  async function handleAddItem(fields: {
+    target: string; company: string; role: string;
+    status: ResumePipelineStatus; priority: ResumePipelinePriority | '';
+    deadline: string; link: string; notes: string;
+  }) {
+    setAddLoading(true);
+    setAddError(null);
+    try {
+      const res = await api.createResumePipelineItem({
+        target:   fields.target,
+        company:  fields.company  || null,
+        role:     fields.role     || null,
+        status:   fields.status   || null,
+        priority: (fields.priority || null) as ResumePipelinePriority | null,
+        deadline: fields.deadline || null,
+        link:     fields.link     || null,
+        notes:    fields.notes    || null,
+      });
+      if (res.ok) {
+        setData((prev) =>
+          prev
+            ? { ...prev, items: [...prev.items, res.item] }
+            : prev
+        );
+        setShowAdd(false);
+      } else {
+        setAddError('Add failed.');
+      }
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : 'Add failed.');
+    } finally {
+      setAddLoading(false);
+    }
+  }
+
+  async function handleEditItem(fields: {
+    target: string; company: string; role: string;
+    priority: ResumePipelinePriority | '';
+    deadline: string; link: string; notes: string;
+  }) {
+    if (!editTarget) return;
+    setEditLoading(true);
+    setEditError(null);
+    try {
+      const res = await api.updateResumePipelineItem(editTarget.id, {
+        target:   fields.target,
+        company:  fields.company  || null,
+        role:     fields.role     || null,
+        priority: (fields.priority || null) as ResumePipelinePriority | null,
+        deadline: fields.deadline || null,
+        link:     fields.link     || null,
+        notes:    fields.notes    || null,
+      });
+      if (res.ok) {
+        setData((prev) =>
+          prev
+            ? { ...prev, items: prev.items.map((it) => it.id === res.item.id ? res.item : it) }
+            : prev
+        );
+        setEditTarget(null);
+      } else {
+        setEditError('Save failed.');
+      }
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : 'Save failed.');
+    } finally {
+      setEditLoading(false);
     }
   }
 
@@ -464,6 +938,17 @@ export function ResumePage() {
               Open in Obsidian
             </a>
           )}
+          {canEdit && (
+            <button
+              className="btn btn-sm btn-primary"
+              style={{ fontSize: 11 }}
+              onClick={() => { setShowAdd(true); setAddError(null); }}
+              disabled={loading}
+            >
+              <Icon name="plus" size={12} style={{ marginRight: 4 }} />
+              New item
+            </button>
+          )}
           <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
             <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
             Refresh
@@ -492,22 +977,43 @@ export function ResumePage() {
           <EmptyState
             icon="doc"
             title="ops/resume-pipeline.md not found"
-            desc="Create ops/resume-pipeline.md in your vault with a Markdown table to use this page. Expected format shown below."
+            desc="Create the file to start tracking your applications."
           />
-          <div className="panel panel-pad" style={{ marginTop: 'var(--s3)' }}>
-            <div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--txt-2)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 'var(--s2)' }}>
-              Expected format
-            </div>
-            <pre style={{
-              margin: 0, fontSize: 11.5, color: 'var(--txt-1)',
-              background: 'var(--surface-2)', borderRadius: 'var(--r2)',
-              padding: 'var(--s3)', border: '1px solid var(--line)',
-              overflowX: 'auto', lineHeight: 1.6,
-            }}>
+          <div style={{ marginTop: 'var(--s3)', display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
+            {createFileError && (
+              <div style={{
+                fontSize: 11.5, color: 'var(--red)',
+                padding: 'var(--s2) var(--s3)',
+                background: 'var(--red-bg)', borderRadius: 'var(--r2)',
+                border: '1px solid var(--red-line)',
+              }}>
+                {createFileError}
+              </div>
+            )}
+            <button
+              className="btn btn-sm btn-primary"
+              style={{ alignSelf: 'flex-start', fontSize: 12 }}
+              onClick={handleCreateFile}
+              disabled={createFileLoading}
+            >
+              <Icon name="plus" size={12} style={{ marginRight: 4 }} />
+              {createFileLoading ? 'Creating…' : 'Create ops/resume-pipeline.md'}
+            </button>
+            <div className="panel panel-pad">
+              <div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--txt-2)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 'var(--s2)' }}>
+                Expected format
+              </div>
+              <pre style={{
+                margin: 0, fontSize: 11.5, color: 'var(--txt-1)',
+                background: 'var(--surface-2)', borderRadius: 'var(--r2)',
+                padding: 'var(--s3)', border: '1px solid var(--line)',
+                overflowX: 'auto', lineHeight: 1.6,
+              }}>
 {`| Target | Company | Role | Status | Priority | Deadline | Link | Notes |
 |---|---|---|---|---|---|---|---|
 | SWE Intern | Acme Corp | Software Engineer Intern | new | high | 2026-09-01 | https://acme.com/careers | Apply via portal |`}
-            </pre>
+              </pre>
+            </div>
           </div>
         </div>
       )}
@@ -518,7 +1024,7 @@ export function ResumePage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 'var(--s3) var(--s4)', borderRadius: 'var(--r2)', background: 'var(--amber-bg)', border: '1px solid var(--amber-line)', fontSize: 12, marginBottom: 'var(--s3)' }}>
             <StatusDot tone="amber" />
             <span>
-              File exists but no Markdown table found — showing raw preview only. Status editing is not available.
+              File exists but no Markdown table found — showing raw preview only. Editing is not available.
             </span>
           </div>
           {data.preview && (
@@ -604,7 +1110,9 @@ export function ResumePage() {
                       item={item}
                       onStatusChange={handleStatusChange}
                       onCopyPrompt={handleCopyPrompt}
+                      onEdit={(it) => { setEditTarget(it); setEditError(null); }}
                       copiedId={copiedId}
+                      canEdit={canEdit}
                     />
                   ))}
                 </tbody>
@@ -618,7 +1126,7 @@ export function ResumePage() {
       {data?.exists && (
         <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
           <Icon name="shield" size={12} />
-          Status edits create a backup before writing. Only the status cell is modified. No browser automation, job applications, or AI resume generation occurs.
+          All writes create a backup first. No browser automation, job applications, or AI resume generation occurs.
         </div>
       )}
 
@@ -631,6 +1139,29 @@ export function ResumePage() {
           error={confirmError}
           onApply={handleConfirmApply}
           onCancel={() => { if (!confirmLoading) setConfirm(null); }}
+        />
+      )}
+
+      {/* add item modal */}
+      {showAdd && (
+        <AddResumeItemModal
+          filePath={data?.path ?? 'ops/resume-pipeline.md'}
+          loading={addLoading}
+          error={addError}
+          onAdd={handleAddItem}
+          onCancel={() => { if (!addLoading) { setShowAdd(false); setAddError(null); } }}
+        />
+      )}
+
+      {/* edit item modal */}
+      {editTarget && (
+        <EditResumeItemModal
+          item={editTarget}
+          filePath={data?.path ?? 'ops/resume-pipeline.md'}
+          loading={editLoading}
+          error={editError}
+          onSave={handleEditItem}
+          onCancel={() => { if (!editLoading) { setEditTarget(null); setEditError(null); } }}
         />
       )}
 

@@ -19,10 +19,14 @@ from app.vault import (
     create_task,
     get_backfill,
     update_backfill_status,
+    update_backfill_item,
     create_backfill_file,
     create_backfill_item,
     get_resume_pipeline,
     update_resume_pipeline_status,
+    create_resume_pipeline_file,
+    create_resume_pipeline_item,
+    update_resume_pipeline_item,
 )
 from app.calendar import (
     create_calendar_candidate,
@@ -81,12 +85,18 @@ from app.models import (
     BackfillResponse,
     UpdateBackfillStatusRequest,
     UpdateBackfillStatusResponse,
+    UpdateBackfillItemRequest,
+    UpdateBackfillItemResponse,
     CreateBackfillItemRequest,
     CreateBackfillItemResponse,
     ResumePipelineItem,
     ResumePipelineResponse,
     UpdateResumePipelineStatusRequest,
     UpdateResumePipelineStatusResponse,
+    CreateResumePipelineItemRequest,
+    CreateResumePipelineItemResponse,
+    UpdateResumePipelineItemRequest,
+    UpdateResumePipelineItemResponse,
     ConversationDetail,
     ConversationListResponse,
     ConversationSummary,
@@ -995,6 +1005,58 @@ def vault_backfill_update_status(
     )
 
 
+@app.patch(
+    "/api/vault/backfill/{item_id}",
+    response_model=UpdateBackfillItemResponse,
+)
+def vault_backfill_update_item(
+    item_id: str,
+    req: UpdateBackfillItemRequest,
+) -> UpdateBackfillItemResponse:
+    """
+    PATCH /api/vault/backfill/{item_id}
+
+    Update the non-status fields of a single backfill item in ops/backfill.md.
+
+    Editable: item, type, value, path, agent, notes.
+    Preserved: status, unknown columns.
+
+    Safety:
+    - Only writes to ops/backfill.md — never ops/backfill-last-year.md.
+    - Re-reads and re-parses the file on every call (no stale state).
+    - Verifies item name before writing (conflict detection).
+    - Creates a backup under backend/data/backups/backfill/ before writing.
+    - Returns 400 on any validation or conflict error; file is not modified.
+    - No other vault files are touched.
+    - No repo files are modified.
+    - No Claude/OpenCode process is launched.
+    """
+    cfg = get_config()
+    try:
+        result = update_backfill_item(
+            vault_path=cfg.vault_path,
+            item_id=item_id,
+            item=req.item,
+            item_type=req.type,
+            value=req.value,
+            path=req.path,
+            agent=req.agent,
+            notes=req.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.info(
+        "Backfill item patched: id=%s  item=%r  path=%s",
+        item_id, req.item, result["path"],
+    )
+    return UpdateBackfillItemResponse(
+        ok=result["ok"],
+        item=BackfillItem(**result["item"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
+    )
+
+
 @app.get("/api/vault/resume-pipeline", response_model=ResumePipelineResponse)
 def vault_resume_pipeline() -> ResumePipelineResponse:
     """
@@ -1053,6 +1115,118 @@ def vault_resume_pipeline_update_status(
         item_id, req.status, result["path"],
     )
     return UpdateResumePipelineStatusResponse(
+        ok=result["ok"],
+        item=ResumePipelineItem(**result["item"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
+    )
+
+
+@app.post("/api/vault/resume-pipeline/create", response_model=ResumePipelineResponse)
+def vault_resume_pipeline_create_file() -> ResumePipelineResponse:
+    """
+    POST /api/vault/resume-pipeline/create
+
+    Create ops/resume-pipeline.md with a starter Markdown table if it does not exist.
+    Returns the full resume-pipeline response (same shape as GET).
+
+    Safety:
+    - Never overwrites an existing file.
+    - Only creates ops/resume-pipeline.md.
+    - No shell commands, AI calls, or browser automation.
+    """
+    cfg = get_config()
+    try:
+        data = create_resume_pipeline_file(cfg.vault_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return ResumePipelineResponse(
+        path=data["path"],
+        exists=data["exists"],
+        lastModified=data.get("lastModified"),
+        preview=data.get("preview"),
+        parseMode=data["parseMode"],
+        items=[ResumePipelineItem(**it) for it in data["items"]],
+    )
+
+
+@app.post("/api/vault/resume-pipeline", response_model=CreateResumePipelineItemResponse)
+def vault_resume_pipeline_create_item(
+    req: CreateResumePipelineItemRequest,
+) -> CreateResumePipelineItemResponse:
+    """
+    POST /api/vault/resume-pipeline
+
+    Append a new resume-pipeline item row to ops/resume-pipeline.md.
+
+    Safety:
+    - File must already exist and contain a Markdown table.
+    - Rejects raw newlines in all fields.
+    - Sanitizes pipe characters in all table cells.
+    - Creates a backup before appending.
+    - No AI calls, no browser automation, no application submission.
+    """
+    cfg = get_config()
+    try:
+        result = create_resume_pipeline_item(
+            vault_path=cfg.vault_path,
+            target=req.target,
+            company=req.company,
+            role=req.role,
+            status=req.status,
+            priority=req.priority,
+            deadline=req.deadline,
+            link=req.link,
+            notes=req.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return CreateResumePipelineItemResponse(
+        ok=result["ok"],
+        item=ResumePipelineItem(**result["item"]),
+        path=result["path"],
+        updatedAt=result["updatedAt"],
+    )
+
+
+@app.patch(
+    "/api/vault/resume-pipeline/{item_id}",
+    response_model=UpdateResumePipelineItemResponse,
+)
+def vault_resume_pipeline_update_item(
+    item_id: str,
+    req: UpdateResumePipelineItemRequest,
+) -> UpdateResumePipelineItemResponse:
+    """
+    PATCH /api/vault/resume-pipeline/{item_id}
+
+    Update the non-status fields of a single resume-pipeline item.
+    Editable: target, company, role, priority, deadline, link, notes.
+    Status is always preserved (use /status endpoint to change it).
+
+    Safety:
+    - Only writes to ops/resume-pipeline.md.
+    - Re-reads and re-parses the file on every call (no stale state).
+    - Verifies target name before writing (conflict detection).
+    - Creates a backup before writing.
+    - No AI calls, no browser automation, no application submission.
+    """
+    cfg = get_config()
+    try:
+        result = update_resume_pipeline_item(
+            vault_path=cfg.vault_path,
+            item_id=item_id,
+            target=req.target,
+            company=req.company,
+            role=req.role,
+            priority=req.priority,
+            deadline=req.deadline,
+            link=req.link,
+            notes=req.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return UpdateResumePipelineItemResponse(
         ok=result["ok"],
         item=ResumePipelineItem(**result["item"]),
         path=result["path"],
