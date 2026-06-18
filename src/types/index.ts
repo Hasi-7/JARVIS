@@ -24,7 +24,7 @@ export interface AgentStateInfo {
 
 export type RouteId =
   | 'dashboard' | 'agent' | 'research'
-  | 'inbox' | 'consolidate' | 'calendar' | 'tasks'
+  | 'inbox' | 'consolidate' | 'calendar' | 'tasks' | 'proposals'
   | 'projects' | 'hackathons' | 'courses' | 'business' | 'resume' | 'backfill'
   | 'escalation' | 'safety' | 'settings';
 
@@ -46,6 +46,10 @@ export interface SystemService {
   state: SystemState;
   label: string;
   detail: string;
+  // Optional override for the right-side status text. When omitted, the raw
+  // `state` is shown. Used to display honest copy like "Not wired" for runtimes
+  // that are planned in the PRD but not implemented yet.
+  statusLabel?: string;
 }
 
 export interface SystemStatus {

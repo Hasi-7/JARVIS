@@ -47,15 +47,19 @@ export const AGENT_MODES: AgentMode[] = [
   { id: 'locked',   label: 'Locked',       desc: 'All agent tools disabled. UI works manually.' },
 ];
 
+// Planned PRD runtimes that are NOT implemented in this build. They must read
+// honestly as "Not wired" with neutral (grey/disabled) styling — never as
+// ready/connected. Real, wired statuses (Backend, Brain CLI, Vault, Local model)
+// are sourced from the backend in DashboardPage, not from this object.
 export const SYSTEM: SystemStatus = {
   vault:    APP_CONFIG.vaultPath,
   brainCmd: APP_CONFIG.brainCmd,
-  openclaw: { state: 'ready',   label: 'OpenClaw',           detail: 'qwen2.5:14b · Ollama' },
-  nemoclaw: { state: 'ready',   label: 'NemoClaw/OpenShell', detail: 'policy v3 · restricted net' },
-  browser:  { state: 'idle',    label: 'Browser harness',    detail: 'Playwright · ready' },
-  computer: { state: 'disabled',label: 'Computer use',       detail: 'Disabled in settings' },
-  model:    { state: 'ready',   label: 'Local model',        detail: 'qwen2.5:14b' },
-  mcp:      { state: 'partial', label: 'MCP gateway',        detail: '3 of 5 connected' },
+  openclaw: { state: 'disabled', label: 'OpenClaw tool bridge', detail: 'Planned PRD runtime — not wired yet', statusLabel: 'Not wired' },
+  nemoclaw: { state: 'disabled', label: 'NemoClaw/OpenShell',   detail: 'Planned PRD runtime — not wired yet', statusLabel: 'Not wired' },
+  browser:  { state: 'disabled', label: 'Browser harness',      detail: 'Planned PRD runtime — not wired yet', statusLabel: 'Not wired' },
+  computer: { state: 'disabled', label: 'Computer use',         detail: 'Planned PRD runtime — not wired yet', statusLabel: 'Not wired' },
+  model:    { state: 'disabled', label: 'Local model',          detail: 'See real Local model status on Dashboard', statusLabel: 'n/a' },
+  mcp:      { state: 'disabled', label: 'MCP gateway',          detail: 'Planned PRD runtime — not wired yet', statusLabel: 'Not wired' },
 };
 
 export const QUICK_ACTIONS: QuickAction[] = [
@@ -150,6 +154,7 @@ export const NAV: NavGroup[] = [
     group: 'Intake',
     items: [
       { id: 'inbox',      label: 'Raw Inbox',       glyph: 'inbox', badge: 7 },
+      { id: 'proposals',  label: 'Proposal Queue',   glyph: 'check' },
       { id: 'consolidate',label: 'AI Consolidation', glyph: 'merge' },
       { id: 'calendar',   label: 'Calendar',         glyph: 'cal',   badge: 3 },
       { id: 'tasks',      label: 'Tasks',            glyph: 'check' },

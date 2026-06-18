@@ -44,6 +44,21 @@ from app.agent import (
 )
 from app.brain import run_brain_command, run_brain_command_args
 from app.dashboard import get_dashboard_summary
+from app.proposals import list_normalized_proposals
+from app.consolidation import (
+    create_draft as create_consolidation_draft,
+    list_drafts as list_consolidation_drafts,
+    get_draft as get_consolidation_draft,
+    update_draft as update_consolidation_draft,
+    save_draft as save_consolidation_draft,
+)
+from app.research import (
+    create_draft as create_research_draft,
+    list_drafts as list_research_drafts,
+    get_draft as get_research_draft,
+    update_draft as update_research_draft,
+    save_draft as save_research_draft,
+)
 from app.escalations import (
     add_escalation_item,
     create_escalation_queue_file,
@@ -143,6 +158,20 @@ from app.models import (
     EntityPaths,
     CreateEscalationItemRequest,
     DashboardSummaryResponse,
+    ProposalItem,
+    ProposalListError,
+    ProposalListResponse,
+    ConsolidationDraftResponse,
+    ConsolidationDraftsResponse,
+    CreateConsolidationDraftRequest,
+    UpdateConsolidationDraftRequest,
+    SaveConsolidationDraftResponse,
+    ResearchSource,
+    ResearchDraftResponse,
+    ResearchDraftsResponse,
+    CreateResearchDraftRequest,
+    UpdateResearchDraftRequest,
+    SaveResearchDraftResponse,
     EscalationItem,
     EscalationResponse,
     UpdateEscalationItemRequest,
@@ -268,6 +297,232 @@ def config_put(req: ConfigUpdateRequest) -> ConfigResponse:
 def dashboard_summary() -> DashboardSummaryResponse:
     data = get_dashboard_summary()
     return DashboardSummaryResponse(**data)
+
+
+# ── proposal queue (read-only aggregation; v1 = Raw Inbox proposals) ───────────
+
+@app.get("/api/proposals", response_model=ProposalListResponse)
+def proposals_list() -> ProposalListResponse:
+    """
+    Read-only, normalized aggregation of proposal-like items. v1 includes only
+    Raw Inbox classification proposals. Listing never mutates anything.
+    """
+    items, errors = list_normalized_proposals()
+    return ProposalListResponse(
+        proposals=[ProposalItem(**it) for it in items],
+        errors=[ProposalListError(**e) for e in errors],
+    )
+
+
+# ── chat / AI consolidation (v1: manual paste/import) ──────────────────────────
+
+def _consolidation_to_response(d) -> ConsolidationDraftResponse:
+    return ConsolidationDraftResponse(
+        id                     = d.id,
+        sourceTool             = d.source_tool,
+        conversationTitle      = d.conversation_title,
+        domain                 = d.domain,
+        entity                 = d.entity,
+        transcript             = d.transcript,
+        summary                = d.summary,
+        decisions              = d.decisions,
+        actionItems            = d.action_items,
+        codeOrFilesReferenced  = d.code_or_files_referenced,
+        status                 = d.status,
+        proposedDestination    = d.proposed_destination,
+        savedPath              = d.saved_path,
+        createdAt              = d.created_at,
+        updatedAt              = d.updated_at,
+    )
+
+
+@app.post("/api/consolidation/drafts", response_model=ConsolidationDraftResponse)
+def consolidation_create(req: CreateConsolidationDraftRequest) -> ConsolidationDraftResponse:
+    """
+    Create a consolidation draft from a manually pasted transcript. Stores backend
+    metadata only — no vault write, no AI call, no brain, no external tool.
+    """
+    try:
+        draft = create_consolidation_draft(
+            source_tool              = req.sourceTool,
+            conversation_title       = req.conversationTitle,
+            domain                   = req.domain,
+            entity                   = req.entity,
+            transcript               = req.transcript,
+            summary                  = req.summary,
+            decisions                = req.decisions,
+            action_items             = req.actionItems,
+            code_or_files_referenced = req.codeOrFilesReferenced,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _consolidation_to_response(draft)
+
+
+@app.get("/api/consolidation/drafts", response_model=ConsolidationDraftsResponse)
+def consolidation_list() -> ConsolidationDraftsResponse:
+    return ConsolidationDraftsResponse(
+        drafts=[_consolidation_to_response(d) for d in list_consolidation_drafts()]
+    )
+
+
+@app.get("/api/consolidation/drafts/{draft_id}", response_model=ConsolidationDraftResponse)
+def consolidation_get(draft_id: str) -> ConsolidationDraftResponse:
+    draft = get_consolidation_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"Consolidation draft '{draft_id}' not found.")
+    return _consolidation_to_response(draft)
+
+
+@app.patch("/api/consolidation/drafts/{draft_id}", response_model=ConsolidationDraftResponse)
+def consolidation_update(draft_id: str, req: UpdateConsolidationDraftRequest) -> ConsolidationDraftResponse:
+    # Map provided (non-None) camelCase fields to the module's snake_case editable keys.
+    field_map = {
+        "conversationTitle":     "conversation_title",
+        "domain":                "domain",
+        "entity":                "entity",
+        "summary":               "summary",
+        "decisions":             "decisions",
+        "actionItems":           "action_items",
+        "codeOrFilesReferenced": "code_or_files_referenced",
+    }
+    payload = req.model_dump(exclude_unset=True)
+    updates = {field_map[k]: v for k, v in payload.items() if k in field_map}
+    try:
+        draft = update_consolidation_draft(draft_id, updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"Consolidation draft '{draft_id}' not found.")
+    return _consolidation_to_response(draft)
+
+
+@app.post("/api/consolidation/drafts/{draft_id}/save", response_model=SaveConsolidationDraftResponse)
+def consolidation_save(draft_id: str) -> SaveConsolidationDraftResponse:
+    """
+    Write one Markdown summary under raw/chats/<sourceTool>/. Never overwrites,
+    never escapes the vault, never runs brain/AI, never touches tasks/calendar/resume.
+    """
+    cfg = get_config()
+    try:
+        draft, info = save_consolidation_draft(draft_id, cfg.vault_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return SaveConsolidationDraftResponse(
+        ok=True,
+        draft=_consolidation_to_response(draft),
+        relativePath=info["relativePath"],
+        absolutePath=info["absolutePath"],
+    )
+
+
+# ── research (v1: manual capture) ──────────────────────────────────────────────
+
+def _research_to_response(d) -> ResearchDraftResponse:
+    return ResearchDraftResponse(
+        id                     = d.id,
+        title                  = d.title,
+        topic                  = d.topic,
+        domain                 = d.domain,
+        entity                 = d.entity,
+        researchQuestion       = d.research_question,
+        summary                = d.summary,
+        keyFindings            = d.key_findings,
+        sources                = [ResearchSource(**s) for s in d.sources],
+        openQuestions          = d.open_questions,
+        recommendedNextActions = d.recommended_next_actions,
+        rawNotes               = d.raw_notes,
+        status                 = d.status,
+        proposedDestination    = d.proposed_destination,
+        savedPath              = d.saved_path,
+        createdAt              = d.created_at,
+        updatedAt              = d.updated_at,
+    )
+
+
+@app.post("/api/research/drafts", response_model=ResearchDraftResponse)
+def research_create(req: CreateResearchDraftRequest) -> ResearchDraftResponse:
+    """
+    Create a research draft from manually captured notes/links/findings. Stores backend
+    metadata only — no vault write, no AI call, no URL fetch, no brain, no external tool.
+    """
+    try:
+        draft = create_research_draft(
+            title                    = req.title,
+            topic                    = req.topic,
+            domain                   = req.domain,
+            entity                   = req.entity,
+            research_question        = req.researchQuestion,
+            summary                  = req.summary,
+            key_findings             = req.keyFindings,
+            sources                  = [s.model_dump() for s in req.sources],
+            open_questions           = req.openQuestions,
+            recommended_next_actions = req.recommendedNextActions,
+            raw_notes                = req.rawNotes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _research_to_response(draft)
+
+
+@app.get("/api/research/drafts", response_model=ResearchDraftsResponse)
+def research_list() -> ResearchDraftsResponse:
+    return ResearchDraftsResponse(
+        drafts=[_research_to_response(d) for d in list_research_drafts()]
+    )
+
+
+@app.get("/api/research/drafts/{draft_id}", response_model=ResearchDraftResponse)
+def research_get(draft_id: str) -> ResearchDraftResponse:
+    draft = get_research_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"Research draft '{draft_id}' not found.")
+    return _research_to_response(draft)
+
+
+@app.patch("/api/research/drafts/{draft_id}", response_model=ResearchDraftResponse)
+def research_update(draft_id: str, req: UpdateResearchDraftRequest) -> ResearchDraftResponse:
+    field_map = {
+        "title":                  "title",
+        "topic":                  "topic",
+        "domain":                 "domain",
+        "entity":                 "entity",
+        "researchQuestion":       "research_question",
+        "summary":                "summary",
+        "keyFindings":            "key_findings",
+        "sources":                "sources",
+        "openQuestions":          "open_questions",
+        "recommendedNextActions": "recommended_next_actions",
+        "rawNotes":               "raw_notes",
+    }
+    payload = req.model_dump(exclude_unset=True)
+    updates = {field_map[k]: v for k, v in payload.items() if k in field_map}
+    try:
+        draft = update_research_draft(draft_id, updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"Research draft '{draft_id}' not found.")
+    return _research_to_response(draft)
+
+
+@app.post("/api/research/drafts/{draft_id}/save", response_model=SaveResearchDraftResponse)
+def research_save(draft_id: str) -> SaveResearchDraftResponse:
+    """
+    Write one Markdown research note under raw/research/. Never overwrites, never escapes
+    the vault, never fetches URLs, never runs brain/AI, never touches tasks/calendar/resume.
+    """
+    cfg = get_config()
+    try:
+        draft, info = save_research_draft(draft_id, cfg.vault_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return SaveResearchDraftResponse(
+        ok=True,
+        draft=_research_to_response(draft),
+        relativePath=info["relativePath"],
+        absolutePath=info["absolutePath"],
+    )
 
 
 # ── brain commands ────────────────────────────────────────────────────────────

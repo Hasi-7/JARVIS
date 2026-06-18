@@ -811,3 +811,165 @@ class DashboardSummaryResponse(BaseModel):
     todayPlan: DashboardTodayPlan = DashboardTodayPlan()
     activeWork: DashboardActiveWork = DashboardActiveWork()
     errors: List[DashboardSummaryError] = []
+
+
+# ── proposal queue (v1: aggregates Raw Inbox classification proposals) ──────────
+
+class ProposalDetails(BaseModel):
+    filename:   Optional[str] = None
+    domain:     Optional[str] = None
+    entity:     Optional[str] = None
+    sourceType: Optional[str] = None
+    reason:     Optional[str] = None
+
+
+class ProposalItem(BaseModel):
+    id:         str
+    source:     str                      # raw-inbox (future: research | consolidation | email | mcp | agent)
+    type:       str                      # file_route
+    riskLevel:  str                      # low | medium | high
+    title:      str
+    summary:    str
+    status:     str                      # pending | approved | rejected | applied | skipped
+    confidence: Optional[str] = None     # High | Medium | Low | null
+    targetPath: Optional[str] = None
+    createdAt:  Optional[str] = None
+    updatedAt:  Optional[str] = None
+    relatedId:  str
+    actions:    List[str] = []           # e.g. ["open_raw_inbox"]
+    details:    ProposalDetails = ProposalDetails()
+
+
+class ProposalListError(BaseModel):
+    source:  str
+    message: str
+
+
+class ProposalListResponse(BaseModel):
+    proposals: List[ProposalItem] = []
+    errors:    List[ProposalListError] = []
+
+
+# ── chat / AI consolidation (v1: manual paste/import) ──────────────────────────
+
+class ConsolidationDraftResponse(BaseModel):
+    id:                     str
+    sourceTool:             str   # chatgpt | claude | claude-code | opencode | other
+    conversationTitle:      str
+    domain:                 str   # project | course | business | research | personal | unknown
+    entity:                 Optional[str] = None
+    transcript:             str
+    summary:                str
+    decisions:              List[str] = []
+    actionItems:            List[str] = []
+    codeOrFilesReferenced:  List[str] = []
+    status:                 str   # draft | saved
+    proposedDestination:    str
+    savedPath:              Optional[str] = None
+    createdAt:              str
+    updatedAt:              str
+
+
+class ConsolidationDraftsResponse(BaseModel):
+    drafts: List[ConsolidationDraftResponse] = []
+
+
+class CreateConsolidationDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sourceTool:             str
+    conversationTitle:      str
+    domain:                 str = "unknown"
+    entity:                 Optional[str] = None
+    transcript:             str
+    summary:                Optional[str] = None
+    decisions:              List[str] = []
+    actionItems:            List[str] = []
+    codeOrFilesReferenced:  List[str] = []
+
+
+class UpdateConsolidationDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    conversationTitle:      Optional[str] = None
+    domain:                 Optional[str] = None
+    entity:                 Optional[str] = None
+    summary:                Optional[str] = None
+    decisions:              Optional[List[str]] = None
+    actionItems:            Optional[List[str]] = None
+    codeOrFilesReferenced:  Optional[List[str]] = None
+
+
+class SaveConsolidationDraftResponse(BaseModel):
+    ok:           bool
+    draft:        ConsolidationDraftResponse
+    relativePath: str
+    absolutePath: str
+
+
+# ── research (v1: manual capture) ──────────────────────────────────────────────
+
+class ResearchSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: Optional[str] = None
+    url:    Optional[str] = None
+    notes:  Optional[str] = None
+
+
+class ResearchDraftResponse(BaseModel):
+    id:                     str
+    title:                  str
+    topic:                  Optional[str] = None
+    domain:                 str   # project | course | business | personal | technical | market | general | unknown
+    entity:                 Optional[str] = None
+    researchQuestion:       Optional[str] = None
+    summary:                str
+    keyFindings:            List[str] = []
+    sources:                List[ResearchSource] = []
+    openQuestions:          List[str] = []
+    recommendedNextActions: List[str] = []
+    rawNotes:               str
+    status:                 str   # draft | saved
+    proposedDestination:    str
+    savedPath:              Optional[str] = None
+    createdAt:              str
+    updatedAt:              str
+
+
+class ResearchDraftsResponse(BaseModel):
+    drafts: List[ResearchDraftResponse] = []
+
+
+class CreateResearchDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title:                  str
+    topic:                  Optional[str] = None
+    domain:                 str = "unknown"
+    entity:                 Optional[str] = None
+    researchQuestion:       Optional[str] = None
+    summary:                Optional[str] = None
+    keyFindings:            List[str] = []
+    sources:                List[ResearchSource] = []
+    openQuestions:          List[str] = []
+    recommendedNextActions: List[str] = []
+    rawNotes:               str = ""
+
+
+class UpdateResearchDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title:                  Optional[str] = None
+    topic:                  Optional[str] = None
+    domain:                 Optional[str] = None
+    entity:                 Optional[str] = None
+    researchQuestion:       Optional[str] = None
+    summary:                Optional[str] = None
+    keyFindings:            Optional[List[str]] = None
+    sources:                Optional[List[ResearchSource]] = None
+    openQuestions:          Optional[List[str]] = None
+    recommendedNextActions: Optional[List[str]] = None
+    rawNotes:               Optional[str] = None
+
+
+class SaveResearchDraftResponse(BaseModel):
+    ok:           bool
+    draft:        ResearchDraftResponse
+    relativePath: str
+    absolutePath: str

@@ -346,10 +346,23 @@ GET /api/dashboard/summary
 The Dashboard **Active Work** panel shows compact read-only lists of items that need attention across five workflows: Backfill, Escalations, Resume Pipeline, Calendar, and Raw Inbox.
 
 - Each group shows up to 3 items with a status chip, priority indicator, and secondary metadata.
-- Clicking any item or "View all" navigates to the dedicated workflow page. **No status changes occur from Dashboard.**
+- Clicking any item or "View all" navigates to the dedicated workflow page.
+- **Limited quick actions:** Backfill and Escalation items show a **Mark done** action that sets their status to `done` directly from the Dashboard. Every action requires a confirmation modal, runs through the existing backup-before-write status endpoints (`PATCH /api/vault/backfill/{itemId}/status` and `PATCH /api/vault/escalations/{itemId}/status`), and reloads the Dashboard summary on success. On failure the error is shown and the Dashboard stays usable.
+  - No other Dashboard quick actions exist. There are **no** quick actions for Raw Inbox, Calendar Candidates, Resume Pipeline, or Tasks.
+  - No approvals, task edits, calendar changes, deletes, bulk actions, AI calls, or external tool launches happen from the Dashboard — only the two safe `done` status updates above.
 - Empty state: if all lists are empty, "No active work items found." is shown.
 - Partial errors: if one source fails, its list is empty and an error is appended to `errors[]`. Other groups still render.
 - The panel respects the same loading/error behavior as the rest of the dashboard summary.
+
+### Dashboard Recent AI Work deep-links
+
+The Dashboard **Recent AI Work** panel lists up to 5 recent Local Agent conversations (summaries only — from `GET /api/conversations`).
+
+- Clicking a conversation row opens **Local Agent** with that exact conversation selected and its messages loaded (`GET /api/conversations/{conversationId}`).
+- This is **read-navigation only**: opening a conversation does not call Ollama, does not send or generate a message, and does not mutate, rename, or delete any conversation.
+- Navigation is app-state-based (the app has no URL router): the Dashboard hands off the conversation id via store state, and AgentPage consumes it on mount. The header chevron still opens Local Agent without a selection.
+- If the requested conversation no longer exists, AgentPage shows a clear error and stays usable — the conversation list is still shown so the user can pick another or start a new one. A missing/blank id falls back to opening Local Agent normally.
+- The Dashboard only ever fetches conversation **summaries**; full message bodies are loaded by AgentPage, not the Dashboard.
 
 ### Dashboard metric wiring
 
@@ -392,11 +405,28 @@ The Dashboard "Recent AI work" panel loads from `GET /api/conversations` indepen
 - Empty, loading, and failed states are handled independently.
 - **No AI or summarization involved.** Titles are whatever the conversation was saved with; counts and timestamps are raw metadata.
 
-### Still mocked / not wired on Dashboard
+### Planned runtimes — shown honestly as "Not wired"
+
+The Dashboard runtime panel separates **real, backend-derived status** (Backend, Brain CLI, Vault, Local model) from **planned PRD runtimes that are not implemented**. The planned runtimes are displayed under a "Planned — not wired yet" divider with neutral/grey styling and a `Not wired` status label — they are **never shown as ready/connected/partial**.
 
 | Section | Status |
 |---|---|
-| OpenClaw, NemoClaw, Browser, Computer use, MCP in runtime status | Mocked — not wired |
+| OpenClaw tool bridge, NemoClaw/OpenShell, Browser harness, Computer use, MCP gateway | **Not wired** — displayed honestly as planned, neutral styling, no fake "ready" state |
+
+### Current real safety controls
+
+The **Tool Safety** page distinguishes planned runtimes (shown as "Not wired") from what is actually enforced today. The real, code-backed controls are:
+
+- Safe `brain` command allowlist (no arbitrary commands)
+- No arbitrary shell execution
+- Backup-before-write on every vault write workflow
+- No external tool launches
+- No Gmail mutations (no email integration at all)
+- No Google Calendar API writes (`.ics` export only)
+- No browser / computer-use actions
+- Local agent has no tools (chat only)
+
+NemoClaw/OpenShell, OpenClaw tool bridge, Browser, Computer use, MCP, Gmail, Research, and Chat/AI Consolidation are **not wired** in this build. The UI no longer presents any of them as ready, connected, or enforcing.
 
 ---
 
@@ -452,8 +482,8 @@ The Dashboard "Recent AI work" panel loads from `GET /api/conversations` indepen
 | Resume Pipeline page — status edit | **Real** — `PATCH /api/vault/resume-pipeline/{id}/status`, backup + conflict detection |
 | Resume Pipeline page — field edit | **Real** — `PATCH /api/vault/resume-pipeline/{id}`, edits non-status fields, backup + conflict detection |
 | Resume Pipeline page — tailoring prompt | **Real** (frontend only) — generates tailoring prompt, copies to clipboard, no AI called |
-| Dashboard Recent AI work | **Real** — `GET /api/conversations`, up to 5 latest conversations, read-only |
-| Dashboard Active Work panel | **Real** — `activeWork` section of `GET /api/dashboard/summary`; up to 3 items per workflow; read-only |
+| Dashboard Recent AI work | **Real** — `GET /api/conversations`, up to 5 latest conversations (summaries only). Rows deep-link into Local Agent with that conversation selected (`GET /api/conversations/{id}`); read-navigation only — no AI call, no mutation |
+| Dashboard Active Work panel | **Real** — `activeWork` section of `GET /api/dashboard/summary`; up to 3 items per workflow. Read-only except a **Mark done** quick action on Backfill and Escalation items (confirmation modal → existing backup-before-write status endpoint → reload) |
 | Escalation Queue — read | **Real** — `GET /api/vault/escalations`, parses `ops/escalation-queue.md` |
 | Escalation Queue — create file | **Real** — `POST /api/vault/escalations/create`, creates starter if missing |
 | Escalation Queue — add item | **Real** — `POST /api/vault/escalations`, appends row with backup |
@@ -461,12 +491,107 @@ The Dashboard "Recent AI work" panel loads from `GET /api/conversations` indepen
 | Escalation Queue — field edit | **Real** — `PATCH /api/vault/escalations/{id}`, edits non-status fields, backup + conflict detection |
 | Escalation Queue — copy handoff prompt | **Real** (frontend only) — copies prompt to clipboard, no process launched |
 | Dashboard Escalations count | **Real** — `summary.escalations.active` (new + ready + in-progress + blocked) |
-| OpenClaw | Mocked — not wired |
-| NemoClaw / OpenShell | Mocked — not wired |
-| Browser harness | Mocked — not wired |
-| Computer use | Mocked — not wired |
-| MCP gateway | Mocked — not wired |
-| Approvals / AI Consolidation | Mocked — not wired |
+| Proposal Queue page | **Real (read-only)** — `GET /api/proposals` aggregates Raw Inbox classification proposals, Chat/AI Consolidation drafts, **and** Research drafts into a normalized shape; lists/filters/searches only. No approve/apply here — actions **deep-link to the exact source item** (Open in Raw Inbox / Consolidation / Research, which highlight the related row/draft) |
+| Chat/AI Consolidation — manual paste/import | **Real v1** — paste a transcript → `POST /api/consolidation/drafts` creates a backend draft (no vault write); edit summary fields; **Save to vault** writes one Markdown summary under `raw/chats/<source>/`. No AI, no brain, no browser/computer-use capture |
+| Research — manual capture | **Real v1** — capture notes/links/findings → `POST /api/research/drafts` creates a backend draft (no vault write); edit fields; **Save to vault** writes one Markdown note under `raw/research/<topic>/`. No AI, no URL fetch, no web search, no browser/computer-use |
+| OpenClaw tool bridge | **Not wired** — shown honestly as planned (neutral styling), no fake "ready" |
+| NemoClaw / OpenShell | **Not wired** — shown honestly as planned; no runtime enforcement exists |
+| Browser harness | **Not wired** — shown honestly as planned |
+| Computer use | **Not wired** — shown honestly as planned |
+| MCP gateway | **Not wired** — shown honestly as planned |
+| Research — browser/computer-use automation | **Not wired** — browser research, web search, and computer-use capture remain planned; v1 is manual capture only |
+| Chat/AI Consolidation — browser/computer-use capture | **Not wired** — automatic capture from ChatGPT/Claude web and computer-use remain planned; v1 is manual paste/import only |
+| Agent modes | **UI-only** — selectable but not enforced; tool gating arrives with the OpenClaw/NemoClaw bridge |
+| Tool / action log (`ops/tool-logs/`) | **Not wired** — planned; no agent tools run, so nothing to log |
+
+## Research (v1 — manual capture)
+
+Captures research by hand — notes, links, source snippets, and findings — into one structured Markdown note in the vault. The PRD's Research Mode ultimately uses a browser harness; v1 is **manual capture only** with no browser automation, web search, URL fetching, computer-use, MCP, or AI.
+
+### Flow
+
+```text
+manual notes / links / source snippets → structured draft → preview destination
+→ user confirms → backend writes one Markdown research note to raw/research/<topic>/
+```
+
+### Endpoints (`backend/app/research.py`)
+
+- **`POST /api/research/drafts`** — create a draft from manually captured fields. Stores backend metadata only (`backend/data/research/drafts.json`); **no vault write**. Requires a non-empty `title` and at least one of `rawNotes` / `summary` / a key finding. `domain` ∈ {project, course, business, personal, technical, market, general, unknown}. Path-traversal markers in `title`/`topic`/`entity` are rejected.
+- **`GET /api/research/drafts`** — list drafts, newest first.
+- **`GET /api/research/drafts/{id}`** — read one draft.
+- **`PATCH /api/research/drafts/{id}`** — edit `title`, `topic`, `domain`, `entity`, `researchQuestion`, `summary`, `keyFindings`, `sources`, `openQuestions`, `recommendedNextActions`, `rawNotes`. `id`, `createdAt`, `updatedAt`, `status`, and `savedPath` are locked.
+- **`POST /api/research/drafts/{id}/save`** — write **one** Markdown note to `raw/research/<slug(topic|title)>/<YYYY-MM-DD>-<slug(title)>.md`, mark the draft `saved`, store `savedPath`.
+
+### Safety constraints
+
+- Pasted notes and source snippets are treated as **untrusted external content**: stored and embedded only (raw notes inside a fenced block widened past any backticks). Never executed, **never fetched**, never sent to an LLM, never interpreted as instructions.
+- Save writes exactly one file, **never overwrites** (UUID suffix on collision), must stay under `raw/research/`, and can never escape the vault root (traversal rejected).
+- Saving does **not** run `brain`, call AI, fetch URLs, or create tasks/calendar/resume rows.
+- Unsaved drafts appear in the **Proposal Queue** as `research` proposals (status `pending`); saved drafts show as `applied`. The Proposal Queue only navigates to this page — it never saves.
+
+## Chat/AI Consolidation (v1 — manual paste/import)
+
+Captures useful work from ChatGPT, Claude, Claude Code, and OpenCode into the Obsidian vault so it does not get lost. v1 is **manual paste/import only** — there is no browser automation, computer-use, or MCP capture.
+
+### Flow
+
+```text
+paste transcript → classify source/domain/entity → review/edit summary, decisions, action items
+→ preview destination → user confirms → backend writes one Markdown summary to raw/chats/<source>/
+```
+
+### Endpoints (`backend/app/consolidation.py`)
+
+- **`POST /api/consolidation/drafts`** — create a draft from a pasted transcript. Stores backend metadata only (`backend/data/consolidation/drafts.json`); **no vault write**. If no summary is supplied, a conservative deterministic preview is generated (no AI). Requires non-empty `conversationTitle` and `transcript`; `sourceTool` ∈ {chatgpt, claude, claude-code, opencode, other}; `domain` ∈ {project, course, business, research, personal, unknown}.
+- **`GET /api/consolidation/drafts`** — list drafts, newest first.
+- **`GET /api/consolidation/drafts/{id}`** — read one draft.
+- **`PATCH /api/consolidation/drafts/{id}`** — edit `conversationTitle`, `domain`, `entity`, `summary`, `decisions`, `actionItems`, `codeOrFilesReferenced`. `id`, `createdAt`, `sourceTool`, `transcript`, `status`, and `savedPath` are locked.
+- **`POST /api/consolidation/drafts/{id}/save`** — write **one** Markdown summary under `raw/chats/<sourceTool>/<YYYY-MM-DD>-<slug>.md`, mark the draft `saved`, store `savedPath`.
+
+### Destination mapping
+
+```text
+chatgpt → raw/chats/chatgpt/     claude → raw/chats/claude/
+claude-code → raw/chats/claude-code/   opencode → raw/chats/opencode/   other → raw/chats/other/
+```
+
+### Safety constraints
+
+- The transcript is treated as **untrusted external content**: it is only stored and embedded in a fenced code block (the fence is widened past any backticks in the text). It is never executed, never sent to an LLM, and never interpreted as instructions.
+- Save writes exactly one file, **never overwrites** (UUID suffix on collision), and the resolved path can never escape the vault root (traversal rejected; the destination directory is derived only from the validated `sourceTool`).
+- Saving does **not** run `brain`, call AI, or create tasks/calendar/resume rows automatically.
+- Unsaved drafts appear in the **Proposal Queue** as `chat-consolidation` proposals (status `pending`); saved drafts show as `applied`. The Proposal Queue only navigates to this page — it never saves.
+
+## Proposal Queue (v1)
+
+The Proposal Queue is the first piece of the generalized **propose → preview → approve → apply** spine the PRD requires before Research Mode, Chat/AI Consolidation, Gmail intake, MCP tools, and OpenClaw tool requests are built. It gives the app one consistent surface to review proposed changes and distinguish `pending` / `approved` / `applied` / `skipped` / `rejected`.
+
+### What it is
+
+- **`GET /api/proposals`** — a thin, **read-only** aggregation layer (`backend/app/proposals.py`) that normalizes proposal-like items into a single shape.
+- Aggregates **Raw Inbox classification proposals**, **Chat/AI Consolidation drafts**, and **Research drafts**. Each source contributes independently — a failing source yields an error entry, not a failed request.
+- The frontend **Proposal Queue** page (`src/pages/ProposalsPage.tsx`) shows total / pending / applied / skipped-rejected counts, filters (status, type, source, confidence, search), and a card per proposal (title, source, type, status, risk, confidence, target path, summary, key details).
+
+### Normalized shape
+
+Each item has: `id`, `source`, `type`, `riskLevel`, `title`, `summary`, `status`, `confidence`, `targetPath`, `createdAt`, `updatedAt`, `relatedId`, `actions[]`, and a `details` object (`filename`, `domain`, `entity`, `sourceType`, `reason`).
+
+Raw Inbox intake status maps to the generalized status as: `proposed`/`edited` → `pending`, `approved` → `approved`, `routed` → `applied`, `archived` → `applied`, `skipped` → `skipped`.
+
+### Actions
+
+Actions **deep-link to the exact source item** — **Open in Raw Inbox**, **Open in Consolidation**, or **Open in Research** — where the existing approve / edit / route / save flow continues unchanged. The clicked item is highlighted (and scrolled into view) on the source page via an app-state handoff (`proposalTarget` in the zustand store, mirroring `agentConvTarget`); the page consumes and clears the target on mount and shows an unobtrusive "Opened from Proposal Queue." notice. A missing/deleted target falls back to plain page navigation with a non-blocking notice. **There is no approve/apply/save button in the Proposal Queue** — it is a read-only, shared review surface that does not duplicate or increase mutation power.
+
+### Safety constraints
+
+- `GET /api/proposals` is **read-only**: listing never approves, routes, writes vault files, writes intake metadata, runs `brain`, or calls Ollama.
+- A failing proposal source contributes an error entry and an empty contribution (the rest of the queue still loads) rather than failing the whole request.
+- Existing Raw Inbox approval/routing behavior is untouched.
+
+### Future sources
+
+Gmail/email intake, MCP tools, and Agent proposals should all plug into this same normalized queue as they are wired (by extending `list_normalized_proposals()`). Raw Inbox, Chat/AI Consolidation, and Research already do.
 
 ## Escalation Queue
 
@@ -572,7 +697,7 @@ config was updated via `PUT /api/config` this session.
 - Header: date, focus line, quick actions (Run today / Weekly / Upload raw) → **real backend calls**
 - Count strip: 6 clickable metric tiles
 - Main column: Today's plan, Pending approvals (batch), 2-up (command output + recent AI work)
-- Right rail: Agent panel (sphere + mode + ask input), Runtime status (Backend/Brain real + others mocked), Quick actions grid
+- Right rail: Agent panel (sphere + mode + ask input), Runtime status (Backend/Brain/Vault/Local-model real; OpenClaw/NemoClaw/Browser/Computer/MCP shown honestly as "Not wired" under a Planned divider), Quick actions grid
 - Command output panel shows **real stdout** from brain commands
 
 **AgentSphere** — all 13 states from DESIGN.md

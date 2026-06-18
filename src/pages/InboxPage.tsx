@@ -523,6 +523,8 @@ function ConfirmArchiveModal({
 
 export function InboxPage() {
   const navigate               = useAppStore((s) => s.navigate);
+  const proposalTarget         = useAppStore((s) => s.proposalTarget);
+  const setProposalTarget      = useAppStore((s) => s.setProposalTarget);
   const backendStatus          = useAppStore((s) => s.backendStatus);
   const backendConfig          = useAppStore((s) => s.backendConfig);
   const settings               = useAppStore((s) => s.settings);
@@ -576,6 +578,12 @@ export function InboxPage() {
   const [showAiBatchConfirm, setShowAiBatchConfirm] = useState(false);
   const [batchAiClassifying, setBatchAiClassifying] = useState(false);
 
+  // deep-link highlight from Proposal Queue (selection only — no mutation)
+  const [highlightId,  setHighlightId]  = useState<string | null>(null);
+  const [targetNotice, setTargetNotice] = useState<string | null>(null);
+  const pendingTargetRef = useRef<string | null>(null);
+  const highlightRef     = useRef<HTMLDivElement | null>(null);
+
   // ── derived ────────────────────────────────────────────────────────────────
   const eligibleIds = entries.filter((e) => isEligible(e.proposal)).map((e) => e.file.id);
   const selectedEligible = eligibleIds.filter((id) => selected.has(id));
@@ -615,6 +623,35 @@ export function InboxPage() {
   }, [backendStatus, setStagedCount, setPendingProposalCount]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  // ── deep-link from Proposal Queue: highlight the exact staged row ────────────
+  // Selection/highlight only — no proposal is approved, routed, or skipped here.
+  useEffect(() => {
+    if (proposalTarget?.source === 'raw-inbox' && proposalTarget.relatedId) {
+      pendingTargetRef.current = proposalTarget.relatedId;
+      setProposalTarget(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const targetId = pendingTargetRef.current;
+    if (!targetId || loading) return;
+    pendingTargetRef.current = null;
+    if (entries.some((e) => e.file.id === targetId)) {
+      setHighlightId(targetId);
+      setTargetNotice('Opened from Proposal Queue.');
+    } else {
+      setTargetNotice('Target proposal was not found. Showing Raw Inbox.');
+    }
+  }, [entries, loading]);
+
+  useEffect(() => {
+    if (!highlightId) return;
+    highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const t = setTimeout(() => setHighlightId(null), 4000);
+    return () => clearTimeout(t);
+  }, [highlightId]);
 
   // ── upload ─────────────────────────────────────────────────────────────────
 
@@ -940,6 +977,15 @@ export function InboxPage() {
         </div>
       )}
 
+      {/* ── deep-link notice from Proposal Queue ── */}
+      {targetNotice && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s3)', padding: 'var(--s3) var(--s4)', borderRadius: 'var(--r2)', background: 'var(--surface-2)', border: '1px solid var(--line)', fontSize: 12.5, color: 'var(--txt-1)' }}>
+          <StatusDot tone="live" />
+          <span style={{ flex: 1 }}>{targetNotice}</span>
+          <button className="btn btn-sm btn-ghost" onClick={() => setTargetNotice(null)} style={{ padding: '2px 8px' }}>Dismiss</button>
+        </div>
+      )}
+
       {/* ── sync prompt — shown when routed files exist ── */}
       {routed > 0 && (
         <SyncPanel
@@ -1037,15 +1083,20 @@ export function InboxPage() {
           const canAiClassify = proposal !== null &&
             !['routed', 'archived'].includes(proposal.status);
 
+          const isHighlighted = highlightId === file.id;
+
           return (
-            <div key={file.id} style={{
+            <div key={file.id}
+              ref={isHighlighted ? highlightRef : undefined}
+              style={{
               display: 'grid', gridTemplateColumns: GRID_COLS,
               alignItems: 'center', gap: 'var(--s3)',
               padding: '10px var(--s5)',
               borderBottom: i < entries.length - 1 ? '1px solid var(--line-soft)' : 'none',
               opacity: isBusy ? 0.45 : 1,
-              transition: 'opacity var(--fast) var(--ease)',
-              background: isSelected ? 'var(--amber-bg)' : undefined,
+              transition: 'opacity var(--fast) var(--ease), box-shadow var(--fast) var(--ease)',
+              background: isHighlighted ? 'var(--live-bg)' : isSelected ? 'var(--amber-bg)' : undefined,
+              boxShadow: isHighlighted ? 'inset 3px 0 0 var(--live)' : undefined,
             }}>
               {/* checkbox */}
               <div style={{ display: 'flex', alignItems: 'center' }}>

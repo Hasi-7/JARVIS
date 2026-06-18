@@ -45,7 +45,7 @@ export function SystemRow({ service }: SystemRowProps) {
           whiteSpace: 'nowrap',
         }}
       >
-        {service.state}
+        {service.statusLabel ?? service.state}
       </span>
     </div>
   );

@@ -16,6 +16,8 @@ import type {
   DashboardSummary,
   DashboardTodayPlanItem,
   DashboardActiveWork,
+  DashboardActiveWorkBackfillItem,
+  DashboardActiveWorkEscalationItem,
   ConversationSummary,
 } from '@/lib/api';
 import type { RouteId, SystemService } from '@/types';
@@ -175,11 +177,13 @@ function RecentAiWorkPanel({
   convs,
   failed,
   onNavigateAgent,
+  onOpenConversation,
 }: {
   loading: boolean;
   convs: ConversationSummary[] | null;
   failed: boolean;
   onNavigateAgent: () => void;
+  onOpenConversation: (id: string) => void;
 }) {
   const items = convs
     ? [...convs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 5)
@@ -222,11 +226,11 @@ function RecentAiWorkPanel({
       ) : items !== null ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {items.map((conv) => (
-            // TODO: deep-link to specific conversation deferred — AgentPage uses local convId state
             <button
               key={conv.id}
               className="btn"
-              onClick={onNavigateAgent}
+              onClick={() => onOpenConversation(conv.id)}
+              title="Open this conversation in Local Agent"
               style={{
                 display: 'grid',
                 gridTemplateColumns: '1fr auto',
@@ -295,24 +299,139 @@ function priorityChip(priority: string | null | undefined): React.ReactNode {
   );
 }
 
-function ActiveWorkRow({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+function ActiveWorkRow({
+  children,
+  onClick,
+  action,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  action?: React.ReactNode;
+}) {
   return (
-    <button
+    <div
       className="btn"
       onClick={onClick}
+      role="button"
       style={{
         display: 'flex',
-        alignItems: 'flex-start',
-        flexDirection: 'column',
-        gap: 2,
+        alignItems: 'center',
+        gap: 8,
         padding: '7px 10px',
         textAlign: 'left',
         width: '100%',
         borderBottom: '1px solid var(--line-soft)',
+        borderRadius: 0,
+        cursor: 'pointer',
       }}
     >
-      {children}
-    </button>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-start',
+          gap: 2,
+          minWidth: 0,
+          flex: 1,
+        }}
+      >
+        {children}
+      </div>
+      {action && (
+        // Stop the click from bubbling to the row's navigate handler.
+        <div style={{ flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+          {action}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── quick-action (mark done) types ────────────────────────────────────────────
+
+type PendingMarkDone =
+  | { kind: 'backfill';   item: DashboardActiveWorkBackfillItem }
+  | { kind: 'escalation'; item: DashboardActiveWorkEscalationItem };
+
+function MarkDoneConfirmModal({
+  pending,
+  loading,
+  error,
+  onConfirm,
+  onCancel,
+}: {
+  pending:   PendingMarkDone;
+  loading:   boolean;
+  error:     string | null;
+  onConfirm: () => void;
+  onCancel:  () => void;
+}) {
+  const isBackfill = pending.kind === 'backfill';
+  const source     = isBackfill ? 'ops/backfill.md' : 'ops/escalation-queue.md';
+  const question   = isBackfill ? 'Mark this Backfill item as done?' : 'Mark this Escalation as done?';
+  const body       = `This updates only the status cell in ${source}. The backend creates a backup before writing.`;
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0,
+        background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 1000,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget && !loading) onCancel(); }}
+    >
+      <div className="panel" style={{
+        width: 440, padding: 'var(--s5)',
+        display: 'flex', flexDirection: 'column', gap: 'var(--s4)',
+        boxShadow: 'var(--shadow-pop)',
+      }}>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>{question}</div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s2)' }}>
+          <div style={{ fontSize: 12.5, color: 'var(--txt-0)', fontWeight: 500 }}>
+            {pending.item.title}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+            <span style={{ color: 'var(--txt-2)' }}>{pending.item.status}</span>
+            <Icon name="arrow-right" size={12} style={{ color: 'var(--txt-3)' }} />
+            <span style={{ color: 'var(--green)', fontWeight: 600 }}>done</span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--txt-3)' }}>
+            Source: <span className="mono" style={{ fontSize: 10.5 }}>{source}</span>
+          </div>
+        </div>
+
+        <div style={{
+          fontSize: 11, color: 'var(--txt-2)',
+          padding: 'var(--s2) var(--s3)',
+          background: 'var(--surface-2)', borderRadius: 'var(--r2)',
+          border: '1px solid var(--line)',
+        }}>
+          {body}
+        </div>
+
+        {error && (
+          <div style={{
+            fontSize: 11.5, color: 'var(--red)',
+            padding: 'var(--s2) var(--s3)',
+            background: 'var(--red-bg)', borderRadius: 'var(--r2)',
+            border: '1px solid var(--red-line)',
+          }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)' }}>
+          <button className="btn btn-sm btn-ghost" onClick={onCancel} disabled={loading}>
+            Cancel
+          </button>
+          <button className="btn btn-sm btn-primary" onClick={onConfirm} disabled={loading}>
+            {loading ? 'Saving…' : 'Mark done'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -375,12 +494,59 @@ function ActiveWorkPanel({
   activeWork,
   failed,
   onNavigate,
+  onReload,
+  showToast,
 }: {
   loading:    boolean;
   activeWork: DashboardActiveWork | null;
   failed:     boolean;
   onNavigate: (nav: ActiveWorkNavId) => void;
+  onReload:   () => Promise<void> | void;
+  showToast:  (msg: string) => void;
 }) {
+  // ── quick action: mark backfill / escalation item done ─────────────────────
+  const [pending,    setPending]    = useState<PendingMarkDone | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  function openMarkDone(p: PendingMarkDone) {
+    setActionError(null);
+    setPending(p);
+  }
+
+  async function confirmMarkDone() {
+    if (!pending) return;
+    setSubmitting(true);
+    setActionError(null);
+    try {
+      if (pending.kind === 'backfill') {
+        await api.updateBackfillStatus(pending.item.id, 'done');
+      } else {
+        await api.updateEscalationStatus(pending.item.id, 'done');
+      }
+      setPending(null);
+      showToast('Marked done.');
+      await onReload();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not update status.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const markDoneButton = (p: PendingMarkDone) => (
+    <button
+      className="btn btn-sm btn-ghost"
+      style={{ fontSize: 10.5, padding: '2px 8px', whiteSpace: 'nowrap' }}
+      onClick={() => openMarkDone(p)}
+      disabled={submitting}
+      title="Mark this item as done"
+    >
+      <Icon name="check" size={11} style={{ marginRight: 3 }} />
+      Mark done
+    </button>
+  );
+
   const totalItems = activeWork
     ? activeWork.backfill.length + activeWork.escalations.length +
       activeWork.resume.length + activeWork.calendar.length + activeWork.raw.length
@@ -393,9 +559,12 @@ function ActiveWorkPanel({
       nav: 'backfill',
       items: activeWork.backfill,
       renderItem: (item) => {
-        const it = item as import('@/lib/api').DashboardActiveWorkBackfillItem;
+        const it = item as DashboardActiveWorkBackfillItem;
         return (
-          <ActiveWorkRow onClick={() => onNavigate('backfill')}>
+          <ActiveWorkRow
+            onClick={() => onNavigate('backfill')}
+            action={markDoneButton({ kind: 'backfill', item: it })}
+          >
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}>
               <span
                 style={{
@@ -423,9 +592,12 @@ function ActiveWorkPanel({
       nav: 'escalation',
       items: activeWork.escalations,
       renderItem: (item) => {
-        const it = item as import('@/lib/api').DashboardActiveWorkEscalationItem;
+        const it = item as DashboardActiveWorkEscalationItem;
         return (
-          <ActiveWorkRow onClick={() => onNavigate('escalation')}>
+          <ActiveWorkRow
+            onClick={() => onNavigate('escalation')}
+            action={markDoneButton({ kind: 'escalation', item: it })}
+          >
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span
                 style={{
@@ -536,6 +708,7 @@ function ActiveWorkPanel({
   const visibleGroups = groups.filter((g) => g.items.length > 0);
 
   return (
+    <>
     <div className="panel" style={{ overflow: 'hidden' }}>
       <div style={{ padding: 'var(--s4) var(--s4) var(--s3)' }}>
         <PanelHeader
@@ -573,6 +746,17 @@ function ActiveWorkPanel({
         </div>
       ) : null}
     </div>
+
+    {pending && (
+      <MarkDoneConfirmModal
+        pending={pending}
+        loading={submitting}
+        error={actionError}
+        onConfirm={confirmMarkDone}
+        onCancel={() => { if (!submitting) setPending(null); }}
+      />
+    )}
+    </>
   );
 }
 
@@ -598,6 +782,7 @@ export function DashboardPage() {
   const runBrainCommand = useAppStore((s) => s.runBrainCommand);
   const agentStatus     = useAppStore((s) => s.agentStatus);
   const setAgentPrefill = useAppStore((s) => s.setAgentPrefill);
+  const setAgentConvTarget = useAppStore((s) => s.setAgentConvTarget);
 
   const [ask, setAsk] = useState('');
 
@@ -930,6 +1115,8 @@ export function DashboardPage() {
             activeWork={summary?.activeWork ?? null}
             failed={!summaryLoading && summaryError !== null}
             onNavigate={(nav) => navigate(nav as RouteId)}
+            onReload={loadSummary}
+            showToast={showToast}
           />
 
           {/* two-up: command output + recent AI work */}
@@ -984,6 +1171,12 @@ export function DashboardPage() {
               convs={convs}
               failed={!convsLoading && convsError}
               onNavigateAgent={() => navigate('agent')}
+              onOpenConversation={(id) => {
+                // Hand off the selected conversation id, then navigate.
+                // Falsy/malformed id → just open Agent normally (no target).
+                if (id) setAgentConvTarget(id);
+                navigate('agent');
+              }}
             />
 
           </div>
@@ -1110,12 +1303,24 @@ export function DashboardPage() {
                 </button>
               }
             />
-            {/* real: backend, brain CLI, vault, local model */}
+            {/* real: backend, brain CLI, vault, local model — live backend/API data */}
             <SystemRow service={backendService} />
             <SystemRow service={brainService} />
             <SystemRow service={vaultService} />
             <SystemRow service={localModelService} />
-            {/* not wired: OpenClaw, NemoClaw, browser, computer use, MCP */}
+            {/* planned PRD runtimes — not implemented in this build */}
+            <div style={{
+              fontSize: 10,
+              fontWeight: 600,
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+              color: 'var(--txt-3)',
+              marginTop: 'var(--s3)',
+              paddingTop: 'var(--s2)',
+              borderTop: '1px solid var(--line-soft)',
+            }}>
+              Planned — not wired yet
+            </div>
             {[SYSTEM.openclaw, SYSTEM.nemoclaw, SYSTEM.browser, SYSTEM.computer, SYSTEM.mcp].map(
               (svc, i) => <SystemRow key={i} service={svc} />
             )}

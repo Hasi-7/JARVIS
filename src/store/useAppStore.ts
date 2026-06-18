@@ -1,5 +1,12 @@
 import { create } from 'zustand';
 import type { AgentStateKey, AgentMode, RouteId, CmdLogEntry } from '@/types';
+
+// Deep-link handoff from the Proposal Queue to a source page (selection/highlight only).
+export type ProposalTargetSource = 'raw-inbox' | 'chat-consolidation' | 'research';
+export interface ProposalTarget {
+  source: ProposalTargetSource;
+  relatedId: string;
+}
 import { AGENT_MODES } from '@/data/mock';
 import type { AppSettings } from '@/lib/config';
 import { loadSettings, saveSettings as persistSettings, clearSettings, DEFAULTS, hasLocalSettings } from '@/lib/config';
@@ -24,6 +31,14 @@ interface AppState {
   // Prefill for the Local Agent composer (set by Dashboard "Ask the agent")
   agentPrefill: string;
 
+  // Deep-link target: conversation id to open in AgentPage (set by Dashboard
+  // Recent AI Work row click). Consumed and cleared by AgentPage on mount.
+  agentConvTarget: string | null;
+
+  // Deep-link target from the Proposal Queue → highlight the exact source item.
+  // Consumed and cleared by the matching source page (Inbox/Consolidate/Research).
+  proposalTarget: ProposalTarget | null;
+
   // Live command log (real output from backend)
   cmdLog: CmdLogEntry[];
 
@@ -44,6 +59,8 @@ interface AppState {
   checkBackend: () => Promise<void>;
   checkAgentStatus: () => Promise<void>;
   setAgentPrefill: (msg: string) => void;
+  setAgentConvTarget: (id: string | null) => void;
+  setProposalTarget: (t: ProposalTarget | null) => void;
   runBrainCommand: (cmd: string) => Promise<void>;
 
   setStagedCount: (n: number) => void;
@@ -70,6 +87,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   backendConfig: null,
   agentStatus: null,
   agentPrefill: '',
+  agentConvTarget: null,
+  proposalTarget: null,
   cmdLog: [],
   stagedCount: 0,
   pendingProposalCount: 0,
@@ -156,6 +175,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setAgentPrefill: (msg) => set({ agentPrefill: msg }),
+
+  setAgentConvTarget: (agentConvTarget) => set({ agentConvTarget }),
+
+  setProposalTarget: (proposalTarget) => set({ proposalTarget }),
 
   runBrainCommand: async (cmd: string) => {
     const at = nowHHMM();

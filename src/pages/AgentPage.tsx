@@ -55,6 +55,8 @@ export function AgentPage() {
   const backendConfig    = useAppStore((s) => s.backendConfig);
   const agentPrefill     = useAppStore((s) => s.agentPrefill);
   const setAgentPrefill  = useAppStore((s) => s.setAgentPrefill);
+  const agentConvTarget    = useAppStore((s) => s.agentConvTarget);
+  const setAgentConvTarget = useAppStore((s) => s.setAgentConvTarget);
 
   const meta = AGENT_STATES[agentState];
 
@@ -125,10 +127,26 @@ export function AgentPage() {
   }, []);
 
   // ── on mount ───────────────────────────────────────────────────────────────
+  // AgentPage remounts on every navigation to it, so reading the deep-link
+  // target here also covers "return to Dashboard, open another conversation".
   useEffect(() => {
     checkAgentStatus();
+    // Deep-link target from Dashboard Recent AI Work — consume once.
+    const target = agentConvTarget;
+    if (target) setAgentConvTarget(null);
     loadConvList().then((list) => {
-      if (list.length > 0) loadConv(list[0].id);
+      if (list.length === 0) return;
+      if (target) {
+        if (list.some((c) => c.id === target)) {
+          // Selection/state restoration only — no message is sent, no AI call.
+          loadConv(target);
+        } else {
+          // Requested conversation no longer exists — keep the page usable.
+          setError('That conversation could not be found. It may have been deleted.');
+        }
+      } else {
+        loadConv(list[0].id);
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -403,6 +421,14 @@ export function AgentPage() {
               </button>
             );
           })}
+          <div style={{
+            marginTop: 'var(--s2)', paddingTop: 'var(--s2)',
+            borderTop: '1px solid var(--line-soft)',
+            fontSize: 10, color: 'var(--txt-3)', lineHeight: 1.45,
+          }}>
+            Mode selection is currently UI-only. Tool gating will be enforced after the
+            OpenClaw/NemoClaw bridge is implemented.
+          </div>
         </div>
 
         {/* local model status */}

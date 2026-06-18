@@ -7,6 +7,7 @@ import { InboxPage }       from '@/pages/InboxPage';
 import { ConsolidatePage } from '@/pages/ConsolidatePage';
 import { CalendarPage }    from '@/pages/CalendarPage';
 import { TasksPage }       from '@/pages/TasksPage';
+import { ProposalsPage }   from '@/pages/ProposalsPage';
 import { ProjectsPage }    from '@/pages/ProjectsPage';
 import { HackathonsPage }  from '@/pages/HackathonsPage';
 import { CoursesPage }     from '@/pages/CoursesPage';
@@ -27,6 +28,7 @@ function Screen() {
     case 'consolidate': return <ConsolidatePage />;
     case 'calendar':    return <CalendarPage />;
     case 'tasks':       return <TasksPage />;
+    case 'proposals':   return <ProposalsPage />;
     case 'projects':    return <ProjectsPage />;
     case 'hackathons':  return <HackathonsPage />;
     case 'courses':     return <CoursesPage />;

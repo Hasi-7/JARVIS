@@ -812,6 +812,176 @@ export interface DashboardSummary {
   errors:      DashboardSummaryError[];
 }
 
+// ── proposal queue (v1: aggregates Raw Inbox classification proposals) ─────────
+
+export type ProposalStatus    = 'pending' | 'approved' | 'rejected' | 'applied' | 'skipped';
+export type ProposalRiskLevel = 'low' | 'medium' | 'high';
+export type ProposalType      = 'file_route' | 'chat_consolidation' | 'research_note';   // future: note_write | calendar_candidate | …
+export type ProposalSource    = 'raw-inbox' | 'chat-consolidation' | 'research';          // future: email | mcp | agent
+export type ProposalAction    = 'open_raw_inbox' | 'open_consolidation' | 'open_research';
+
+export interface ProposalDetails {
+  filename:   string | null;
+  domain:     string | null;
+  entity:     string | null;
+  sourceType: string | null;
+  reason:     string | null;
+}
+
+export interface ProposalItem {
+  id:         string;
+  source:     ProposalSource | string;
+  type:       ProposalType | string;
+  riskLevel:  ProposalRiskLevel | string;
+  title:      string;
+  summary:    string;
+  status:     ProposalStatus | string;
+  confidence: 'High' | 'Medium' | 'Low' | null;
+  targetPath: string | null;
+  createdAt:  string | null;
+  updatedAt:  string | null;
+  relatedId:  string;
+  actions:    (ProposalAction | string)[];
+  details:    ProposalDetails;
+}
+
+export interface ProposalListError {
+  source:  string;
+  message: string;
+}
+
+export interface ProposalListResponse {
+  proposals: ProposalItem[];
+  errors:    ProposalListError[];
+}
+
+// ── chat / AI consolidation (v1: manual paste/import) ──────────────────────────
+
+export type ConsolidationSourceTool = 'chatgpt' | 'claude' | 'claude-code' | 'opencode' | 'other';
+export type ConsolidationDomain     = 'project' | 'course' | 'business' | 'research' | 'personal' | 'unknown';
+export type ConsolidationStatus     = 'draft' | 'saved';
+
+export interface ConsolidationDraft {
+  id:                     string;
+  sourceTool:             ConsolidationSourceTool;
+  conversationTitle:      string;
+  domain:                 ConsolidationDomain;
+  entity:                 string | null;
+  transcript:             string;
+  summary:                string;
+  decisions:              string[];
+  actionItems:            string[];
+  codeOrFilesReferenced:  string[];
+  status:                 ConsolidationStatus;
+  proposedDestination:    string;
+  savedPath:              string | null;
+  createdAt:              string;
+  updatedAt:              string;
+}
+
+export interface ConsolidationDraftsResponse {
+  drafts: ConsolidationDraft[];
+}
+
+export interface CreateConsolidationDraftRequest {
+  sourceTool:             ConsolidationSourceTool;
+  conversationTitle:      string;
+  domain:                 ConsolidationDomain;
+  entity?:                string | null;
+  transcript:             string;
+  summary?:               string | null;
+  decisions?:             string[];
+  actionItems?:           string[];
+  codeOrFilesReferenced?: string[];
+}
+
+export interface UpdateConsolidationDraftRequest {
+  conversationTitle?:     string;
+  domain?:                ConsolidationDomain;
+  entity?:                string | null;
+  summary?:               string;
+  decisions?:             string[];
+  actionItems?:           string[];
+  codeOrFilesReferenced?: string[];
+}
+
+export interface SaveConsolidationDraftResponse {
+  ok:           boolean;
+  draft:        ConsolidationDraft;
+  relativePath: string;
+  absolutePath: string;
+}
+
+// ── research (v1: manual capture) ──────────────────────────────────────────────
+
+export type ResearchDomain = 'project' | 'course' | 'business' | 'personal' | 'technical' | 'market' | 'general' | 'unknown';
+export type ResearchStatus = 'draft' | 'saved';
+
+export interface ResearchSource {
+  title: string | null;
+  url:    string | null;
+  notes:  string | null;
+}
+
+export interface ResearchDraft {
+  id:                     string;
+  title:                  string;
+  topic:                  string | null;
+  domain:                 ResearchDomain;
+  entity:                 string | null;
+  researchQuestion:       string | null;
+  summary:                string;
+  keyFindings:            string[];
+  sources:                ResearchSource[];
+  openQuestions:          string[];
+  recommendedNextActions: string[];
+  rawNotes:               string;
+  status:                 ResearchStatus;
+  proposedDestination:    string;
+  savedPath:              string | null;
+  createdAt:              string;
+  updatedAt:              string;
+}
+
+export interface ResearchDraftsResponse {
+  drafts: ResearchDraft[];
+}
+
+export interface CreateResearchDraftRequest {
+  title:                   string;
+  topic?:                  string | null;
+  domain:                  ResearchDomain;
+  entity?:                 string | null;
+  researchQuestion?:       string | null;
+  summary?:                string | null;
+  keyFindings?:            string[];
+  sources?:                ResearchSource[];
+  openQuestions?:          string[];
+  recommendedNextActions?: string[];
+  rawNotes:                string;
+}
+
+export interface UpdateResearchDraftRequest {
+  title?:                  string;
+  topic?:                  string | null;
+  domain?:                 ResearchDomain;
+  entity?:                 string | null;
+  researchQuestion?:       string | null;
+  summary?:                string;
+  keyFindings?:            string[];
+  sources?:                ResearchSource[];
+  openQuestions?:          string[];
+  recommendedNextActions?: string[];
+  rawNotes?:               string;
+}
+
+export interface SaveResearchDraftResponse {
+  ok:           boolean;
+  draft:        ResearchDraft;
+  relativePath: string;
+  absolutePath: string;
+}
+
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 async function parseError(res: Response): Promise<string> {
@@ -855,6 +1025,29 @@ async function uploadForm<T>(path: string, form: FormData): Promise<T> {
 export const api = {
   // dashboard summary
   getDashboardSummary: () => get<DashboardSummary>('/api/dashboard/summary'),
+
+  // proposal queue (read-only aggregation; Raw Inbox + Consolidation drafts)
+  getProposals: () => get<ProposalListResponse>('/api/proposals'),
+
+  // chat / AI consolidation (manual paste/import; vault write only on explicit save)
+  createConsolidationDraft: (payload: CreateConsolidationDraftRequest) =>
+    fetchWithBody<ConsolidationDraft>('POST', '/api/consolidation/drafts', payload),
+  listConsolidationDrafts:  ()                => get<ConsolidationDraftsResponse>('/api/consolidation/drafts'),
+  getConsolidationDraft:    (id: string)      => get<ConsolidationDraft>(`/api/consolidation/drafts/${id}`),
+  updateConsolidationDraft: (id: string, p: UpdateConsolidationDraftRequest) =>
+    fetchWithBody<ConsolidationDraft>('PATCH', `/api/consolidation/drafts/${id}`, p),
+  saveConsolidationDraft:   (id: string)      =>
+    fetchWithBody<SaveConsolidationDraftResponse>('POST', `/api/consolidation/drafts/${id}/save`, {}),
+
+  // research (manual capture; vault write only on explicit save)
+  createResearchDraft: (payload: CreateResearchDraftRequest) =>
+    fetchWithBody<ResearchDraft>('POST', '/api/research/drafts', payload),
+  listResearchDrafts:  ()                => get<ResearchDraftsResponse>('/api/research/drafts'),
+  getResearchDraft:    (id: string)      => get<ResearchDraft>(`/api/research/drafts/${id}`),
+  updateResearchDraft: (id: string, p: UpdateResearchDraftRequest) =>
+    fetchWithBody<ResearchDraft>('PATCH', `/api/research/drafts/${id}`, p),
+  saveResearchDraft:   (id: string)      =>
+    fetchWithBody<SaveResearchDraftResponse>('POST', `/api/research/drafts/${id}/save`, {}),
 
   // health / config
   health:       ()                    => get<BackendHealth>('/api/health'),
