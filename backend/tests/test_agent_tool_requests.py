@@ -109,8 +109,9 @@ def test_empty_tool_raises():
 
 def test_endpoint_empty_tool_400():
     from fastapi import HTTPException
+    # An evaluating mode is required to reach tool validation (else mode blocks first).
     with pytest.raises(HTTPException) as ei:
-        agent_tool_request_create(CreateAgentToolRequestRequest(tool="  "))
+        agent_tool_request_create(CreateAgentToolRequestRequest(tool="  ", mode="draft"))
     assert ei.value.status_code == 400
 
 

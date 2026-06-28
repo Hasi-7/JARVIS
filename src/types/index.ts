@@ -8,7 +8,7 @@ export type AgentTone = 'live' | 'amber' | 'red' | 'violet' | 'green' | 'grey';
 
 export type SphereVariant = 'orb' | 'rings' | 'minimal';
 
-export type AgentModeId = 'manual' | 'observe' | 'draft' | 'assist' | 'research' | 'computer' | 'locked';
+export type AgentModeId = 'manual' | 'observe' | 'draft' | 'assist' | 'research' | 'escalation' | 'computer' | 'locked';
 
 export interface AgentMode {
   id: AgentModeId;

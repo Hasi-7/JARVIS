@@ -1,14 +1,19 @@
 import { useState, useRef, useEffect } from 'react';
 import type { AgentMode } from '@/types';
+import type { AgentModePolicy } from '@/lib/api';
+import { modePolicySummary } from '@/lib/agentModes';
 import { Icon } from './Icon';
 
 interface ModeBadgeProps {
   mode: AgentMode;
   modes: AgentMode[];
   onSelect: (mode: AgentMode) => void;
+  // Optional backend-enforced policy for the current mode. When provided, the badge
+  // shows an availability dot + a policy tooltip and reads "unavailable" for not-wired modes.
+  policy?: AgentModePolicy;
 }
 
-export function ModeBadge({ mode, modes, onSelect }: ModeBadgeProps) {
+export function ModeBadge({ mode, modes, onSelect, policy }: ModeBadgeProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -21,21 +26,40 @@ export function ModeBadge({ mode, modes, onSelect }: ModeBadgeProps) {
     return () => document.removeEventListener('mousedown', onOutside);
   }, [open]);
 
+  const summary = policy ? modePolicySummary(policy) : null;
+  const unavailable = policy ? !policy.available : false;
+  // Muted (amber) when the selected mode is unavailable/not wired, else live accent.
+  const accent     = unavailable ? 'var(--amber)' : 'var(--live)';
+  const accentLine = unavailable ? 'var(--amber-line, var(--line))' : 'var(--live-line)';
+  const accentBg   = unavailable ? 'var(--surface-2)' : 'var(--live-bg)';
+
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <button
         className="btn btn-sm"
         onClick={() => setOpen((o) => !o)}
+        title={summary?.tooltip}
         style={{
           fontSize: 12,
           gap: 5,
           paddingRight: 8,
-          color: 'var(--live)',
-          borderColor: 'var(--live-line)',
-          background: 'var(--live-bg)',
+          color: accent,
+          borderColor: accentLine,
+          background: accentBg,
         }}
       >
-        {mode.label}
+        {policy && (
+          <span
+            aria-hidden
+            style={{
+              width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+              background: unavailable
+                ? 'var(--grey)'
+                : policy.canEvaluateToolRequests ? 'var(--green)' : 'var(--amber)',
+            }}
+          />
+        )}
+        {unavailable ? `${mode.label} · unavailable` : mode.label}
         <Icon name="chevron-down" size={12} />
       </button>
 

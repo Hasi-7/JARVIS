@@ -874,6 +874,55 @@ class ToolConnectionStatusResponse(BaseModel):
     items: List[ToolConnectionStatus] = []
 
 
+# ── OpenClaw / NemoClaw runtime status (v0: read-only readiness) ────────────────
+
+class RuntimeStatusItem(BaseModel):
+    id:          str                    # openclaw | nemoclaw_openshell | browser_harness | computer_use | mcp_gateway
+    name:        str
+    status:      str                    # available | unavailable | not_configured | disabled | planned | error
+    available:   bool                   # verified reachable now (always False in v0 — no health check)
+    enabled:     bool                   # effectively active now (always False in v0)
+    requiredFor: List[str] = []         # what this runtime would unlock later
+    dependsOn:   List[str] = []         # runtime ids this depends on
+    blocks:      List[str] = []         # human-readable reasons it is currently blocked
+    configured:  Dict[str, bool] = {}   # which config knobs are present (values never stored)
+    notes:       Optional[str] = None
+
+
+class RuntimeStatusResponse(BaseModel):
+    items: List[RuntimeStatusItem] = []
+
+
+# ── NemoClaw/OpenShell health probe (v0: explicit, opt-in reachability check) ───
+
+class NemoclawProbeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    timeoutMs: Optional[int] = None     # clamped to [1, 3000] server-side
+
+
+class NemoclawProbeDetails(BaseModel):
+    urlConfigured:        bool
+    policyPathConfigured: bool
+    enabledFlag:          bool = False
+    remoteProbeAllowed:   bool = False
+    hostRedacted:         Optional[str] = None   # scheme://host[:port] only — never userinfo/path/query
+
+
+class NemoclawProbeResponse(BaseModel):
+    id:         str = "nemoclaw_openshell"
+    checkedAt:  str
+    configured: bool
+    reachable:  bool
+    status:     str               # reachable | unavailable | not_configured | error
+    durationMs: int
+    message:    str
+    details:    NemoclawProbeDetails
+
+
+class NemoclawLastProbeResponse(BaseModel):
+    lastProbe: Optional[NemoclawProbeResponse] = None
+
+
 # ── permission gateway (v0: deny-by-default classification, no execution) ───────
 
 class PermissionPolicy(BaseModel):
@@ -964,6 +1013,9 @@ class CreateAgentToolRequestRequest(BaseModel):
     reason:         Optional[str] = None
     requestedBy:    Optional[str] = None
     conversationId: Optional[str] = None
+    # Agent Mode Enforcement v0 — the selected mode gates whether the request is
+    # evaluated at all. Optional; missing/unknown normalizes to the safest mode.
+    mode:           Optional[str] = None
 
 
 class AgentToolRequestEvaluation(BaseModel):
@@ -996,10 +1048,38 @@ class AgentToolRequestListResponse(BaseModel):
 class AgentChatStructured(BaseModel):
     toolRequests: List[AgentToolRequestResponse] = []
     parseErrors:  List[str] = []
+    # Agent Mode Enforcement v0 — the resolved mode and whether tool requests were
+    # blocked by it. When blockedByMode is True, toolRequests is empty (nothing was
+    # evaluated or stored) and `message` explains why.
+    mode:          Optional[str] = None
+    blockedByMode: bool = False
+    message:       Optional[str] = None
 
 
 # Resolve the forward reference on AgentChatResponse now that AgentChatStructured exists.
 AgentChatResponse.model_rebuild()
+
+
+# ── agent modes (v0: backend-enforced policy) ──────────────────────────────────
+
+class AgentModePolicy(BaseModel):
+    id:                       str
+    label:                    str
+    available:                bool
+    canEvaluateToolRequests:  bool
+    canOfferReviewHandoff:    bool
+    notes:                    Optional[str] = None
+
+
+class AgentModesResponse(BaseModel):
+    modes: List[AgentModePolicy] = []
+
+
+class AgentModeBlockedResponse(BaseModel):
+    """Returned when a tool request is blocked because the current mode disallows it."""
+    status:  str = "blocked_by_mode"
+    mode:    str
+    message: str
 
 
 # ── chat / AI consolidation (v1: manual paste/import) ──────────────────────────

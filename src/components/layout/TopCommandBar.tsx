@@ -4,6 +4,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { ModeBadge } from '@/components/ui/ModeBadge';
+import { resolveModePolicy } from '@/lib/agentModes';
 import { STATE_TO_TONE } from '@/lib/utils';
 
 const STATUS_PILLS: Array<{ label: string; key: keyof typeof SYSTEM }> = [
@@ -20,7 +21,10 @@ interface TopCommandBarProps {
 export function TopCommandBar({ route }: TopCommandBarProps) {
   const agentMode    = useAppStore((s) => s.agentMode);
   const setAgentMode = useAppStore((s) => s.setAgentMode);
+  const agentModes   = useAppStore((s) => s.agentModes);
   const openPalette  = useAppStore((s) => s.openPalette);
+
+  const modePolicy = resolveModePolicy(agentMode.id, agentModes);
 
   const title =
     NAV.flatMap((g) => g.items).find((i) => i.id === route)?.label ?? 'Brain UI';
@@ -105,8 +109,9 @@ export function TopCommandBar({ route }: TopCommandBarProps) {
           })}
         </div>
 
-        {/* mode dropdown */}
-        <ModeBadge mode={agentMode} modes={AGENT_MODES} onSelect={setAgentMode} />
+        {/* mode dropdown — shows backend-enforced policy (tooltip + availability) */}
+        <span style={{ fontSize: 11, color: 'var(--txt-3)' }}>Mode</span>
+        <ModeBadge mode={agentMode} modes={AGENT_MODES} onSelect={setAgentMode} policy={modePolicy} />
       </div>
     </header>
   );

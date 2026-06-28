@@ -21,7 +21,7 @@ export interface ToolReviewTarget {
 import { AGENT_MODES } from '@/data/mock';
 import type { AppSettings } from '@/lib/config';
 import { loadSettings, saveSettings as persistSettings, clearSettings, DEFAULTS, hasLocalSettings } from '@/lib/config';
-import type { AgentStatus, BackendConfig } from '@/lib/api';
+import type { AgentStatus, BackendConfig, AgentModePolicy } from '@/lib/api';
 import { api } from '@/lib/api';
 
 interface AppState {
@@ -38,6 +38,10 @@ interface AppState {
 
   // Local agent (Ollama) status
   agentStatus: AgentStatus | null;
+
+  // Backend-enforced agent mode policy (GET /api/agent/modes). null until loaded;
+  // consumers fall back to a static policy copy when this is null (backend down).
+  agentModes: AgentModePolicy[] | null;
 
   // Prefill for the Local Agent composer (set by Dashboard "Ask the agent")
   agentPrefill: string;
@@ -73,6 +77,7 @@ interface AppState {
   syncConfigToBackend: (s: AppSettings) => Promise<void>;
   checkBackend: () => Promise<void>;
   checkAgentStatus: () => Promise<void>;
+  loadAgentModes: () => Promise<void>;
   setAgentPrefill: (msg: string) => void;
   setAgentConvTarget: (id: string | null) => void;
   setProposalTarget: (t: ProposalTarget | null) => void;
@@ -102,6 +107,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   backendStatus: 'unknown',
   backendConfig: null,
   agentStatus: null,
+  agentModes: null,
   agentPrefill: '',
   agentConvTarget: null,
   proposalTarget: null,
@@ -188,6 +194,15 @@ export const useAppStore = create<AppState>((set, get) => ({
           message: err instanceof Error ? err.message : 'Could not reach backend.',
         },
       });
+    }
+  },
+
+  loadAgentModes: async () => {
+    try {
+      const res = await api.getAgentModes();
+      set({ agentModes: res.modes });
+    } catch {
+      // Non-fatal — consumers fall back to the static policy copy. Do not block the app.
     }
   },
 

@@ -220,6 +220,34 @@ export type AgentStructuredToolRequestResult = AgentToolRequestResponse;
 export interface AgentStructuredOutput {
   toolRequests: AgentStructuredToolRequestResult[];
   parseErrors:  AgentStructuredParseError[];
+  // Agent Mode Enforcement v0 — the resolved mode and whether tool requests were
+  // blocked by it. When blockedByMode is true, toolRequests is empty (nothing was
+  // evaluated or stored) and `message` explains why.
+  mode?:          string | null;
+  blockedByMode?: boolean;
+  message?:       string | null;
+}
+
+// ── agent modes (v0: backend-enforced policy) ──────────────────────────────────
+
+export interface AgentModePolicy {
+  id:                      string;
+  label:                   string;
+  available:               boolean;
+  canEvaluateToolRequests: boolean;
+  canOfferReviewHandoff:   boolean;
+  notes:                   string | null;
+}
+
+export interface AgentModesResponse {
+  modes: AgentModePolicy[];
+}
+
+// Returned when a tool request is blocked because the current mode disallows it.
+export interface AgentModeBlockedResponse {
+  status:  'blocked_by_mode';
+  mode:    string;
+  message: string;
 }
 
 // ── conversations ─────────────────────────────────────────────────────────────
@@ -894,6 +922,58 @@ export interface ToolConnectionStatusResponse {
   items: ToolConnectionStatus[];
 }
 
+// ── OpenClaw / NemoClaw runtime status (v0: read-only readiness) ────────────────
+
+export type RuntimeStatusState = 'available' | 'unavailable' | 'not_configured' | 'disabled' | 'planned' | 'error';
+
+export interface RuntimeStatusItem {
+  id:          string;   // openclaw | nemoclaw_openshell | browser_harness | computer_use | mcp_gateway
+  name:        string;
+  status:      RuntimeStatusState | string;
+  available:   boolean;
+  enabled:     boolean;
+  requiredFor: string[];
+  dependsOn:   string[];
+  blocks:      string[];
+  configured:  Record<string, boolean>;
+  notes:       string | null;
+}
+
+export interface RuntimeStatusResponse {
+  items: RuntimeStatusItem[];
+}
+
+// ── NemoClaw/OpenShell health probe (v0: explicit, opt-in reachability) ─────────
+
+export type RuntimeProbeStatus = 'reachable' | 'unavailable' | 'not_configured' | 'error';
+
+export interface NemoclawProbeRequest {
+  timeoutMs?: number | null;
+}
+
+export interface NemoclawProbeDetails {
+  urlConfigured:        boolean;
+  policyPathConfigured: boolean;
+  enabledFlag:          boolean;
+  remoteProbeAllowed:   boolean;
+  hostRedacted:         string | null;   // scheme://host[:port] only — never userinfo/path/query
+}
+
+export interface NemoclawProbeResponse {
+  id:         string;
+  checkedAt:  string;
+  configured: boolean;
+  reachable:  boolean;
+  status:     RuntimeProbeStatus | string;
+  durationMs: number;
+  message:    string;
+  details:    NemoclawProbeDetails;
+}
+
+export interface NemoclawLastProbeResponse {
+  lastProbe: NemoclawProbeResponse | null;
+}
+
 // ── permission gateway (v0: deny-by-default classification, no execution) ───────
 
 export type ToolDecision      = 'denied' | 'requires_approval' | 'not_wired' | 'disabled';
@@ -1028,6 +1108,17 @@ export interface CreateAgentToolRequestRequest {
   reason?:         string | null;
   requestedBy?:    string | null;
   conversationId?: string | null;
+  // Agent Mode Enforcement v0 — selected mode gates whether the request is evaluated.
+  mode?:           string | null;
+}
+
+// Create returns either an evaluated record or a blocked-by-mode response.
+export type CreateAgentToolRequestResult = AgentToolRequestResponse | AgentModeBlockedResponse;
+
+export function isBlockedByMode(
+  r: CreateAgentToolRequestResult,
+): r is AgentModeBlockedResponse {
+  return (r as AgentModeBlockedResponse).status === 'blocked_by_mode';
 }
 
 export interface AgentToolRequestListResponse {
@@ -1278,6 +1369,15 @@ export const api = {
   // tool / MCP connections (read-only readiness inventory; no tool execution)
   getToolConnectionStatus: () => get<ToolConnectionStatusResponse>('/api/tools/status'),
 
+  // OpenClaw / NemoClaw runtime readiness (read-only; v0 launches nothing)
+  getRuntimeStatus: () => get<RuntimeStatusResponse>('/api/runtime/status'),
+
+  // NemoClaw/OpenShell health probe — explicit, opt-in reachability check only.
+  // Unlocks nothing; starts no runtime; loading the cached "last" result is not a probe.
+  probeNemoclawRuntime: (payload?: NemoclawProbeRequest) =>
+    fetchWithBody<NemoclawProbeResponse>('POST', '/api/runtime/probe/nemoclaw', payload ?? {}),
+  getLastNemoclawProbe: () => get<NemoclawLastProbeResponse>('/api/runtime/probe/nemoclaw/last'),
+
   // permission gateway (deny-by-default classification; v0 executes nothing)
   getPermissionPolicies: () => get<PermissionPolicyResponse>('/api/permissions/policies'),
   evaluateToolRequest: (payload: ToolRequestEvaluationRequest) =>
@@ -1293,9 +1393,13 @@ export const api = {
   executePermissionTool: (payload: ToolExecutionRequest) =>
     fetchWithBody<ToolExecutionResponse>('POST', '/api/permissions/execute', payload),
 
+  // agent modes (backend-enforced policy; read-only)
+  getAgentModes: () => get<AgentModesResponse>('/api/agent/modes'),
+
   // agent tool requests (evaluate-only via the permission gateway; never executes)
+  // Returns either an evaluated record or a blocked-by-mode response (HTTP 200).
   createAgentToolRequest: (payload: CreateAgentToolRequestRequest) =>
-    fetchWithBody<AgentToolRequestResponse>('POST', '/api/agent/tool-request', payload),
+    fetchWithBody<CreateAgentToolRequestResult>('POST', '/api/agent/tool-request', payload),
   listAgentToolRequests: (params?: { limit?: number }) => {
     const qs = params?.limit != null ? `?limit=${params.limit}` : '';
     return get<AgentToolRequestListResponse>(`/api/agent/tool-requests${qs}`);

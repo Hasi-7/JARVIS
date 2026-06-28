@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  TODAY, SYSTEM, AGENT_STATES, AGENT_MODES,
+  TODAY, AGENT_STATES, AGENT_MODES,
   QUICK_ACTIONS,
 } from '@/data/mock';
 import { useAppStore } from '@/store/useAppStore';
@@ -11,6 +11,9 @@ import { StatusDot } from '@/components/ui/StatusDot';
 import { Icon } from '@/components/ui/Icon';
 import { StatusCard } from '@/components/dashboard/StatusCard';
 import { SystemRow } from '@/components/dashboard/SystemRow';
+import { resolveModePolicy, modePolicySummary, MODE_TRUTHS } from '@/lib/agentModes';
+import { useRuntimeStatus, RUNTIME_TRUTHS } from '@/lib/runtimeStatus';
+import { RuntimeStatusRows } from '@/components/runtime/RuntimeStatus';
 import { api } from '@/lib/api';
 import type {
   DashboardSummary,
@@ -773,6 +776,7 @@ export function DashboardPage() {
   const agentState      = useAppStore((s) => s.agentState);
   const agentMode       = useAppStore((s) => s.agentMode);
   const setAgentMode    = useAppStore((s) => s.setAgentMode);
+  const agentModes      = useAppStore((s) => s.agentModes);
   const navigate        = useAppStore((s) => s.navigate);
   const showToast       = useAppStore((s) => s.showToast);
   const settings        = useAppStore((s) => s.settings);
@@ -783,6 +787,13 @@ export function DashboardPage() {
   const agentStatus     = useAppStore((s) => s.agentStatus);
   const setAgentPrefill = useAppStore((s) => s.setAgentPrefill);
   const setAgentConvTarget = useAppStore((s) => s.setAgentConvTarget);
+
+  // Backend-enforced agent mode policy (falls back to static copy when backend is down).
+  const modePolicy  = resolveModePolicy(agentMode.id, agentModes);
+  const modeSummary = modePolicySummary(modePolicy);
+
+  // OpenClaw / NemoClaw runtime readiness (read-only; static fallback when backend down).
+  const runtime = useRuntimeStatus();
 
   const [ask, setAsk] = useState('');
 
@@ -1205,7 +1216,7 @@ export function DashboardPage() {
               }}
             >
               <span className="eyebrow">OpenClaw</span>
-              <ModeBadge mode={agentMode} modes={AGENT_MODES} onSelect={setAgentMode} />
+              <ModeBadge mode={agentMode} modes={AGENT_MODES} onSelect={setAgentMode} policy={modePolicy} />
             </div>
 
             <div
@@ -1265,6 +1276,62 @@ export function DashboardPage() {
             </form>
           </div>
 
+          {/* agent mode — backend-enforced policy (Global Agent Mode Display v0) */}
+          <div className="panel panel-pad">
+            <PanelHeader
+              icon="shield"
+              title="Agent mode"
+              right={
+                <button className="btn btn-sm btn-ghost" onClick={() => navigate('agent')} title="Open Local Agent">
+                  <Icon name="chevron" size={13} />
+                </button>
+              }
+            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 4 }}>
+              <StatusDot tone={!modePolicy.available ? 'grey' : modePolicy.canEvaluateToolRequests ? 'green' : 'amber'} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--txt-0)' }}>{modePolicy.label}</span>
+              {!modePolicy.available && (
+                <span style={{ fontSize: 10.5, color: 'var(--amber)', fontWeight: 600 }}>unavailable</span>
+              )}
+            </div>
+
+            {modePolicy.available ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 'var(--s3)' }}>
+                {([
+                  ['Evaluation',      modeSummary.evaluation,    modePolicy.canEvaluateToolRequests ? 'green' : 'amber'],
+                  ['Review handoff',  modeSummary.reviewHandoff, modePolicy.canOfferReviewHandoff   ? 'green' : 'grey'],
+                  ['Execution from chat', 'Disabled',            'grey'],
+                ] as [string, string, 'green' | 'amber' | 'grey'][]).map(([k, v, tone]) => (
+                  <div key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 11.5 }}>
+                    <span style={{ color: 'var(--txt-2)' }}>{k}</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 5, color: 'var(--txt-1)', fontWeight: 500 }}>
+                      <StatusDot tone={tone} />
+                      {v}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ fontSize: 11.5, color: 'var(--txt-2)', lineHeight: 1.45, marginTop: 'var(--s3)' }}>
+                Browser/computer-use is not wired yet. This mode enables nothing.
+              </div>
+            )}
+
+            <div style={{
+              marginTop: 'var(--s3)', paddingTop: 'var(--s3)',
+              borderTop: '1px solid var(--line-soft)',
+              display: 'flex', flexDirection: 'column', gap: 3,
+              fontSize: 10, color: 'var(--txt-3)', lineHeight: 1.4,
+            }}>
+              {MODE_TRUTHS.map((t) => (
+                <div key={t} style={{ display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+                  <Icon name="shield" size={10} style={{ color: 'var(--amber)', flexShrink: 0, marginTop: 1 }} />
+                  <span>{t}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
           {/* entity counts — real data */}
           <div className="panel panel-pad">
             <PanelHeader icon="cube" title="Entities" />
@@ -1308,7 +1375,7 @@ export function DashboardPage() {
             <SystemRow service={brainService} />
             <SystemRow service={vaultService} />
             <SystemRow service={localModelService} />
-            {/* planned PRD runtimes — not implemented in this build */}
+            {/* privileged agent runtimes — real backend-derived readiness (Runtime Status v0) */}
             <div style={{
               fontSize: 10,
               fontWeight: 600,
@@ -1319,11 +1386,12 @@ export function DashboardPage() {
               paddingTop: 'var(--s2)',
               borderTop: '1px solid var(--line-soft)',
             }}>
-              Planned — not wired yet
+              Agent runtimes {runtime.degraded ? '· backend unreachable' : ''}
             </div>
-            {[SYSTEM.openclaw, SYSTEM.nemoclaw, SYSTEM.browser, SYSTEM.computer, SYSTEM.mcp].map(
-              (svc, i) => <SystemRow key={i} service={svc} />
-            )}
+            <RuntimeStatusRows items={runtime.items} />
+            <div style={{ fontSize: 10, color: 'var(--txt-3)', lineHeight: 1.45, marginTop: 'var(--s2)' }}>
+              {RUNTIME_TRUTHS.notWired} {RUNTIME_TRUTHS.browserBlocked}
+            </div>
             <div
               style={{
                 display: 'flex',

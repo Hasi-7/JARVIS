@@ -2,6 +2,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,10 +48,18 @@ from app.agent_tool_requests import (
     create_request as create_agent_tool_request,
     list_requests as list_agent_tool_requests,
 )
-from app.agent_structured_output import evaluate_structured_output
+from app.agent_structured_output import evaluate_structured_output, parse_structured_output
+from app.agent_modes import (
+    normalize_mode,
+    can_evaluate_tool_requests,
+    list_modes as list_agent_modes,
+    blocked_message as mode_blocked_message,
+)
 from app.dashboard import get_dashboard_summary
 from app.proposals import list_normalized_proposals
 from app.tools import list_tool_connections
+from app.runtime_status import list_runtime_status
+from app.runtime_probe import probe_nemoclaw, read_last_probe
 from app.permission_gateway import (
     list_policies,
     evaluate_tool_request,
@@ -185,6 +194,11 @@ from app.models import (
     ProposalListResponse,
     ToolConnectionStatus,
     ToolConnectionStatusResponse,
+    RuntimeStatusItem,
+    RuntimeStatusResponse,
+    NemoclawProbeRequest,
+    NemoclawProbeResponse,
+    NemoclawLastProbeResponse,
     PermissionPolicy,
     PermissionPolicyResponse,
     ToolRequestEvaluationRequest,
@@ -196,6 +210,9 @@ from app.models import (
     AgentToolRequestResponse,
     AgentToolRequestListResponse,
     AgentChatStructured,
+    AgentModePolicy,
+    AgentModesResponse,
+    AgentModeBlockedResponse,
     ConsolidationDraftResponse,
     ConsolidationDraftsResponse,
     CreateConsolidationDraftRequest,
@@ -368,6 +385,52 @@ def tools_status() -> ToolConnectionStatusResponse:
     items = list_tool_connections()
     return ToolConnectionStatusResponse(
         items=[ToolConnectionStatus(**it) for it in items],
+    )
+
+
+# ── OpenClaw / NemoClaw runtime status (read-only readiness; v0) ────────────────
+
+@app.get("/api/runtime/status", response_model=RuntimeStatusResponse)
+def runtime_status() -> RuntimeStatusResponse:
+    """
+    Read-only readiness for the privileged agent runtimes (OpenClaw, NemoClaw/
+    OpenShell, browser harness, computer-use, MCP gateway).
+
+    Honest config/readiness surface only — reads environment config, performs no
+    network/health call, launches no runtime, runs no shell/`brain`, reads no
+    credentials, writes no vault files, and executes no tool. No runtime is reported
+    `available` (no verified check exists), so browser/computer-use stay blocked.
+    """
+    return RuntimeStatusResponse(
+        items=[RuntimeStatusItem(**it) for it in list_runtime_status()],
+    )
+
+
+@app.post("/api/runtime/probe/nemoclaw", response_model=NemoclawProbeResponse)
+def runtime_probe_nemoclaw(req: Optional[NemoclawProbeRequest] = None) -> NemoclawProbeResponse:
+    """
+    Explicit, opt-in reachability check for a configured LOCAL NemoClaw/OpenShell
+    runtime URL. Runs only when the user triggers it.
+
+    Bounded HTTP GET to NEMOCLAW_RUNTIME_URL only (loopback hosts by default; remote
+    blocked unless NEMOCLAW_ALLOW_REMOTE_PROBE=true). No URL configured / not enabled →
+    `not_configured` with NO network call. Never sends credentials/cookies/auth headers,
+    follows no redirects, starts no process, runs no shell/`brain`, writes no vault, and
+    UNLOCKS NOTHING — browser/computer-use stay disabled even if the runtime is reachable.
+    """
+    timeout_ms = req.timeoutMs if req else None
+    return NemoclawProbeResponse(**probe_nemoclaw(timeout_ms=timeout_ms))
+
+
+@app.get("/api/runtime/probe/nemoclaw/last", response_model=NemoclawLastProbeResponse)
+def runtime_probe_nemoclaw_last() -> NemoclawLastProbeResponse:
+    """
+    Read-only: return the cached last NemoClaw/OpenShell probe result (or null).
+    This performs NO network call — loading it is not a probe.
+    """
+    last = read_last_probe()
+    return NemoclawLastProbeResponse(
+        lastProbe=NemoclawProbeResponse(**last) if last else None,
     )
 
 
@@ -1988,15 +2051,36 @@ def agent_status() -> AgentStatusResponse:
     return AgentStatusResponse(**get_agent_status())
 
 
+# ── agent modes (v0: backend-enforced policy; read-only) ────────────────────────
+
+@app.get("/api/agent/modes", response_model=AgentModesResponse)
+def agent_modes_list() -> AgentModesResponse:
+    """
+    Read-only list of agent modes with availability + permissions. Lets the frontend
+    show honest, backend-enforced mode behavior. No tool runs; nothing is mutated.
+    """
+    return AgentModesResponse(modes=[AgentModePolicy(**m) for m in list_agent_modes()])
+
+
 # ── agent tool requests (v0: evaluate-only via Permission Gateway; no execution) ─
 
-@app.post("/api/agent/tool-request", response_model=AgentToolRequestResponse)
-def agent_tool_request_create(req: CreateAgentToolRequestRequest) -> AgentToolRequestResponse:
+@app.post("/api/agent/tool-request", response_model=None)
+def agent_tool_request_create(req: CreateAgentToolRequestRequest):
     """
     Evaluate a structured agent tool-request proposal through the Permission Gateway
     and log the evaluation. NEVER executes the tool, never calls /execute, the brain
     wrapper, any external service, or the vault. args/reason are untrusted.
+
+    Agent Mode Enforcement v0: the request is gated by the selected mode. In
+    locked / observe / computer_use (and any mode that cannot evaluate tool requests)
+    it is BLOCKED — nothing is evaluated, stored, or logged — and a clear
+    blocked_by_mode response is returned.
     """
+    mode = normalize_mode(req.mode)
+    if not can_evaluate_tool_requests(mode):
+        # Blocked by mode: do not evaluate, store, or log anything.
+        return AgentModeBlockedResponse(mode=mode, message=mode_blocked_message(mode))
+
     try:
         record = create_agent_tool_request(
             tool=req.tool,
@@ -2054,15 +2138,31 @@ def agent_chat(req: AgentChatRequest) -> AgentChatResponse:
         duration_ms=result["durationMs"],
     )
 
-    # Defensively parse any structured tool_requests from the reply and evaluate
-    # them (evaluate-only — nothing is executed).
-    structured = evaluate_structured_output(result["message"], conv_id)
+    # Agent Mode Enforcement v0: only EVALUATE structured tool requests when the mode
+    # allows it. In locked / observe / computer_use we still parse for visibility, but
+    # nothing is evaluated, stored, or logged — a clear blocked-by-mode notice is
+    # returned instead. No mode executes anything.
+    mode = normalize_mode(req.mode)
     structured_model = None
-    if structured["toolRequests"] or structured["parseErrors"]:
-        structured_model = AgentChatStructured(
-            toolRequests=[AgentToolRequestResponse(**r) for r in structured["toolRequests"]],
-            parseErrors=structured["parseErrors"],
-        )
+    if can_evaluate_tool_requests(mode):
+        structured = evaluate_structured_output(result["message"], conv_id)
+        if structured["toolRequests"] or structured["parseErrors"]:
+            structured_model = AgentChatStructured(
+                toolRequests=[AgentToolRequestResponse(**r) for r in structured["toolRequests"]],
+                parseErrors=structured["parseErrors"],
+                mode=mode,
+                blockedByMode=False,
+            )
+    else:
+        parsed = parse_structured_output(result["message"])  # visibility only — not stored/evaluated
+        if parsed["requests"] or parsed["parseErrors"]:
+            structured_model = AgentChatStructured(
+                toolRequests=[],
+                parseErrors=[],
+                mode=mode,
+                blockedByMode=True,
+                message=mode_blocked_message(mode),
+            )
 
     return AgentChatResponse(
         ok=result["ok"],
@@ -2146,6 +2246,9 @@ def agent_chat_stream(req: AgentChatRequest) -> StreamingResponse:
         conv_id = create_conversation()["id"]
 
     message = req.message
+    # Agent Mode Enforcement v0 — resolved once, used to gate structured-output
+    # evaluation after streaming completes.
+    mode = normalize_mode(req.mode)
 
     # Load bounded prior context before entering the generator.
     prior, context_used = _prior_messages(conv_id)
@@ -2187,13 +2290,31 @@ def agent_chat_stream(req: AgentChatRequest) -> StreamingResponse:
                 duration_ms=duration_ms,
             )
 
-            # After streaming completes, defensively parse + evaluate any structured
-            # tool requests (evaluate-only — nothing is executed). Failures here must
-            # never break the stream, so guard defensively.
+            # After streaming completes, handle structured tool requests under the
+            # current mode (evaluate-only — nothing is ever executed). In modes that
+            # cannot evaluate (locked / observe / computer_use) we parse for visibility
+            # only and emit a blocked-by-mode notice; nothing is stored or logged.
+            # Failures here must never break the stream, so guard defensively.
             try:
-                structured = evaluate_structured_output(full_content, conv_id)
-                if structured["toolRequests"] or structured["parseErrors"]:
-                    yield _sse("structured", structured)
+                if can_evaluate_tool_requests(mode):
+                    structured = evaluate_structured_output(full_content, conv_id)
+                    if structured["toolRequests"] or structured["parseErrors"]:
+                        yield _sse("structured", {
+                            **structured,
+                            "mode": mode,
+                            "blockedByMode": False,
+                            "message": None,
+                        })
+                else:
+                    parsed = parse_structured_output(full_content)
+                    if parsed["requests"] or parsed["parseErrors"]:
+                        yield _sse("structured", {
+                            "toolRequests": [],
+                            "parseErrors": [],
+                            "mode": mode,
+                            "blockedByMode": True,
+                            "message": mode_blocked_message(mode),
+                        })
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error("Structured-output evaluation failed (non-fatal): %s", exc)
 

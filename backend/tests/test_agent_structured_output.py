@@ -180,8 +180,10 @@ def test_chat_endpoint_attaches_evaluated_structured(monkeypatch):
     monkeypatch.setattr(m, "save_chat_turn", lambda **kw: saved.update(kw))
 
     from app.models import AgentChatRequest
+    # An evaluating mode (draft) is required for structured tool requests to be
+    # evaluated; a missing mode now safely defaults to locked (blocked).
     with patch("app.brain.run_brain_command") as mbrain:
-        res = m.agent_chat(AgentChatRequest(message="check brain", conversationId="c1"))
+        res = m.agent_chat(AgentChatRequest(message="check brain", conversationId="c1", mode="draft"))
     mbrain.assert_not_called()
     assert res.structured is not None
     assert len(res.structured.toolRequests) == 1

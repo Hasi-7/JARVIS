@@ -6,6 +6,8 @@ import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { PanelHeader } from '@/components/ui/PanelHeader';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { useRuntimeStatus } from '@/lib/runtimeStatus';
+import { RuntimeGuardrails } from '@/components/runtime/RuntimeStatus';
 
 // Category display config + render order. Maps backend category ids → section labels.
 const CATEGORY_ORDER: { id: string; label: string; icon: string }[] = [
@@ -612,6 +614,9 @@ export function ToolConnectionsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState<string | null>(null);
 
+  // OpenClaw / NemoClaw runtime readiness (read-only; static fallback when backend down).
+  const runtime = useRuntimeStatus();
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -672,6 +677,9 @@ export function ToolConnectionsPage() {
           implemented in this build.
         </span>
       </div>
+
+      {/* runtime guardrails — read-only readiness for OpenClaw / NemoClaw / browser / computer-use / MCP */}
+      <RuntimeGuardrails items={runtime.items} degraded={runtime.degraded} loading={runtime.loading} />
 
       {/* backend error */}
       {error && (

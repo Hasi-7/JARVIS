@@ -38,13 +38,14 @@ export const AGENT_STATES: Record<AgentStateKey, AgentStateInfo> = {
 };
 
 export const AGENT_MODES: AgentMode[] = [
-  { id: 'manual',   label: 'Manual',       desc: 'You drive. Agent can be off.' },
-  { id: 'observe',  label: 'Observe',      desc: 'Reads app state, answers questions. No tools run.' },
-  { id: 'draft',    label: 'Draft',        desc: 'Generates proposals. Nothing is applied.' },
-  { id: 'assist',   label: 'Assist',       desc: 'Runs low-risk tools. Batches medium-risk for approval.' },
-  { id: 'research', label: 'Research',     desc: 'Time-boxed browser harness. Produces a research packet.' },
-  { id: 'computer', label: 'Computer Use', desc: 'Operates approved UI flows. Visibly supervised.' },
-  { id: 'locked',   label: 'Locked',       desc: 'All agent tools disabled. UI works manually.' },
+  { id: 'manual',     label: 'Manual',       desc: 'You drive. Agent tools off — no tool requests.' },
+  { id: 'observe',    label: 'Observe',      desc: 'Chat only. Structured tool requests are blocked.' },
+  { id: 'draft',      label: 'Draft',        desc: 'Tool requests may be evaluated. Nothing executes.' },
+  { id: 'assist',     label: 'Assist',       desc: 'Safe-local requests reviewable in Tool Connections. Execution stays manual.' },
+  { id: 'research',   label: 'Research',     desc: 'Tool requests evaluated only. Browser/computer-use blocked.' },
+  { id: 'escalation', label: 'Escalation',   desc: 'Handoff discussion. Tool requests evaluated only.' },
+  { id: 'computer',   label: 'Computer Use', desc: 'Not wired. Browser/computer-use remains disabled.' },
+  { id: 'locked',     label: 'Locked',       desc: 'All agent tools disabled. Manual UI works.' },
 ];
 
 // Planned PRD runtimes that are NOT implemented in this build. They must read

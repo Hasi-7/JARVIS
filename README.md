@@ -494,14 +494,14 @@ NemoClaw/OpenShell, OpenClaw tool bridge, Browser, Computer use, MCP, Gmail, Res
 | Proposal Queue page | **Real (read-only)** — `GET /api/proposals` aggregates Raw Inbox classification proposals, Chat/AI Consolidation drafts, **and** Research drafts into a normalized shape; lists/filters/searches only. No approve/apply here — actions **deep-link to the exact source item** (Open in Raw Inbox / Consolidation / Research, which highlight the related row/draft) |
 | Chat/AI Consolidation — manual paste/import | **Real v1** — paste a transcript → `POST /api/consolidation/drafts` creates a backend draft (no vault write); edit summary fields; **Save to vault** writes one Markdown summary under `raw/chats/<source>/`. No AI, no brain, no browser/computer-use capture |
 | Research — manual capture | **Real v1** — capture notes/links/findings → `POST /api/research/drafts` creates a backend draft (no vault write); edit fields; **Save to vault** writes one Markdown note under `raw/research/<topic>/`. No AI, no URL fetch, no web search, no browser/computer-use |
-| OpenClaw tool bridge | **Not wired** — shown honestly as planned (neutral styling), no fake "ready" |
-| NemoClaw / OpenShell | **Not wired** — shown honestly as planned; no runtime enforcement exists |
-| Browser harness | **Not wired** — shown honestly as planned |
-| Computer use | **Not wired** — shown honestly as planned |
-| MCP gateway | **Not wired** — shown honestly as planned |
+| OpenClaw tool bridge | **Not wired** — read-only readiness via `GET /api/runtime/status` (status `not_configured`); no bridge, no execution |
+| NemoClaw / OpenShell | **Not wired (probe only)** — read-only readiness via `GET /api/runtime/status`; an explicit opt-in reachability probe (`POST /api/runtime/probe/nemoclaw`) can check a configured *local* runtime URL, but unlocks nothing and starts no runtime; dependents stay blocked |
+| Browser harness | **Not wired** — `disabled`/blocked while NemoClaw/OpenShell is unavailable (shown via `GET /api/runtime/status`) |
+| Computer use | **Not wired** — `disabled`/blocked while NemoClaw/OpenShell is unavailable (shown via `GET /api/runtime/status`) |
+| MCP gateway | **Not wired** — read-only readiness via `GET /api/runtime/status` (status `not_configured`) |
 | Research — browser/computer-use automation | **Not wired** — browser research, web search, and computer-use capture remain planned; v1 is manual capture only |
 | Chat/AI Consolidation — browser/computer-use capture | **Not wired** — automatic capture from ChatGPT/Claude web and computer-use remain planned; v1 is manual paste/import only |
-| Agent modes | **UI-only** — selectable but not enforced; tool gating arrives with the OpenClaw/NemoClaw bridge |
+| Agent modes | **Enforced (v0) + globally visible** — backend policy gates tool-request evaluation. Locked/Observe/Computer-Use block evaluation; Draft/Assist/Research/Escalation allow evaluate-only; only Assist offers the Review-in-Tool-Connections handoff. The selected mode + its policy is shown in the top bar and on the Dashboard. No mode executes tools from chat |
 | Tool / action log (`ops/tool-logs/`) | **Not wired** — planned; no agent tools run, so nothing to log |
 
 ## Research (v1 — manual capture)
@@ -750,6 +750,140 @@ agent proposes tool request → backend evaluates/logs → user clicks "Review i
 - **Handoff mechanism:** a Zustand app-state field `toolReviewTarget` (mirroring `proposalTarget` / `agentConvTarget`) carries `{ tool, argsSummary?, reason?, requestedBy?, source, relatedId }`. Clicking sets it and navigates to Tool Connections; **nothing executes during navigation.**
 - **On Tool Connections:** the evaluator form is prefilled with the tool and reason (and `args` is set to `{}` — raw args are **never** reconstructed from the sanitized summary), a notice *"Opened from Local Agent. Review before running."* is shown along with *"This request came from the Local Agent. It has not been executed. Only low-risk local brain status tools can run here."*, and the target is cleared. The form does **not** auto-evaluate or auto-execute — the user must click **Run safe-local tool**.
 - **No backend change:** this sprint is frontend-only; the existing evaluation response already carries `executionEnabled`/`allowed`/`tool`.
+
+### Agent Mode Enforcement v0 — modes enforced by backend policy
+
+Agent modes are no longer purely frontend labels. A single backend module
+(`backend/app/agent_modes.py`) is the source of truth for what the Local Agent surface may do in
+each mode, and the chat + manual-tool-request paths enforce it server-side. **No mode executes tools
+from chat** — safe-local execution stays manual on the Tool Connections page.
+
+```text
+chat / manual tool request (+ mode)
+  → backend resolves the mode and enforces policy
+  → Locked / Observe / Computer-Use: tool requests BLOCKED (not evaluated, not stored, not logged)
+  → Draft / Assist / Research / Escalation: tool requests EVALUATED ONLY
+  → only Assist offers the Review-in-Tool-Connections handoff
+  → NOTHING executes from any mode
+```
+
+| mode | available | evaluate tool requests | review handoff |
+|---|---|---|---|
+| locked | yes | no | no |
+| observe | yes | no | no |
+| draft | yes | **yes** | no |
+| assist | yes | **yes** | **yes** |
+| research | yes | **yes** | no |
+| escalation | yes | **yes** | no |
+| computer_use | **no** | no | no |
+
+- **Computer-Use** is recognized but **unavailable/not wired** — it enables nothing.
+- Unknown / missing / malformed modes fall back to the **safest** mode (`locked` → blocked). Frontend
+  aliases: `manual → locked`, `computer → computer_use`. Rules are kept safer, not looser.
+
+**Policy helpers** (`agent_modes.py`): `can_evaluate_tool_requests(mode)`,
+`can_offer_review_handoff(mode)`, `is_mode_available(mode)`, plus `normalize_mode`, `blocked_message`,
+and `list_modes`. The module executes nothing — it only resolves and reports policy.
+
+**Endpoints:**
+- **`GET /api/agent/modes`** → `{ modes: [{ id, label, available, canEvaluateToolRequests, canOfferReviewHandoff, notes }] }` — read-only; lets the frontend show honest mode behavior.
+- **`POST /api/agent/tool-request`** accepts an optional `mode`. In `locked`/`observe`/`computer_use` it returns `{ status: "blocked_by_mode", mode, message }` (HTTP 200) and evaluates / stores / logs **nothing**. In `draft`/`assist`/`research`/`escalation` it evaluates-only as before.
+- **`POST /api/agent/chat`** and **`/api/agent/chat/stream`** carry the selected `mode`. In evaluating modes, structured tool requests are routed through the existing evaluate-only path. In blocking modes the reply is parsed for **visibility only** and the response/SSE carries `blockedByMode: true` with a clear message — nothing is evaluated, stored, or logged.
+
+**Frontend** (`src/pages/AgentPage.tsx`): the mode selector shows real per-mode policy copy (tool
+requests evaluated-only / blocked / unavailable; review handoff allowed-in-Assist / not offered).
+The manual request form is disabled with blocked copy when the mode can't evaluate; chat shows a
+**Blocked by mode** notice (not a gateway failure); the **Review in Tool Connections** button appears
+**only in Assist** for safe-local executable requests. There is no execute button anywhere on the
+Agent page.
+
+**Safety:** blocked modes write no records and no logs (no execution logs are ever created from
+agent-mode paths); no path calls `/api/permissions/execute`, the brain wrapper, a subprocess, MCP,
+Gmail, browser/computer-use, Google Calendar, or writes the vault.
+
+### Global Agent Mode Display v0 — enforced mode visible app-wide
+
+The enforced agent mode is now shown beyond the Local Agent page. The selected mode is already global
+app state (`useAppStore().agentMode`); this sprint loads the backend policy once into the store and
+renders it honestly in two more places. **No tool execution behavior changes** — display only.
+
+- **Mode policy loading:** `loadAgentModes()` (store action) calls `GET /api/agent/modes` once on app
+  mount (`AppShell`) into `agentModes`. If the fetch fails, consumers fall back to a static policy copy
+  (`src/lib/agentModes.ts` → `MODE_POLICY_FALLBACK`/`resolveModePolicy`) so the app never blocks and
+  degrades clearly. Frontend ids map to backend ids via `toBackendMode` (`manual→locked`, `computer→computer_use`).
+- **Top command bar:** the `ModeBadge` now shows an availability dot + a policy tooltip
+  ("Evaluates tool requests. Safe-local review handoff is available. Chat does not execute tools."), and
+  reads `<mode> · unavailable` for Computer-Use. It does **not** imply browser/computer-use is wired.
+- **Dashboard:** a compact **Agent mode** card shows the selected mode, availability, Evaluation
+  (Allowed/Blocked/Unavailable), Review handoff (Safe-local only/Disabled), and **Execution from chat:
+  Disabled**, plus the three standing truths: *Agent tools are mode-gated by backend policy* · *No mode
+  executes tools from chat* · *Safe-local execution remains manual in Tool Connections*.
+- **In sync:** the Local Agent page, top bar, and Dashboard all read the same store `agentMode` +
+  `agentModes`; changing the mode anywhere updates everywhere. The mode selector/dropdown stays the
+  existing single `ModeBadge` control.
+
+### OpenClaw / NemoClaw Runtime Status v0 — honest runtime readiness
+
+A read-only backend surface reports what is configured / missing / disabled / blocked for the five
+privileged runtimes, so the UI can show readiness without pretending anything is wired. **This is
+status/readiness only** — it launches no runtime, makes no network/health call, reads no credentials,
+runs no shell/`brain`, writes no vault, and executes no tool.
+
+- **`GET /api/runtime/status`** (`backend/app/runtime_status.py`) → `{ items: [{ id, name, status,
+  available, enabled, requiredFor[], dependsOn[], blocks[], configured{}, notes }] }` for
+  `openclaw`, `nemoclaw_openshell`, `browser_harness`, `computer_use`, `mcp_gateway`. Status ∈
+  `available | unavailable | not_configured | disabled | planned | error`.
+- **Honesty rule:** **no runtime is ever reported `available`** — v0 performs no verified health check
+  (and must not), so even fully-configured runtimes stay `unavailable` (configured-but-unverified) and
+  every runtime's `available`/`enabled` is `false`.
+- **Config detection (env only, read-only):** `OPENCLAW_ENABLED`/`OPENCLAW_BASE_URL`,
+  `NEMOCLAW_ENABLED`/`NEMOCLAW_RUNTIME_URL`/`NEMOCLAW_POLICY_PATH`,
+  `ENABLE_BROWSER_HARNESS`/`ENABLE_COMPUTER_USE`/`ENABLE_MCP_GATEWAY`. These knobs do not exist
+  elsewhere in the app yet; when unset the runtime is `not_configured`. Only presence/enabled-flag is
+  read — values are never stored and no credential is read.
+- **Dependency/blocking:** browser harness and computer-use **depend on** NemoClaw/OpenShell and stay
+  **blocked** (`disabled`, with a blocker reason) while it is unavailable — even if their own enable
+  flag is set. MCP/OpenClaw privileged actions likewise require the runtime guardrail.
+- **Frontend** (`src/lib/runtimeStatus.ts` + `src/components/runtime/RuntimeStatus.tsx`):
+  `getRuntimeStatus()` + a `useRuntimeStatus()` hook with a static fallback (`RUNTIME_FALLBACK`) so a
+  backend-down state degrades honestly (shows "backend unreachable — showing fallback"). The
+  **Dashboard** runtime panel now shows real backend-derived rows (replacing the old mock "Planned"
+  rows) + the truths *Privileged agent runtimes are not wired yet.* / *Browser and computer-use remain
+  blocked until NemoClaw/OpenShell is available.* **Tool Connections** adds a **Runtime Guardrails**
+  section (dependency chain, per-runtime status, what each would unlock, why it is blocked) — the only
+  per-runtime control is a disabled **Not wired yet** button. **Local Agent** shows a small runtime
+  guardrail note (NemoClaw/OpenShell + OpenClaw bridge status; "Agent remains local chat +
+  evaluate-only tool requests"). Nothing is ever shown ready/connected/active unless the backend truly
+  reports `available`.
+
+### NemoClaw/OpenShell Health Probe v0 — explicit, opt-in reachability check
+
+Runtime Status reads env/config only. This adds **one** narrowly-scoped capability: when the user
+explicitly clicks **Check NemoClaw/OpenShell**, the backend performs a single **bounded HTTP GET** to
+a *configured local* runtime URL and reports whether it is reachable. It **verifies readiness only** —
+it unlocks nothing.
+
+- **`POST /api/runtime/probe/nemoclaw`** (`backend/app/runtime_probe.py`), body optional
+  `{ timeoutMs }` (clamped to `[1, 3000]`, default 1500). Response: `{ id, checkedAt, configured,
+  reachable, status, durationMs, message, details{ urlConfigured, policyPathConfigured, enabledFlag,
+  remoteProbeAllowed, hostRedacted } }`. `status` ∈ `reachable | unavailable | not_configured | error`.
+- **`GET /api/runtime/probe/nemoclaw/last`** returns the cached last result (backend-local
+  `backend/data/runtime/last-probe.json`, **not** the vault). Loading it is **not** a probe (no network).
+- **Config (env only):** `NEMOCLAW_ENABLED`, `NEMOCLAW_RUNTIME_URL`, `NEMOCLAW_POLICY_PATH`, and
+  `NEMOCLAW_ALLOW_REMOTE_PROBE`. No URL configured or not enabled → `not_configured` with **no network
+  call**.
+- **Network safety (enforced):** only `NEMOCLAW_RUNTIME_URL` is probed (the frontend cannot supply a
+  URL — only `timeoutMs`); **only loopback hosts** (`localhost` / `127.0.0.0/8` / `::1`) are allowed by
+  default — public/LAN hosts are rejected with `error` unless `NEMOCLAW_ALLOW_REMOTE_PROBE=true`; URLs
+  carrying `user:pass@` are rejected; **redirects are disabled**; no cookies/auth headers are sent; the
+  timeout is clamped to ≤ 3000ms.
+- **Unlocks nothing:** even when the runtime is reachable, browser/computer-use stay `disabled` and no
+  capability changes — the runtime bridge is still not implemented. The probe starts no process, runs
+  no shell/`brain`, reads no credentials, writes no vault, and executes no tool.
+- **Frontend:** the Tool Connections **Runtime Guardrails** section adds an explicit **Check
+  NemoClaw/OpenShell** button + result (status, checked time, duration, message, URL/policy configured,
+  redacted host) and the copy *"Browser and computer-use remain disabled until a separate runtime
+  bridge is implemented and explicitly enabled."* No start/connect/enable control is added.
 
 ## Escalation Queue
 

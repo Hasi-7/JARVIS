@@ -31,12 +31,14 @@ export function AppShell({ children, scrollable = true }: AppShellProps) {
   const checkBackend     = useAppStore((s) => s.checkBackend);
   const runBrainCommand  = useAppStore((s) => s.runBrainCommand);
   const loadStagedCount  = useAppStore((s) => s.loadStagedCount);
+  const loadAgentModes   = useAppStore((s) => s.loadAgentModes);
 
-  // Check backend availability and load staged count once on mount
+  // Check backend availability, load staged count, and load agent mode policy once on mount
   useEffect(() => {
     checkBackend();
     loadStagedCount();
-  }, [checkBackend, loadStagedCount]);
+    loadAgentModes();
+  }, [checkBackend, loadStagedCount, loadAgentModes]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

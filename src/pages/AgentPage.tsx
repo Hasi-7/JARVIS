@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
-import { api, streamAgentMessage } from '@/lib/api';
-import type { ConversationSummary, AgentToolRequestResponse, AgentStructuredOutput } from '@/lib/api';
+import { api, streamAgentMessage, isBlockedByMode } from '@/lib/api';
+import type { ConversationSummary, AgentToolRequestResponse, AgentStructuredOutput, AgentModePolicy } from '@/lib/api';
+import { resolveModePolicy } from '@/lib/agentModes';
+import { useRuntimeStatus } from '@/lib/runtimeStatus';
+import { RuntimeGuardrailNote } from '@/components/runtime/RuntimeStatus';
 import { AGENT_MODES, AGENT_STATES } from '@/data/mock';
 import { AgentSphere } from '@/components/ui/AgentSphere';
 import { ModeBadge } from '@/components/ui/ModeBadge';
@@ -66,9 +69,30 @@ function decisionTone(decision: string): 'green' | 'amber' | 'red' | 'grey' {
   return 'grey';
 }
 
-function ChatStructuredPanel({ s }: { s: AgentStructuredOutput }) {
+function ChatStructuredPanel({ s, canReview }: { s: AgentStructuredOutput; canReview: boolean }) {
   const navigate = useAppStore((st) => st.navigate);
   const setToolReviewTarget = useAppStore((st) => st.setToolReviewTarget);
+
+  // Blocked by mode — the reply proposed tool requests but the current mode does not
+  // allow evaluation. This is NOT a gateway failure; show a clear notice.
+  if (s.blockedByMode) {
+    return (
+      <div style={{ marginTop: 6, padding: '8px 10px', border: '1px solid var(--amber-line, var(--line))', borderRadius: 'var(--r2)', background: 'var(--surface)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Icon name="shield" size={11} style={{ color: 'var(--amber)' }} />
+          <span style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--amber)' }}>Blocked by mode</span>
+        </div>
+        <div style={{ fontSize: 10.5, color: 'var(--txt-2)', lineHeight: 1.45 }}>
+          {s.message ?? 'This mode does not allow tool requests.'}
+        </div>
+        <div style={{ fontSize: 9.5, color: 'var(--txt-3)', lineHeight: 1.4 }}>
+          The reply proposed tool requests, but they were not evaluated or stored. Switch to Draft,
+          Assist, Research, or Escalation to evaluate them (evaluation only — nothing executes).
+        </div>
+      </div>
+    );
+  }
+
   if (s.toolRequests.length === 0 && s.parseErrors.length === 0) return null;
 
   function review(r: AgentToolRequestResponse) {
@@ -88,7 +112,7 @@ function ChatStructuredPanel({ s }: { s: AgentStructuredOutput }) {
       </div>
       {s.toolRequests.map((r) => {
         const ev = r.evaluation;
-        const reviewable = isReviewable(r.tool, ev);
+        const reviewable = isReviewable(r.tool, ev) && canReview;
         return (
           <div key={r.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, fontSize: 10.5 }}>
             <StatusDot tone={decisionTone(ev.decision)} />
@@ -121,7 +145,12 @@ function ChatStructuredPanel({ s }: { s: AgentStructuredOutput }) {
   );
 }
 
-function AgentToolRequestsPanel({ convId, refreshSignal }: { convId: string | null; refreshSignal?: number }) {
+function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview }: {
+  convId: string | null;
+  refreshSignal?: number;
+  modePolicy: AgentModePolicy;
+  canReview: boolean;
+}) {
   const navigate = useAppStore((st) => st.navigate);
   const setToolReviewTarget = useAppStore((st) => st.setToolReviewTarget);
   const [tool, setTool]       = useState('brain.status');
@@ -129,7 +158,10 @@ function AgentToolRequestsPanel({ convId, refreshSignal }: { convId: string | nu
   const [argsText, setArgsText] = useState('');
   const [busy, setBusy]       = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [blockedNotice, setBlockedNotice] = useState<string | null>(null);
   const [requests, setRequests] = useState<AgentToolRequestResponse[] | null>(null);
+
+  const canEvaluate = modePolicy.canEvaluateToolRequests;
 
   const load = useCallback(async () => {
     try {
@@ -146,6 +178,12 @@ function AgentToolRequestsPanel({ convId, refreshSignal }: { convId: string | nu
 
   async function submit() {
     setFormError(null);
+    setBlockedNotice(null);
+    // Mode gates evaluation. The form is disabled when this is false, but guard anyway.
+    if (!canEvaluate) {
+      setBlockedNotice(`Tool requests are blocked in ${modePolicy.label} mode.`);
+      return;
+    }
     if (!tool.trim()) { setFormError('Tool is required.'); return; }
     let args: Record<string, unknown> | null = null;
     const raw = argsText.trim();
@@ -164,10 +202,15 @@ function AgentToolRequestsPanel({ convId, refreshSignal }: { convId: string | nu
     }
     setBusy(true);
     try {
-      await api.createAgentToolRequest({
+      const res = await api.createAgentToolRequest({
         tool: tool.trim(), args, reason: reason.trim() || null,
-        requestedBy: 'local-agent', conversationId: convId,
+        requestedBy: 'local-agent', conversationId: convId, mode: modePolicy.id,
       });
+      if (isBlockedByMode(res)) {
+        // Backend enforced the block — show a clear notice, not a gateway error.
+        setBlockedNotice(res.message);
+        return;
+      }
       setReason(''); setArgsText('');
       await load();
     } catch (err) {
@@ -191,15 +234,25 @@ function AgentToolRequestsPanel({ convId, refreshSignal }: { convId: string | nu
         still tool-less — requests are classified by the backend permission gateway and logged for review.
       </div>
 
+      {/* mode gate — backend-enforced. Blocked modes cannot create requests. */}
+      {!canEvaluate && (
+        <div style={{ fontSize: 10.5, color: 'var(--amber)', lineHeight: 1.45, marginBottom: 'var(--s3)', padding: '6px 8px', background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 'var(--r2)' }}>
+          {modePolicy.available
+            ? `${modePolicy.label} mode: structured tool requests are blocked. Switch to Draft, Assist, Research, or Escalation to evaluate them.`
+            : `${modePolicy.label} mode is not wired. Tool requests are unavailable.`}
+        </div>
+      )}
+
       {/* manual / simulated request form */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <select value={tool} onChange={(e) => setTool(e.target.value)} style={inputStyle} disabled={busy}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, opacity: canEvaluate ? 1 : 0.55 }}>
+        <select value={tool} onChange={(e) => setTool(e.target.value)} style={inputStyle} disabled={busy || !canEvaluate}>
           {TOOL_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
-        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="reason (optional)" style={inputStyle} disabled={busy} />
+        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="reason (optional)" style={inputStyle} disabled={busy || !canEvaluate} />
         <textarea
           value={argsText} onChange={(e) => setArgsText(e.target.value)} rows={2} spellCheck={false}
           placeholder='args JSON (optional), e.g. { "query": "x" }'
+          disabled={busy || !canEvaluate}
           style={{ ...inputStyle, resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 10.5 }}
         />
         {formError && (
@@ -207,7 +260,12 @@ function AgentToolRequestsPanel({ convId, refreshSignal }: { convId: string | nu
             {formError}
           </div>
         )}
-        <button className="btn btn-sm btn-primary" onClick={submit} disabled={busy} style={{ justifyContent: 'center' }}>
+        {blockedNotice && (
+          <div style={{ fontSize: 10.5, color: 'var(--amber)', padding: '4px 6px', background: 'var(--surface-2)', borderRadius: 'var(--r1)', border: '1px solid var(--line)' }}>
+            Blocked by mode: {blockedNotice}
+          </div>
+        )}
+        <button className="btn btn-sm btn-primary" onClick={submit} disabled={busy || !canEvaluate} style={{ justifyContent: 'center' }}>
           <Icon name="shield" size={12} /> {busy ? 'Evaluating…' : 'Create tool request'}
         </button>
       </div>
@@ -239,7 +297,7 @@ function AgentToolRequestsPanel({ convId, refreshSignal }: { convId: string | nu
                 <div className="mono" style={{ fontSize: 9.5, color: 'var(--txt-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.argsSummary}</div>
               )}
               <div className="mono" style={{ fontSize: 9, color: 'var(--txt-3)' }}>log {ev.logId.slice(0, 8)}…</div>
-              {isReviewable(r.tool, ev) && (
+              {isReviewable(r.tool, ev) && canReview && (
                 <button
                   className="btn btn-sm btn-ghost"
                   style={{ fontSize: 9.5, padding: '2px 6px', alignSelf: 'flex-start' }}
@@ -283,6 +341,17 @@ export function AgentPage() {
   const setAgentConvTarget = useAppStore((s) => s.setAgentConvTarget);
 
   const meta = AGENT_STATES[agentState];
+
+  // ── agent mode policy (backend-enforced, from the global store) ────────────
+  const agentModes     = useAppStore((s) => s.agentModes);
+  const loadAgentModes = useAppStore((s) => s.loadAgentModes);
+  const modePolicy     = resolveModePolicy(agentMode.id, agentModes);
+
+  // OpenClaw / NemoClaw runtime readiness (read-only; static fallback when backend down).
+  const runtime = useRuntimeStatus();
+  const canEvaluate  = modePolicy.canEvaluateToolRequests;
+  const canReview    = modePolicy.canOfferReviewHandoff;
+  const modeAvailable = modePolicy.available;
 
   // ── conversation state ────────────────────────────────────────────────────
   const [convs,         setConvs]         = useState<ConversationSummary[]>([]);
@@ -359,6 +428,9 @@ export function AgentPage() {
   // target here also covers "return to Dashboard, open another conversation".
   useEffect(() => {
     checkAgentStatus();
+    // Mode policy is loaded globally on app mount (AppShell). Ensure it's present if
+    // this page mounts first or the initial load failed — non-fatal, falls back offline.
+    if (!agentModes) loadAgentModes();
     // Deep-link target from Dashboard Recent AI Work — consume once.
     const target = agentConvTarget;
     if (target) setAgentConvTarget(null);
@@ -662,10 +734,35 @@ export function AgentPage() {
           <div style={{
             marginTop: 'var(--s2)', paddingTop: 'var(--s2)',
             borderTop: '1px solid var(--line-soft)',
+            display: 'flex', flexDirection: 'column', gap: 5,
             fontSize: 10, color: 'var(--txt-3)', lineHeight: 1.45,
           }}>
-            Mode selection is currently UI-only. Tool gating will be enforced after the
-            OpenClaw/NemoClaw bridge is implemented.
+            <div style={{ color: 'var(--txt-2)' }}>
+              <span style={{ fontWeight: 600, color: modeAvailable ? 'var(--txt-1)' : 'var(--amber)' }}>
+                {modePolicy.label} mode:
+              </span>{' '}
+              {modePolicy.notes}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <StatusDot tone={!modeAvailable ? 'grey' : canEvaluate ? 'green' : 'amber'} />
+                <span>Tool requests: {!modeAvailable ? 'unavailable' : canEvaluate ? 'evaluated only (nothing executes)' : 'blocked'}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <StatusDot tone={canReview ? 'green' : 'grey'} />
+                <span>Review handoff: {canReview ? 'allowed (Assist)' : 'not offered'}</span>
+              </div>
+              {!modeAvailable && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <StatusDot tone="grey" />
+                  <span>Mode unavailable / not wired</span>
+                </div>
+              )}
+            </div>
+            <div style={{ color: 'var(--txt-3)', fontStyle: 'italic' }}>
+              Enforced by backend policy. No mode executes tools from chat — safe-local execution
+              stays manual in Tool Connections.
+            </div>
           </div>
         </div>
 
@@ -726,7 +823,7 @@ export function AgentPage() {
                   · {convTitle}
                 </span>
               )}
-              <ModeBadge mode={agentMode} modes={AGENT_MODES} onSelect={setAgentMode} />
+              <ModeBadge mode={agentMode} modes={AGENT_MODES} onSelect={setAgentMode} policy={modePolicy} />
             </div>
             <div style={{ fontSize: 12, color: 'var(--txt-2)', marginTop: 3 }}>
               <span style={{ color: stateColor, fontWeight: 500 }}>{meta?.label}</span>
@@ -810,7 +907,7 @@ export function AgentPage() {
                       <span className="mono">{msg.durationMs.toFixed(0)}ms</span>
                     )}
                   </div>
-                  {msg.role === 'assistant' && msg.structured && <ChatStructuredPanel s={msg.structured} />}
+                  {msg.role === 'assistant' && msg.structured && <ChatStructuredPanel s={msg.structured} canReview={canReview} />}
                 </div>
               </div>
             ))}
@@ -955,8 +1052,11 @@ export function AgentPage() {
           </div>
         </div>
 
-        {/* agent tool requests — evaluate-only via permission gateway */}
-        <AgentToolRequestsPanel convId={convId} refreshSignal={toolReqRefresh} />
+        {/* agent tool requests — evaluate-only via permission gateway, gated by mode */}
+        <AgentToolRequestsPanel convId={convId} refreshSignal={toolReqRefresh} modePolicy={modePolicy} canReview={canReview} />
+
+        {/* runtime guardrail — read-only OpenClaw/NemoClaw readiness */}
+        <RuntimeGuardrailNote items={runtime.items} />
 
         {/* research run — stub */}
         <div className="panel panel-pad">
