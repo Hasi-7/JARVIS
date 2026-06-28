@@ -563,6 +563,40 @@ claude-code → raw/chats/claude-code/   opencode → raw/chats/opencode/   othe
 - Saving does **not** run `brain`, call AI, or create tasks/calendar/resume rows automatically.
 - Unsaved drafts appear in the **Proposal Queue** as `chat-consolidation` proposals (status `pending`); saved drafts show as `applied`. The Proposal Queue only navigates to this page — it never saves.
 
+## Email Intake (v0 — manual paste/import)
+
+The **Email Intake** page (nav: Intake → Email Intake) is the PRD's **manual fallback** for Gmail/email intake (§33) while Gmail stays disconnected. The user pastes raw email content, reviews/edits the extracted fields, and explicitly saves one Markdown summary into the vault. **Gmail MCP is not wired**; there is no email search/read and **all Gmail mutations (send/delete/archive/labels) are disabled**. No AI is called.
+
+```text
+paste email content → create structured draft → review/edit fields → Save to vault → one Markdown file under an allowed raw email path
+```
+
+### Endpoints (`backend/app/email_intake.py`)
+
+- **`POST /api/email-intake/drafts`** — create a draft (backend JSON only at `backend/data/email-intake/drafts.json`, **no vault write**). Requires non-empty `subject` and `rawEmail`; validates `domain` and `confidence`; missing summary → conservative deterministic fallback (subject + body preview, no AI).
+- **`GET /api/email-intake/drafts`** / **`GET /api/email-intake/drafts/{id}`** — list (newest first) / read.
+- **`PATCH /api/email-intake/drafts/{id}`** — edit `subject/sender/receivedAt/domain/entity/summary/actionRequired/dueDate/confidence/proposedTaskRows/proposedCalendarRows`. Locked: `id/createdAt/updatedAt/status/savedPath/rawEmail`.
+- **`POST /api/email-intake/drafts/{id}/save`** — write **one** Markdown summary, mark `saved`, store `savedPath`.
+
+### Destination mapping
+
+| Domain (+entity) | Path |
+|---|---|
+| `course` (with or without entity) | `raw/quercus/emails/` |
+| `business` + entity | `raw/business/<slug-entity>/emails/` |
+| `business` no entity | `raw/business/unknown/emails/` |
+| `personal` | `raw/personal/email/` |
+| `unknown` | `raw/inbox/email/` |
+
+Filename: `<date>-<slug-subject>.md`. The only variable path component (business entity) is **slugified**, so caller input cannot introduce traversal.
+
+### Safety constraints
+
+- No Gmail API/MCP/auth, no email search/read, **no Gmail mutation** (send/delete/archive/labels), no browser/computer-use, no MCP, no AI.
+- Email content is **untrusted**: stored and embedded in a widened fenced code block only — never executed, never sent to an LLM, never interpreted as instructions.
+- Save writes exactly one file under an **allowlisted raw email path**, **never overwrites** (UUID suffix on collision), never escapes the vault root (traversal rejected), and **never creates tasks/calendar rows** or runs `brain`. Proposed task/calendar rows are **informational only** in v0.
+- Unsaved drafts appear in the **Proposal Queue** as `email-intake` / `email_summary` proposals (status `pending`; saved → `applied`); the queue only navigates here via **Open in Email Intake** and never saves.
+
 ## Proposal Queue (v1)
 
 The Proposal Queue is the first piece of the generalized **propose → preview → approve → apply** spine the PRD requires before Research Mode, Chat/AI Consolidation, Gmail intake, MCP tools, and OpenClaw tool requests are built. It gives the app one consistent surface to review proposed changes and distinguish `pending` / `approved` / `applied` / `skipped` / `rejected`.
@@ -570,7 +604,7 @@ The Proposal Queue is the first piece of the generalized **propose → preview �
 ### What it is
 
 - **`GET /api/proposals`** — a thin, **read-only** aggregation layer (`backend/app/proposals.py`) that normalizes proposal-like items into a single shape.
-- Aggregates **Raw Inbox classification proposals**, **Chat/AI Consolidation drafts**, and **Research drafts**. Each source contributes independently — a failing source yields an error entry, not a failed request.
+- Aggregates **Raw Inbox classification proposals**, **Chat/AI Consolidation drafts**, **Research drafts**, and **Email Intake drafts**. Each source contributes independently — a failing source yields an error entry, not a failed request.
 - The frontend **Proposal Queue** page (`src/pages/ProposalsPage.tsx`) shows total / pending / applied / skipped-rejected counts, filters (status, type, source, confidence, search), and a card per proposal (title, source, type, status, risk, confidence, target path, summary, key details).
 
 ### Normalized shape
@@ -581,7 +615,7 @@ Raw Inbox intake status maps to the generalized status as: `proposed`/`edited` �
 
 ### Actions
 
-Actions **deep-link to the exact source item** — **Open in Raw Inbox**, **Open in Consolidation**, or **Open in Research** — where the existing approve / edit / route / save flow continues unchanged. The clicked item is highlighted (and scrolled into view) on the source page via an app-state handoff (`proposalTarget` in the zustand store, mirroring `agentConvTarget`); the page consumes and clears the target on mount and shows an unobtrusive "Opened from Proposal Queue." notice. A missing/deleted target falls back to plain page navigation with a non-blocking notice. **There is no approve/apply/save button in the Proposal Queue** — it is a read-only, shared review surface that does not duplicate or increase mutation power.
+Actions **deep-link to the exact source item** — **Open in Raw Inbox**, **Open in Consolidation**, **Open in Research**, or **Open in Email Intake** — where the existing approve / edit / route / save flow continues unchanged. The clicked item is highlighted (and scrolled into view) on the source page via an app-state handoff (`proposalTarget` in the zustand store, mirroring `agentConvTarget`); the page consumes and clears the target on mount and shows an unobtrusive "Opened from Proposal Queue." notice. A missing/deleted target falls back to plain page navigation with a non-blocking notice. **There is no approve/apply/save button in the Proposal Queue** — it is a read-only, shared review surface that does not duplicate or increase mutation power.
 
 ### Safety constraints
 
@@ -591,7 +625,131 @@ Actions **deep-link to the exact source item** — **Open in Raw Inbox**, **Open
 
 ### Future sources
 
-Gmail/email intake, MCP tools, and Agent proposals should all plug into this same normalized queue as they are wired (by extending `list_normalized_proposals()`). Raw Inbox, Chat/AI Consolidation, and Research already do.
+MCP tools and Agent proposals should all plug into this same normalized queue as they are wired (by extending `list_normalized_proposals()`). Raw Inbox, Chat/AI Consolidation, Research, and Email Intake already do.
+
+## Tool Connections (v0 — read-only readiness)
+
+The **Tool Connections** page (nav: Control → Tool Connections) is an **honest status/config readiness surface** for the privileged tool systems the PRD plans (§13, §31, §32, §33). It exists so the user can see — before any privileged integration is built — that everything privileged is still unavailable.
+
+It is **read-only status/config inventory only**. It makes **no MCP/Gmail/browser/computer-use calls**, no Google/GitHub/Drive API calls, runs no shell commands, never invokes `brain`, reads no credentials, and launches/executes no tool.
+
+### Endpoint (`backend/app/tools.py`)
+
+- **`GET /api/tools/status`** → `{ items: ToolConnectionStatus[] }` — a static, read-only inventory. Each item: `id`, `name`, `category`, `status`, `enabled`, `riskLevel`, `capabilities[]`, `allowedNow[]`, `blockedNow[]`, `requires[]`, `lastCheckedAt`, `lastError`, `notes`.
+- **Status values:** `available` · `unavailable` · `not_configured` · `disabled` · `planned` · `error`. Nothing is reported `available` — no real check runs in this build, so privileged systems are `not_configured`, `planned`, or `disabled`.
+- **Categories:** `runtime` (Agent Runtime), `mcp` (MCP), `browser` (Browser / Computer Use), `external` (External Services), `developer` (Developer Tools).
+
+### Tool systems listed
+
+`obsidian-mcp`, `gmail-mcp`, `google-calendar-api`, `browser-harness`, `computer-use`, `openclaw`, `nemoclaw-openshell`, `github`, `google-drive`, `graphify`.
+
+- **Gmail** is shown not connected; search/read/intake are planned through the backend gateway and **all mutations (send/delete/archive/labels) are listed as blocked**.
+- **Obsidian MCP** is not connected; current vault workflows use the **filesystem adapter and backup-before-write** protections.
+- **Browser harness / Computer Use** are **disabled** until NemoClaw/OpenShell (or equivalent runtime safety) is wired.
+- **OpenClaw / NemoClaw/OpenShell** are **planned** runtime layers; current Local Agent chat has no tools.
+
+### Page UI & actions
+
+Cards grouped by category, each with a status badge, risk badge, enabled/disabled indicator, capabilities, allowed-now, blocked-now, requirements, and notes. The only live actions are **Refresh status** and **Settings** navigation. There is **no** Connect / Enable / Authenticate / Test / Launch action — the per-card control is clearly disabled and labelled **"Not wired yet."**
+
+### Safety constraints
+
+- `GET /api/tools/status` is read-only and performs no external calls, no shell, no `brain`, no credential reads, and no tool execution.
+- `list_tool_connections()` returns fresh copies, so callers cannot mutate the inventory.
+- Privileged integrations (MCP, Gmail, browser, computer-use, Google Calendar/Drive, GitHub, OpenClaw, NemoClaw/OpenShell) remain **not wired**.
+
+## Permission Gateway (v0 — deny-by-default classification)
+
+The **Permission Gateway** is the backend "app-specific permission gateway" the PRD requires (§4.3, §9.2, §32) — the layer that decides whether a requested tool action is allowed, needs approval, is unavailable, or is disabled. It classifies a tool request into a decision and explains it. As of **Safe-local Execution v0**, it can also *execute* a tiny allowlist of low-risk, read-only local `brain` status tools through the existing safe brain wrapper — **everything else is classification-only and nothing privileged runs.**
+
+```text
+classify:  request → decision (denied / requires_approval / not_wired / disabled / allowed) → UI shows result
+execute:   request → evaluate + log → if safe-local tool: run via safe brain wrapper + log → return output
+```
+
+It is surfaced on the **Tool Connections** page (Permission Gateway section): a tool-policy table, a manual evaluator (tool + reason + JSON args → decision), a *Run safe-local tool* action, and the evaluation/execution log.
+
+### Endpoints (`backend/app/permission_gateway.py`)
+
+- **`GET /api/permissions/policies`** → `{ policies: PermissionPolicy[] }`. Each policy: `tool`, `category`, `riskLevel` (`low|medium|high|disabled`), `status` (`not_wired|available|disabled`), `requiresApproval`, `executionEnabled`, `notes`. Covers `obsidian.*`, `gmail.*`, `calendar.*`, `browser.*`, `computer.*`, `brain.*`, `filesystem.*` (19 tools). `executionEnabled` is **`true` only for** `brain.status`, `brain.raw_status`, `brain.vault_path` — **`false` for every other tool**.
+- **`POST /api/permissions/evaluate`** → classify one request (no execution). Body: `{ tool, args?, reason?, requestedBy? }`. Response includes `allowed`, `decision`, `riskLevel`, `requiresApproval`, `executionEnabled`, `sanitizedArgsSummary`, `wouldLog`, and `logId`.
+- **`POST /api/permissions/execute`** → evaluate + log, then execute **only** the three safe-local tools via the safe brain wrapper. Response: `{ tool, allowed, decision, riskLevel, requiresApproval, executionEnabled, evaluationLogId, executionLogId, ok, exitCode, stdout, stderr, durationMs, error }`. For any non-executable tool it returns a **safe** response (`allowed:false`, `executionLogId:null`, `error:"Tool is not executable in this build."`) — never a 500.
+
+### Decision logic (deny-by-default)
+
+- MCP / Gmail / calendar-read tools → **`not_wired`**.
+- Browser / computer-use, `gmail.send`, `calendar.create_event` → **`disabled`**.
+- Unknown tools → **`denied`**; unknown destructive-looking names (`shell.run`, `filesystem.delete`, `browser.submit_form`, `gmail.delete/archive/modify_labels`, …) → **`disabled`**.
+- Safe-local executable tools (`brain.status`, `brain.raw_status`, `brain.vault_path`) → **`allowed`** (low risk, no approval); `/execute` runs them and the decision becomes **`executed`**.
+- Other `available` tools (`brain.today`, `brain.sync_raw`, `filesystem.read_vault`, `filesystem.write_vault`) → **`requires_approval`** — not executable through the gateway in this build.
+
+### Safe-local Tool Execution v0
+
+**Exactly three tools** can execute, each mapped to an allowlisted safe brain subcommand:
+
+| Tool | brain command |
+|---|---|
+| `brain.status` | `brain status` |
+| `brain.raw_status` | `brain raw-status` |
+| `brain.vault_path` | `brain vault-path` |
+
+Execution flow: evaluate → log evaluation → if `is_executable(tool)` run via the existing `run_brain_command` wrapper (`shell=False`, allowlisted, **no args passed to brain**) → log execution → return output. `brain.today`, `brain.weekly`, `brain.sync_raw`, `brain.calendar_*` are **not** executable here. There is **no new subprocess path, no shell, no arbitrary command name, and no arbitrary `brain` command** — only the existing safe wrapper.
+
+### Argument handling
+
+Args are **untrusted**: never executed, only summarized for display/logging. Keys containing `password`, `token`, `secret`, `key`, `credential`, `authorization`, or `cookie` are **redacted**; long values are **truncated**; the summary is capped and the pair count limited. Invalid JSON args are rejected client-side with a clear message. (The three executable brain tools take no args; any provided args are summarized only, never forwarded to `brain`.)
+
+### Safety constraints
+
+- Executes **only** the three low-risk read-only brain status tools, and **only** through the existing safe brain wrapper. Makes no MCP/Gmail/browser/computer-use/Google/GitHub/Drive call; launches no OpenClaw/NemoClaw/OpenShell; runs no shell; runs no arbitrary `brain` command; writes no vault files; reads no credentials; creates no tasks/calendar rows; calls no AI.
+- `EXECUTION_ENABLED` (the privileged-execution kill-switch) stays `False`; safe-local execution is opt-in **per tool** via a small allowlist and does not flip it.
+- The UI exposes a *Run safe-local tool* button **only** for the three tools; for everything else it is disabled and labelled *Execution disabled in this build.* There is no approve-and-execute or replay action.
+
+### Tool Log v0 — backend-local audit of evaluations + executions
+
+Every Permission Gateway request writes **redacted, backend-local audit entries** — one `gateway_eval` per request, plus one `gateway_execution` when a safe-local tool actually runs. This makes the PRD's tool-log/audit spine real (§32).
+
+- **Storage:** `backend/data/tool-logs/evaluations.json` (backend app-data, **not** the vault). Latest **500** entries kept (simple cap, no rotation). Vault `ops/tool-logs/` writes remain future work.
+- **`GET /api/permissions/logs`** — read-only, newest first. Query params: `limit` (default 50, clamped to [1, 200]), `tool` (exact match), `decision` (exact match).
+- **Entry fields:** `id`, `timestamp`, `source` (`gateway_eval` | `gateway_execution`), `tool`, `requestedBy`, `reason`, `decision`, `riskLevel`, `allowed`, `requiresApproval`, `executionEnabled`, `sanitizedArgsSummary`, `policyNotes`, `result` (`evaluated_only` | `success` | `failure`), and execution-only `exitCode`, `stdoutPreview`, `stderrPreview`, `durationMs`.
+- **Redaction:** only the already-sanitized args summary is stored — **raw args and secret values are never persisted**. `reason`/`requestedBy` are truncated; stdout/stderr are stored only as **truncated previews**.
+- **UI:** a *Permission Evaluation Logs* panel lists recent entries (eval + execution badges, decision/risk/result/exit/duration/stdout-preview); filters by decision and tool; **Refresh only** + auto-refresh after evaluate/execute — there is no clear / delete / replay / approve-and-execute action.
+
+### Agent Tool Request v0 — evaluate-only agent → gateway bridge
+
+The Local Agent surface can create a **structured tool-request proposal** that the backend evaluates through the Permission Gateway and logs — **without any execution power**. This prepares the Local Agent page for future OpenClaw tool requests while keeping the current agent tool-less.
+
+```text
+agent (or manual stand-in) proposes a tool request → backend evaluates via gateway + writes the gateway eval log → UI shows the decision → NOTHING runs
+```
+
+- **`POST /api/agent/tool-request`** (`backend/app/agent_tool_requests.py`) — body `{ tool, args?, reason?, requestedBy?, conversationId? }`. Evaluates via `evaluate_tool_request`, writes the existing `gateway_eval` log, stores a redacted record, and returns `{ id, tool, argsSummary, reason, requestedBy, conversationId, evaluation{ allowed, decision, riskLevel, requiresApproval, executionEnabled, reason, policyNotes, logId }, createdAt, status }`. `status` is always `evaluated_only`.
+- **`GET /api/agent/tool-requests?limit=`** — read-only, newest first (limit clamped to [1, 200]).
+- **Never executes:** this path does **not** call `/api/permissions/execute`, the brain wrapper, any subprocess, or any external tool — even for the safe-local tools (a `brain.status` request returns `allowed`/`executionEnabled:true` but is **not run**). Safe-local execution stays manual on the Tool Connections page.
+- **Storage/redaction:** records live in `backend/data/agent-tool-requests/requests.json` (backend app-data, not the vault, cap 200). Only the **sanitized args summary** is stored — raw args and secrets are never persisted; `reason`/`requestedBy` are truncated. Instructions inside `reason`/`args` are never followed.
+- **UI:** an *Agent Tool Requests* panel on the **Local Agent** page (right rail) with a small manual/simulated request form (tool + reason + JSON args) and a recent-requests list (tool, decision, risk, execution-enabled, status, log id). It states requests are evaluated only, and has **no run / approve-and-execute / auto-run** control.
+
+### Local Agent Structured Output v0 — agent-emitted tool requests (evaluate-only)
+
+The Local Agent can include an **optional structured JSON block** in its reply proposing tool requests; the backend defensively parses it and routes each request through the evaluate-only Agent Tool Request path. **Nothing is executed.**
+
+- **Parser (`backend/app/agent_structured_output.py`):** extracts a fenced ` ```json ` block **or** an `AGENT_STRUCTURED_OUTPUT:` labelled JSON object from the assistant reply. Defensive: tolerates a missing block (empty result, no error), tolerates malformed JSON (returns a parse error, never throws), caps `tool_requests` at **5**, requires a non-empty `tool`, requires `args` to be a JSON object (default `{}`), falls back/truncates `reason`, and ignores unsupported fields. All parsed content is untrusted.
+- **Chat integration:** after the assistant reply is produced, both `POST /api/agent/chat` (response field `structured: { toolRequests, parseErrors }`) and `POST /api/agent/chat/stream` (an SSE `event: structured` emitted after streaming completes, before `done`) parse + evaluate the block. Each valid request is created via the Agent Tool Request path (one `gateway_eval` log each); **no execution, no `/execute`, no brain wrapper, no execution log.** Streaming token behavior is unchanged.
+- **System prompt:** updated to describe the optional block, that requests are **evaluated only** (the agent must not claim a tool ran), to avoid secrets, and to not request privileged tools unless clearly relevant.
+- **UI:** evaluated structured requests render in a compact *Structured tool requests detected* panel under the assistant message (tool, decision, risk, execution-enabled, status, log id) and also refresh the right-rail Agent Tool Requests list. Malformed structured output shows a small notice and never breaks the chat. There is **no run / approve-and-execute** control in chat — safe-local execution remains manual on Tool Connections.
+
+### Review in Tool Connections — agent → manual-execution handoff
+
+An evaluated Local Agent tool request can be handed off to the Tool Connections evaluator for **manual** execution. This closes the safe loop without giving chat any execution power:
+
+```text
+agent proposes tool request → backend evaluates/logs → user clicks "Review in Tool Connections" → form prefilled → user manually runs the safe-local tool → gateway logs execution
+```
+
+- **Where it shows:** in both the per-message *Structured tool requests detected* panel and the right-rail *Agent Tool Requests* list, a **Review in Tool Connections** button appears **only** when the gateway said the request is executable safe-local — i.e. `evaluation.executionEnabled === true` **and** `evaluation.allowed === true` **and** the tool is `brain.status` / `brain.raw_status` / `brain.vault_path`. Every other request shows *Evaluation only — not executable in this build* with no handoff.
+- **Handoff mechanism:** a Zustand app-state field `toolReviewTarget` (mirroring `proposalTarget` / `agentConvTarget`) carries `{ tool, argsSummary?, reason?, requestedBy?, source, relatedId }`. Clicking sets it and navigates to Tool Connections; **nothing executes during navigation.**
+- **On Tool Connections:** the evaluator form is prefilled with the tool and reason (and `args` is set to `{}` — raw args are **never** reconstructed from the sanitized summary), a notice *"Opened from Local Agent. Review before running."* is shown along with *"This request came from the Local Agent. It has not been executed. Only low-risk local brain status tools can run here."*, and the target is cleared. The form does **not** auto-evaluate or auto-execute — the user must click **Run safe-local tool**.
+- **No backend change:** this sprint is frontend-only; the existing evaluation response already carries `executionEnabled`/`allowed`/`tool`.
 
 ## Escalation Queue
 

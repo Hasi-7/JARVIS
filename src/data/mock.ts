@@ -156,6 +156,7 @@ export const NAV: NavGroup[] = [
       { id: 'inbox',      label: 'Raw Inbox',       glyph: 'inbox', badge: 7 },
       { id: 'proposals',  label: 'Proposal Queue',   glyph: 'check' },
       { id: 'consolidate',label: 'AI Consolidation', glyph: 'merge' },
+      { id: 'email',      label: 'Email Intake',     glyph: 'inbox' },
       { id: 'calendar',   label: 'Calendar',         glyph: 'cal',   badge: 3 },
       { id: 'tasks',      label: 'Tasks',            glyph: 'check' },
     ],
@@ -175,6 +176,7 @@ export const NAV: NavGroup[] = [
     group: 'Control',
     items: [
       { id: 'escalation', label: 'Escalation Queue', glyph: 'arrow-up', badge: 3 },
+      { id: 'tools',      label: 'Tool Connections', glyph: 'layers'    },
       { id: 'safety',     label: 'Tool Safety',      glyph: 'shield'    },
       { id: 'settings',   label: 'Settings',         glyph: 'gear'      },
     ],

@@ -43,8 +43,23 @@ from app.agent import (
     CONTEXT_WINDOW_MESSAGES,
 )
 from app.brain import run_brain_command, run_brain_command_args
+from app.agent_tool_requests import (
+    create_request as create_agent_tool_request,
+    list_requests as list_agent_tool_requests,
+)
+from app.agent_structured_output import evaluate_structured_output
 from app.dashboard import get_dashboard_summary
 from app.proposals import list_normalized_proposals
+from app.tools import list_tool_connections
+from app.permission_gateway import (
+    list_policies,
+    evaluate_tool_request,
+    log_evaluation,
+    log_execution,
+    list_logs,
+    is_executable,
+    brain_command_for,
+)
 from app.consolidation import (
     create_draft as create_consolidation_draft,
     list_drafts as list_consolidation_drafts,
@@ -58,6 +73,13 @@ from app.research import (
     get_draft as get_research_draft,
     update_draft as update_research_draft,
     save_draft as save_research_draft,
+)
+from app.email_intake import (
+    create_draft as create_email_draft,
+    list_drafts as list_email_drafts,
+    get_draft as get_email_draft,
+    update_draft as update_email_draft,
+    save_draft as save_email_draft,
 )
 from app.escalations import (
     add_escalation_item,
@@ -161,6 +183,19 @@ from app.models import (
     ProposalItem,
     ProposalListError,
     ProposalListResponse,
+    ToolConnectionStatus,
+    ToolConnectionStatusResponse,
+    PermissionPolicy,
+    PermissionPolicyResponse,
+    ToolRequestEvaluationRequest,
+    ToolRequestEvaluationResponse,
+    PermissionEvaluationLog,
+    PermissionEvaluationLogsResponse,
+    ToolExecutionResponse,
+    CreateAgentToolRequestRequest,
+    AgentToolRequestResponse,
+    AgentToolRequestListResponse,
+    AgentChatStructured,
     ConsolidationDraftResponse,
     ConsolidationDraftsResponse,
     CreateConsolidationDraftRequest,
@@ -172,6 +207,11 @@ from app.models import (
     CreateResearchDraftRequest,
     UpdateResearchDraftRequest,
     SaveResearchDraftResponse,
+    EmailIntakeDraftResponse,
+    EmailIntakeDraftsResponse,
+    CreateEmailIntakeDraftRequest,
+    UpdateEmailIntakeDraftRequest,
+    SaveEmailIntakeDraftResponse,
     EscalationItem,
     EscalationResponse,
     UpdateEscalationItemRequest,
@@ -311,6 +351,131 @@ def proposals_list() -> ProposalListResponse:
     return ProposalListResponse(
         proposals=[ProposalItem(**it) for it in items],
         errors=[ProposalListError(**e) for e in errors],
+    )
+
+
+# ── tool / MCP connections (read-only readiness inventory; v0) ─────────────────
+
+@app.get("/api/tools/status", response_model=ToolConnectionStatusResponse)
+def tools_status() -> ToolConnectionStatusResponse:
+    """
+    Read-only inventory of planned tool systems and their readiness.
+
+    Honest status/config surface only — performs no external calls, runs no shell
+    commands, never invokes `brain`, reads no credentials, and launches no
+    OpenClaw/NemoClaw/OpenShell runtime or tool. Nothing is executed.
+    """
+    items = list_tool_connections()
+    return ToolConnectionStatusResponse(
+        items=[ToolConnectionStatus(**it) for it in items],
+    )
+
+
+# ── permission gateway (deny-by-default classification; v0 — no execution) ──────
+
+@app.get("/api/permissions/policies", response_model=PermissionPolicyResponse)
+def permissions_policies() -> PermissionPolicyResponse:
+    """
+    Read-only list of tool policies. executionEnabled is False for every entry —
+    the gateway classifies requests but executes nothing in v0.
+    """
+    return PermissionPolicyResponse(
+        policies=[PermissionPolicy(**p) for p in list_policies()],
+    )
+
+
+@app.post("/api/permissions/evaluate", response_model=ToolRequestEvaluationResponse)
+def permissions_evaluate(req: ToolRequestEvaluationRequest) -> ToolRequestEvaluationResponse:
+    """
+    Classify a simulated tool request. Deny-by-default. NOTHING is executed: no
+    tool runs, no external call is made, no shell/brain runs, no vault write
+    occurs. Args are untrusted — summarized for display only, with secrets
+    redacted and long values truncated.
+    """
+    try:
+        result = evaluate_tool_request(
+            tool=req.tool,
+            args=req.args,
+            reason=req.reason,
+            requested_by=req.requestedBy,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    # Record one redacted backend-local audit entry (no vault write, no execution).
+    entry = log_evaluation(result, requested_by=req.requestedBy, reason=req.reason)
+    return ToolRequestEvaluationResponse(**result, logId=entry["id"])
+
+
+@app.get("/api/permissions/logs", response_model=PermissionEvaluationLogsResponse)
+def permissions_logs(
+    limit: int = 50,
+    tool: str | None = None,
+    decision: str | None = None,
+) -> PermissionEvaluationLogsResponse:
+    """
+    Read-only list of Permission Gateway evaluation log entries, newest first.
+    Backend-local app-data only (never the vault). limit clamped to [1, 200].
+    """
+    entries = list_logs(limit=limit, tool=tool, decision=decision)
+    return PermissionEvaluationLogsResponse(
+        logs=[PermissionEvaluationLog(**e) for e in entries],
+    )
+
+
+@app.post("/api/permissions/execute", response_model=ToolExecutionResponse)
+def permissions_execute(req: ToolRequestEvaluationRequest) -> ToolExecutionResponse:
+    """
+    Safe-local Tool Execution v0. Evaluates + logs every request, then executes ONLY
+    the allowlisted low-risk brain status tools (brain.status / brain.raw_status /
+    brain.vault_path) via the existing safe brain wrapper. All other tools return a
+    safe non-execution response (no 500). Never runs shell, arbitrary brain commands,
+    or any privileged/external tool; never writes the vault.
+    """
+    try:
+        result = evaluate_tool_request(
+            tool=req.tool, args=req.args, reason=req.reason, requested_by=req.requestedBy,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # Always evaluate + log first.
+    eval_entry = log_evaluation(result, requested_by=req.requestedBy, reason=req.reason)
+
+    tool = result["tool"]
+    if not is_executable(tool):
+        # Safe non-execution response for denied/not-wired/disabled/non-executable tools.
+        return ToolExecutionResponse(
+            tool=tool,
+            allowed=False,
+            decision=result["decision"],
+            riskLevel=result["riskLevel"],
+            requiresApproval=result["requiresApproval"],
+            executionEnabled=result["executionEnabled"],
+            evaluationLogId=eval_entry["id"],
+            executionLogId=None,
+            ok=False,
+            error="Tool is not executable in this build.",
+        )
+
+    # Executable safe-local tool → run via the existing safe brain wrapper only.
+    brain_cmd = brain_command_for(tool)            # status | raw-status | vault-path
+    brain_result = run_brain_command(brain_cmd)    # allowlisted, shell=False, no args
+    exec_entry = log_execution(result, brain_result, requested_by=req.requestedBy, reason=req.reason)
+
+    return ToolExecutionResponse(
+        tool=tool,
+        allowed=True,
+        decision="executed",
+        riskLevel=result["riskLevel"],
+        requiresApproval=result["requiresApproval"],
+        executionEnabled=True,
+        evaluationLogId=eval_entry["id"],
+        executionLogId=exec_entry["id"],
+        ok=brain_result.ok,
+        exitCode=brain_result.exitCode,
+        stdout=brain_result.stdout,
+        stderr=brain_result.stderr,
+        durationMs=brain_result.durationMs,
     )
 
 
@@ -520,6 +685,118 @@ def research_save(draft_id: str) -> SaveResearchDraftResponse:
     return SaveResearchDraftResponse(
         ok=True,
         draft=_research_to_response(draft),
+        relativePath=info["relativePath"],
+        absolutePath=info["absolutePath"],
+    )
+
+
+# ── email intake (v1: manual paste/import) ─────────────────────────────────────
+
+def _email_to_response(d) -> EmailIntakeDraftResponse:
+    return EmailIntakeDraftResponse(
+        id                   = d.id,
+        subject              = d.subject,
+        sender               = d.sender,
+        receivedAt           = d.received_at,
+        domain               = d.domain,
+        entity               = d.entity,
+        summary              = d.summary,
+        actionRequired       = d.action_required,
+        dueDate              = d.due_date,
+        confidence           = d.confidence,
+        rawEmail             = d.raw_email,
+        proposedTaskRows     = d.proposed_task_rows,
+        proposedCalendarRows = d.proposed_calendar_rows,
+        status               = d.status,
+        proposedDestination  = d.proposed_destination,
+        savedPath            = d.saved_path,
+        createdAt            = d.created_at,
+        updatedAt            = d.updated_at,
+    )
+
+
+@app.post("/api/email-intake/drafts", response_model=EmailIntakeDraftResponse)
+def email_intake_create(req: CreateEmailIntakeDraftRequest) -> EmailIntakeDraftResponse:
+    """
+    Create an email intake draft from manually pasted email content. Stores backend
+    metadata only — no vault write, no AI call, no Gmail/MCP, no external tool.
+    """
+    try:
+        draft = create_email_draft(
+            subject                = req.subject,
+            sender                 = req.sender,
+            received_at            = req.receivedAt,
+            domain                 = req.domain,
+            entity                 = req.entity,
+            summary                = req.summary,
+            action_required        = req.actionRequired,
+            due_date               = req.dueDate,
+            confidence             = req.confidence,
+            raw_email              = req.rawEmail,
+            proposed_task_rows     = req.proposedTaskRows,
+            proposed_calendar_rows = req.proposedCalendarRows,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _email_to_response(draft)
+
+
+@app.get("/api/email-intake/drafts", response_model=EmailIntakeDraftsResponse)
+def email_intake_list() -> EmailIntakeDraftsResponse:
+    return EmailIntakeDraftsResponse(
+        drafts=[_email_to_response(d) for d in list_email_drafts()]
+    )
+
+
+@app.get("/api/email-intake/drafts/{draft_id}", response_model=EmailIntakeDraftResponse)
+def email_intake_get(draft_id: str) -> EmailIntakeDraftResponse:
+    draft = get_email_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"Email intake draft '{draft_id}' not found.")
+    return _email_to_response(draft)
+
+
+@app.patch("/api/email-intake/drafts/{draft_id}", response_model=EmailIntakeDraftResponse)
+def email_intake_update(draft_id: str, req: UpdateEmailIntakeDraftRequest) -> EmailIntakeDraftResponse:
+    field_map = {
+        "subject":              "subject",
+        "sender":               "sender",
+        "receivedAt":           "received_at",
+        "domain":               "domain",
+        "entity":               "entity",
+        "summary":              "summary",
+        "actionRequired":       "action_required",
+        "dueDate":              "due_date",
+        "confidence":           "confidence",
+        "proposedTaskRows":     "proposed_task_rows",
+        "proposedCalendarRows": "proposed_calendar_rows",
+    }
+    payload = req.model_dump(exclude_unset=True)
+    updates = {field_map[k]: v for k, v in payload.items() if k in field_map}
+    try:
+        draft = update_email_draft(draft_id, updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"Email intake draft '{draft_id}' not found.")
+    return _email_to_response(draft)
+
+
+@app.post("/api/email-intake/drafts/{draft_id}/save", response_model=SaveEmailIntakeDraftResponse)
+def email_intake_save(draft_id: str) -> SaveEmailIntakeDraftResponse:
+    """
+    Write one Markdown summary under an allowlisted raw email path. Never overwrites,
+    never escapes the vault, never connects to Gmail, never runs brain/AI, never
+    creates tasks/calendar rows.
+    """
+    cfg = get_config()
+    try:
+        draft, info = save_email_draft(draft_id, cfg.vault_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return SaveEmailIntakeDraftResponse(
+        ok=True,
+        draft=_email_to_response(draft),
         relativePath=info["relativePath"],
         absolutePath=info["absolutePath"],
     )
@@ -1711,6 +1988,36 @@ def agent_status() -> AgentStatusResponse:
     return AgentStatusResponse(**get_agent_status())
 
 
+# ── agent tool requests (v0: evaluate-only via Permission Gateway; no execution) ─
+
+@app.post("/api/agent/tool-request", response_model=AgentToolRequestResponse)
+def agent_tool_request_create(req: CreateAgentToolRequestRequest) -> AgentToolRequestResponse:
+    """
+    Evaluate a structured agent tool-request proposal through the Permission Gateway
+    and log the evaluation. NEVER executes the tool, never calls /execute, the brain
+    wrapper, any external service, or the vault. args/reason are untrusted.
+    """
+    try:
+        record = create_agent_tool_request(
+            tool=req.tool,
+            args=req.args,
+            reason=req.reason,
+            requested_by=req.requestedBy,
+            conversation_id=req.conversationId,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return AgentToolRequestResponse(**record)
+
+
+@app.get("/api/agent/tool-requests", response_model=AgentToolRequestListResponse)
+def agent_tool_requests_list(limit: int = 50) -> AgentToolRequestListResponse:
+    """Read-only list of recent agent tool requests, newest first."""
+    return AgentToolRequestListResponse(
+        requests=[AgentToolRequestResponse(**r) for r in list_agent_tool_requests(limit=limit)],
+    )
+
+
 @app.post("/api/agent/chat", response_model=AgentChatResponse)
 def agent_chat(req: AgentChatRequest) -> AgentChatResponse:
     if not req.message.strip():
@@ -1747,6 +2054,16 @@ def agent_chat(req: AgentChatRequest) -> AgentChatResponse:
         duration_ms=result["durationMs"],
     )
 
+    # Defensively parse any structured tool_requests from the reply and evaluate
+    # them (evaluate-only — nothing is executed).
+    structured = evaluate_structured_output(result["message"], conv_id)
+    structured_model = None
+    if structured["toolRequests"] or structured["parseErrors"]:
+        structured_model = AgentChatStructured(
+            toolRequests=[AgentToolRequestResponse(**r) for r in structured["toolRequests"]],
+            parseErrors=structured["parseErrors"],
+        )
+
     return AgentChatResponse(
         ok=result["ok"],
         provider=result["provider"],
@@ -1756,6 +2073,7 @@ def agent_chat(req: AgentChatRequest) -> AgentChatResponse:
         conversationId=conv_id,
         contextWindowMessages=CONTEXT_WINDOW_MESSAGES,
         contextMessagesUsed=context_used,
+        structured=structured_model,
     )
 
 
@@ -1868,6 +2186,16 @@ def agent_chat_stream(req: AgentChatRequest) -> StreamingResponse:
                 model=LOCAL_MODEL,
                 duration_ms=duration_ms,
             )
+
+            # After streaming completes, defensively parse + evaluate any structured
+            # tool requests (evaluate-only — nothing is executed). Failures here must
+            # never break the stream, so guard defensively.
+            try:
+                structured = evaluate_structured_output(full_content, conv_id)
+                if structured["toolRequests"] or structured["parseErrors"]:
+                    yield _sse("structured", structured)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error("Structured-output evaluation failed (non-fatal): %s", exc)
 
         yield _sse("done", {"ok": True, "durationMs": duration_ms})
 

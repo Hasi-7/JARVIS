@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -212,6 +212,8 @@ class AgentChatResponse(BaseModel):
     conversationId: str
     contextWindowMessages: Optional[int] = None
     contextMessagesUsed: Optional[int] = None
+    # Optional structured tool requests parsed from the assistant reply (evaluate-only).
+    structured: Optional["AgentChatStructured"] = None
 
 
 # ── conversations ─────────────────────────────────────────────────────────────
@@ -850,6 +852,156 @@ class ProposalListResponse(BaseModel):
     errors:    List[ProposalListError] = []
 
 
+# ── tool / MCP connections (v0: read-only readiness inventory) ─────────────────
+
+class ToolConnectionStatus(BaseModel):
+    id:            str                  # e.g. obsidian-mcp
+    name:          str                  # e.g. Obsidian MCP
+    category:      str                  # runtime | mcp | browser | external | developer
+    status:        str                  # available | unavailable | not_configured | disabled | planned | error
+    enabled:       bool
+    riskLevel:     str                  # low | medium | high
+    capabilities:  List[str] = []
+    allowedNow:    List[str] = []
+    blockedNow:    List[str] = []
+    requires:      List[str] = []
+    lastCheckedAt: Optional[str] = None
+    lastError:     Optional[str] = None
+    notes:         Optional[str] = None
+
+
+class ToolConnectionStatusResponse(BaseModel):
+    items: List[ToolConnectionStatus] = []
+
+
+# ── permission gateway (v0: deny-by-default classification, no execution) ───────
+
+class PermissionPolicy(BaseModel):
+    tool:             str                  # e.g. gmail.search
+    category:         str                  # obsidian | gmail | calendar | browser | computer | brain | filesystem
+    riskLevel:        str                  # low | medium | high | disabled
+    status:           str                  # not_wired | available | disabled
+    requiresApproval: bool
+    executionEnabled: bool                 # always False in v0
+    notes:            Optional[str] = None
+
+
+class PermissionPolicyResponse(BaseModel):
+    policies: List[PermissionPolicy] = []
+
+
+class ToolRequestEvaluationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tool:        str
+    args:        Optional[Dict[str, Any]] = None
+    reason:      Optional[str] = None
+    requestedBy: Optional[str] = None
+
+
+class ToolRequestEvaluationResponse(BaseModel):
+    allowed:              bool             # always False in v0
+    decision:             str             # denied | requires_approval | not_wired | disabled
+    riskLevel:            str             # low | medium | high | disabled
+    tool:                 str
+    requiresApproval:     bool
+    executionEnabled:     bool            # always False in v0
+    reason:               str
+    policyNotes:          Optional[str] = None
+    sanitizedArgsSummary: str
+    wouldLog:             bool
+    logId:                Optional[str] = None   # id of the backend-local audit entry
+
+
+class PermissionEvaluationLog(BaseModel):
+    id:                   str
+    timestamp:            str
+    source:               Optional[str] = "gateway_eval"   # gateway_eval | gateway_execution
+    tool:                 str
+    requestedBy:          Optional[str] = None
+    reason:               Optional[str] = None
+    decision:             str
+    riskLevel:            str
+    allowed:              bool
+    requiresApproval:     bool
+    executionEnabled:     bool
+    sanitizedArgsSummary: str
+    policyNotes:          Optional[str] = None
+    result:               str             # evaluated_only | success | failure
+    # Execution-only fields (null for evaluation entries)
+    exitCode:             Optional[int]   = None
+    stdoutPreview:        Optional[str]   = None
+    stderrPreview:        Optional[str]   = None
+    durationMs:           Optional[float] = None
+
+
+class PermissionEvaluationLogsResponse(BaseModel):
+    logs: List[PermissionEvaluationLog] = []
+
+
+class ToolExecutionResponse(BaseModel):
+    tool:             str
+    allowed:          bool
+    decision:         str             # executed | denied | requires_approval | not_wired | disabled
+    riskLevel:        str
+    requiresApproval: bool
+    executionEnabled: bool
+    evaluationLogId:  str
+    executionLogId:   Optional[str] = None
+    ok:               bool
+    exitCode:         Optional[int]   = None
+    stdout:           Optional[str]   = None
+    stderr:           Optional[str]   = None
+    durationMs:       Optional[float] = None
+    error:            Optional[str]   = None
+
+
+# ── agent tool request (v0: evaluate-only; never executes) ─────────────────────
+
+class CreateAgentToolRequestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tool:           str
+    args:           Optional[Dict[str, Any]] = None
+    reason:         Optional[str] = None
+    requestedBy:    Optional[str] = None
+    conversationId: Optional[str] = None
+
+
+class AgentToolRequestEvaluation(BaseModel):
+    allowed:          bool
+    decision:         str             # allowed | denied | requires_approval | not_wired | disabled
+    riskLevel:        str
+    requiresApproval: bool
+    executionEnabled: bool
+    reason:           str
+    policyNotes:      Optional[str] = None
+    logId:            str             # references the gateway evaluation log entry
+
+
+class AgentToolRequestResponse(BaseModel):
+    id:             str
+    tool:           str
+    argsSummary:    str
+    reason:         Optional[str] = None
+    requestedBy:    str
+    conversationId: Optional[str] = None
+    evaluation:     AgentToolRequestEvaluation
+    createdAt:      str
+    status:         str             # evaluated_only in v0
+
+
+class AgentToolRequestListResponse(BaseModel):
+    requests: List[AgentToolRequestResponse] = []
+
+
+class AgentChatStructured(BaseModel):
+    toolRequests: List[AgentToolRequestResponse] = []
+    parseErrors:  List[str] = []
+
+
+# Resolve the forward reference on AgentChatResponse now that AgentChatStructured exists.
+AgentChatResponse.model_rebuild()
+
+
 # ── chat / AI consolidation (v1: manual paste/import) ──────────────────────────
 
 class ConsolidationDraftResponse(BaseModel):
@@ -971,5 +1123,70 @@ class UpdateResearchDraftRequest(BaseModel):
 class SaveResearchDraftResponse(BaseModel):
     ok:           bool
     draft:        ResearchDraftResponse
+    relativePath: str
+    absolutePath: str
+
+
+# ── email intake (v1: manual paste/import) ─────────────────────────────────────
+
+class EmailIntakeDraftResponse(BaseModel):
+    id:                   str
+    subject:              str
+    sender:               Optional[str] = None
+    receivedAt:           Optional[str] = None
+    domain:               str   # course | business | personal | unknown
+    entity:               Optional[str] = None
+    summary:              str
+    actionRequired:       Optional[str] = None
+    dueDate:              Optional[str] = None
+    confidence:           Optional[str] = None   # High | Medium | Low | null
+    rawEmail:             str
+    proposedTaskRows:     List[str] = []
+    proposedCalendarRows: List[str] = []
+    status:               str   # draft | saved
+    proposedDestination:  str
+    savedPath:            Optional[str] = None
+    createdAt:            str
+    updatedAt:            str
+
+
+class EmailIntakeDraftsResponse(BaseModel):
+    drafts: List[EmailIntakeDraftResponse] = []
+
+
+class CreateEmailIntakeDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    subject:              str
+    sender:               Optional[str] = None
+    receivedAt:           Optional[str] = None
+    domain:               str
+    entity:               Optional[str] = None
+    summary:              Optional[str] = None
+    actionRequired:       Optional[str] = None
+    dueDate:              Optional[str] = None
+    confidence:           Optional[str] = None
+    rawEmail:             str
+    proposedTaskRows:     Optional[List[str]] = None
+    proposedCalendarRows: Optional[List[str]] = None
+
+
+class UpdateEmailIntakeDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    subject:              Optional[str] = None
+    sender:               Optional[str] = None
+    receivedAt:           Optional[str] = None
+    domain:               Optional[str] = None
+    entity:               Optional[str] = None
+    summary:              Optional[str] = None
+    actionRequired:       Optional[str] = None
+    dueDate:              Optional[str] = None
+    confidence:           Optional[str] = None
+    proposedTaskRows:     Optional[List[str]] = None
+    proposedCalendarRows: Optional[List[str]] = None
+
+
+class SaveEmailIntakeDraftResponse(BaseModel):
+    ok:           bool
+    draft:        EmailIntakeDraftResponse
     relativePath: str
     absolutePath: str

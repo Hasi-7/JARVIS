@@ -124,4 +124,11 @@ def list_normalized_proposals() -> Tuple[List[dict], List[dict]]:
         logger.error("Failed to load research drafts for queue: %s", exc)
         errors.append({"source": "research", "message": str(exc)})
 
+    try:
+        from app.email_intake import normalized_proposals as _email_proposals
+        items.extend(_email_proposals())
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to load email intake drafts for queue: %s", exc)
+        errors.append({"source": "email-intake", "message": str(exc)})
+
     return items, errors

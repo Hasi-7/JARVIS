@@ -5,6 +5,7 @@ import { AgentPage }       from '@/pages/AgentPage';
 import { ResearchPage }    from '@/pages/ResearchPage';
 import { InboxPage }       from '@/pages/InboxPage';
 import { ConsolidatePage } from '@/pages/ConsolidatePage';
+import { EmailIntakePage } from '@/pages/EmailIntakePage';
 import { CalendarPage }    from '@/pages/CalendarPage';
 import { TasksPage }       from '@/pages/TasksPage';
 import { ProposalsPage }   from '@/pages/ProposalsPage';
@@ -15,6 +16,7 @@ import { BusinessPage }    from '@/pages/BusinessPage';
 import { ResumePage }      from '@/pages/ResumePage';
 import { BackfillPage }    from '@/pages/BackfillPage';
 import { EscalationPage }  from '@/pages/EscalationPage';
+import { ToolConnectionsPage } from '@/pages/ToolConnectionsPage';
 import { SafetyPage }      from '@/pages/SafetyPage';
 import { SettingsPage }    from '@/pages/SettingsPage';
 
@@ -26,6 +28,7 @@ function Screen() {
     case 'research':    return <ResearchPage />;
     case 'inbox':       return <InboxPage />;
     case 'consolidate': return <ConsolidatePage />;
+    case 'email':       return <EmailIntakePage />;
     case 'calendar':    return <CalendarPage />;
     case 'tasks':       return <TasksPage />;
     case 'proposals':   return <ProposalsPage />;
@@ -36,6 +39,7 @@ function Screen() {
     case 'resume':      return <ResumePage />;
     case 'backfill':    return <BackfillPage />;
     case 'escalation':  return <EscalationPage />;
+    case 'tools':       return <ToolConnectionsPage />;
     case 'safety':      return <SafetyPage />;
     case 'settings':    return <SettingsPage />;
     default:            return <DashboardPage />;

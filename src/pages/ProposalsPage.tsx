@@ -51,6 +51,7 @@ function ProposalCard({ p, onOpen }: { p: ProposalItem; onOpen: (p: ProposalItem
   const canOpenRawInbox     = p.actions.includes('open_raw_inbox');
   const canOpenConsolidation = p.actions.includes('open_consolidation');
   const canOpenResearch      = p.actions.includes('open_research');
+  const canOpenEmailIntake   = p.actions.includes('open_email_intake');
   return (
     <div className="panel" style={{ padding: 'var(--s4)', display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--s3)' }}>
@@ -102,6 +103,11 @@ function ProposalCard({ p, onOpen }: { p: ProposalItem; onOpen: (p: ProposalItem
         {canOpenResearch && (
           <button className="btn btn-sm" onClick={() => onOpen(p)} title="Open the Research page to review / edit / save">
             Open in Research <Icon name="chevron" size={12} />
+          </button>
+        )}
+        {canOpenEmailIntake && (
+          <button className="btn btn-sm" onClick={() => onOpen(p)} title="Open the Email Intake page to review / edit / save">
+            Open in Email Intake <Icon name="chevron" size={12} />
           </button>
         )}
       </div>
@@ -181,6 +187,9 @@ export function ProposalsPage() {
     } else if (p.source === 'research') {
       if (p.relatedId) setProposalTarget({ source: 'research', relatedId: p.relatedId });
       navigate('research');
+    } else if (p.source === 'email-intake') {
+      if (p.relatedId) setProposalTarget({ source: 'email-intake', relatedId: p.relatedId });
+      navigate('email');
     }
   }
 

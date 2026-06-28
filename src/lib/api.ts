@@ -210,6 +210,16 @@ export interface AgentChatResponse {
   conversationId: string;
   contextWindowMessages?: number;
   contextMessagesUsed?: number;
+  structured?: AgentStructuredOutput | null;
+}
+
+// Structured tool requests parsed from an assistant reply (evaluate-only).
+export type AgentStructuredParseError = string;
+export type AgentStructuredToolRequestResult = AgentToolRequestResponse;
+
+export interface AgentStructuredOutput {
+  toolRequests: AgentStructuredToolRequestResult[];
+  parseErrors:  AgentStructuredParseError[];
 }
 
 // ── conversations ─────────────────────────────────────────────────────────────
@@ -273,6 +283,9 @@ export interface StreamHandlers {
   onToken: (text:  string)      => void;
   onDone:  (done:  StreamDone)  => void;
   onError: (error: StreamError) => void;
+  // Optional: emitted once after streaming completes if the reply contained
+  // structured tool requests (evaluate-only — nothing executed).
+  onStructured?: (structured: AgentStructuredOutput) => void;
 }
 
 // ── vault (read-only) ────────────────────────────────────────────────────────
@@ -816,9 +829,9 @@ export interface DashboardSummary {
 
 export type ProposalStatus    = 'pending' | 'approved' | 'rejected' | 'applied' | 'skipped';
 export type ProposalRiskLevel = 'low' | 'medium' | 'high';
-export type ProposalType      = 'file_route' | 'chat_consolidation' | 'research_note';   // future: note_write | calendar_candidate | …
-export type ProposalSource    = 'raw-inbox' | 'chat-consolidation' | 'research';          // future: email | mcp | agent
-export type ProposalAction    = 'open_raw_inbox' | 'open_consolidation' | 'open_research';
+export type ProposalType      = 'file_route' | 'chat_consolidation' | 'research_note' | 'email_summary';   // future: note_write | calendar_candidate | …
+export type ProposalSource    = 'raw-inbox' | 'chat-consolidation' | 'research' | 'email-intake';          // future: mcp | agent
+export type ProposalAction    = 'open_raw_inbox' | 'open_consolidation' | 'open_research' | 'open_email_intake';
 
 export interface ProposalDetails {
   filename:   string | null;
@@ -853,6 +866,172 @@ export interface ProposalListError {
 export interface ProposalListResponse {
   proposals: ProposalItem[];
   errors:    ProposalListError[];
+}
+
+// ── tool / MCP connections (v0: read-only readiness inventory) ─────────────────
+
+export type ToolConnectionCategory = 'runtime' | 'mcp' | 'browser' | 'external' | 'developer';
+export type ToolConnectionState    = 'available' | 'unavailable' | 'not_configured' | 'disabled' | 'planned' | 'error';
+export type ToolRiskLevel          = 'low' | 'medium' | 'high';
+
+export interface ToolConnectionStatus {
+  id:            string;
+  name:          string;
+  category:      ToolConnectionCategory | string;
+  status:        ToolConnectionState | string;
+  enabled:       boolean;
+  riskLevel:     ToolRiskLevel | string;
+  capabilities:  string[];
+  allowedNow:    string[];
+  blockedNow:    string[];
+  requires:      string[];
+  lastCheckedAt: string | null;
+  lastError:     string | null;
+  notes:         string | null;
+}
+
+export interface ToolConnectionStatusResponse {
+  items: ToolConnectionStatus[];
+}
+
+// ── permission gateway (v0: deny-by-default classification, no execution) ───────
+
+export type ToolDecision      = 'denied' | 'requires_approval' | 'not_wired' | 'disabled';
+export type PermissionRisk    = 'low' | 'medium' | 'high' | 'disabled';
+export type PermissionStatus  = 'not_wired' | 'available' | 'disabled';
+
+export interface PermissionPolicy {
+  tool:             string;
+  category:         string;
+  riskLevel:        PermissionRisk | string;
+  status:           PermissionStatus | string;
+  requiresApproval: boolean;
+  executionEnabled: boolean;
+  notes:            string | null;
+}
+
+export interface PermissionPolicyResponse {
+  policies: PermissionPolicy[];
+}
+
+export interface ToolRequestEvaluationRequest {
+  tool:         string;
+  args?:        Record<string, unknown> | null;
+  reason?:      string | null;
+  requestedBy?: string | null;
+}
+
+export interface ToolRequestEvaluationResponse {
+  allowed:              boolean;
+  decision:             ToolDecision | string;
+  riskLevel:            PermissionRisk | string;
+  tool:                 string;
+  requiresApproval:     boolean;
+  executionEnabled:     boolean;
+  reason:               string;
+  policyNotes:          string | null;
+  sanitizedArgsSummary: string;
+  wouldLog:             boolean;
+  logId?:               string | null;   // id of the backend-local audit entry
+}
+
+export type ToolLogSource = 'gateway_eval' | 'gateway_execution';
+
+export interface PermissionEvaluationLog {
+  id:                   string;
+  timestamp:            string;
+  source?:              ToolLogSource | string;
+  tool:                 string;
+  requestedBy:          string | null;
+  reason:               string | null;
+  decision:             ToolDecision | string;
+  riskLevel:            PermissionRisk | string;
+  allowed:              boolean;
+  requiresApproval:     boolean;
+  executionEnabled:     boolean;
+  sanitizedArgsSummary: string;
+  policyNotes:          string | null;
+  result:               string;   // evaluated_only | success | failure
+  exitCode?:            number | null;
+  stdoutPreview?:       string | null;
+  stderrPreview?:       string | null;
+  durationMs?:          number | null;
+}
+
+export interface PermissionEvaluationLogsResponse {
+  logs: PermissionEvaluationLog[];
+}
+
+export interface PermissionLogQuery {
+  limit?:    number;
+  tool?:     string;
+  decision?: string;
+}
+
+// ── safe-local tool execution (v0) ──────────────────────────────────────────────
+
+export interface ToolExecutionRequest {
+  tool:         string;
+  args?:        Record<string, unknown> | null;
+  reason?:      string | null;
+  requestedBy?: string | null;
+}
+
+export interface ToolExecutionResponse {
+  tool:             string;
+  allowed:          boolean;
+  decision:         string;   // executed | denied | requires_approval | not_wired | disabled
+  riskLevel:        PermissionRisk | string;
+  requiresApproval: boolean;
+  executionEnabled: boolean;
+  evaluationLogId:  string;
+  executionLogId:   string | null;
+  ok:               boolean;
+  exitCode?:        number | null;
+  stdout?:          string | null;
+  stderr?:          string | null;
+  durationMs?:      number | null;
+  error?:           string | null;
+}
+
+// ── agent tool request (v0: evaluate-only; never executes) ──────────────────────
+
+export interface AgentToolRequestEvaluation {
+  allowed:          boolean;
+  decision:         string;   // allowed | denied | requires_approval | not_wired | disabled
+  riskLevel:        PermissionRisk | string;
+  requiresApproval: boolean;
+  executionEnabled: boolean;
+  reason:           string;
+  policyNotes:      string | null;
+  logId:            string;
+}
+
+export interface AgentToolRequestResponse {
+  id:             string;
+  tool:           string;
+  argsSummary:    string;
+  reason:         string | null;
+  requestedBy:    string;
+  conversationId: string | null;
+  evaluation:     AgentToolRequestEvaluation;
+  createdAt:      string;
+  status:         string;   // evaluated_only in v0
+}
+
+// Alias for the stored/listed record (same shape as the create response).
+export type AgentToolRequest = AgentToolRequestResponse;
+
+export interface CreateAgentToolRequestRequest {
+  tool:            string;
+  args?:           Record<string, unknown> | null;
+  reason?:         string | null;
+  requestedBy?:    string | null;
+  conversationId?: string | null;
+}
+
+export interface AgentToolRequestListResponse {
+  requests: AgentToolRequestResponse[];
 }
 
 // ── chat / AI consolidation (v1: manual paste/import) ──────────────────────────
@@ -982,6 +1161,73 @@ export interface SaveResearchDraftResponse {
   absolutePath: string;
 }
 
+// ── email intake (v1: manual paste/import) ─────────────────────────────────────
+
+export type EmailIntakeDomain = 'course' | 'business' | 'personal' | 'unknown';
+export type EmailIntakeStatus = 'draft' | 'saved';
+export type EmailConfidence   = 'High' | 'Medium' | 'Low';
+
+export interface EmailIntakeDraft {
+  id:                   string;
+  subject:              string;
+  sender:               string | null;
+  receivedAt:           string | null;
+  domain:               EmailIntakeDomain;
+  entity:               string | null;
+  summary:              string;
+  actionRequired:       string | null;
+  dueDate:              string | null;
+  confidence:           EmailConfidence | null;
+  rawEmail:             string;
+  proposedTaskRows:     string[];
+  proposedCalendarRows: string[];
+  status:               EmailIntakeStatus;
+  proposedDestination:  string;
+  savedPath:            string | null;
+  createdAt:            string;
+  updatedAt:            string;
+}
+
+export interface EmailIntakeDraftsResponse {
+  drafts: EmailIntakeDraft[];
+}
+
+export interface CreateEmailIntakeDraftRequest {
+  subject:               string;
+  sender?:               string | null;
+  receivedAt?:           string | null;
+  domain:                EmailIntakeDomain;
+  entity?:               string | null;
+  summary?:              string | null;
+  actionRequired?:       string | null;
+  dueDate?:              string | null;
+  confidence?:           EmailConfidence | null;
+  rawEmail:              string;
+  proposedTaskRows?:     string[];
+  proposedCalendarRows?: string[];
+}
+
+export interface UpdateEmailIntakeDraftRequest {
+  subject?:              string;
+  sender?:               string | null;
+  receivedAt?:           string | null;
+  domain?:               EmailIntakeDomain;
+  entity?:               string | null;
+  summary?:              string;
+  actionRequired?:       string | null;
+  dueDate?:              string | null;
+  confidence?:           EmailConfidence | null;
+  proposedTaskRows?:     string[];
+  proposedCalendarRows?: string[];
+}
+
+export interface SaveEmailIntakeDraftResponse {
+  ok:           boolean;
+  draft:        EmailIntakeDraft;
+  relativePath: string;
+  absolutePath: string;
+}
+
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 async function parseError(res: Response): Promise<string> {
@@ -1029,6 +1275,32 @@ export const api = {
   // proposal queue (read-only aggregation; Raw Inbox + Consolidation drafts)
   getProposals: () => get<ProposalListResponse>('/api/proposals'),
 
+  // tool / MCP connections (read-only readiness inventory; no tool execution)
+  getToolConnectionStatus: () => get<ToolConnectionStatusResponse>('/api/tools/status'),
+
+  // permission gateway (deny-by-default classification; v0 executes nothing)
+  getPermissionPolicies: () => get<PermissionPolicyResponse>('/api/permissions/policies'),
+  evaluateToolRequest: (payload: ToolRequestEvaluationRequest) =>
+    fetchWithBody<ToolRequestEvaluationResponse>('POST', '/api/permissions/evaluate', payload),
+  getPermissionLogs: (params?: PermissionLogQuery) => {
+    const q = new URLSearchParams();
+    if (params?.limit != null)        q.set('limit', String(params.limit));
+    if (params?.tool)                 q.set('tool', params.tool);
+    if (params?.decision)             q.set('decision', params.decision);
+    const qs = q.toString();
+    return get<PermissionEvaluationLogsResponse>(`/api/permissions/logs${qs ? `?${qs}` : ''}`);
+  },
+  executePermissionTool: (payload: ToolExecutionRequest) =>
+    fetchWithBody<ToolExecutionResponse>('POST', '/api/permissions/execute', payload),
+
+  // agent tool requests (evaluate-only via the permission gateway; never executes)
+  createAgentToolRequest: (payload: CreateAgentToolRequestRequest) =>
+    fetchWithBody<AgentToolRequestResponse>('POST', '/api/agent/tool-request', payload),
+  listAgentToolRequests: (params?: { limit?: number }) => {
+    const qs = params?.limit != null ? `?limit=${params.limit}` : '';
+    return get<AgentToolRequestListResponse>(`/api/agent/tool-requests${qs}`);
+  },
+
   // chat / AI consolidation (manual paste/import; vault write only on explicit save)
   createConsolidationDraft: (payload: CreateConsolidationDraftRequest) =>
     fetchWithBody<ConsolidationDraft>('POST', '/api/consolidation/drafts', payload),
@@ -1048,6 +1320,16 @@ export const api = {
     fetchWithBody<ResearchDraft>('PATCH', `/api/research/drafts/${id}`, p),
   saveResearchDraft:   (id: string)      =>
     fetchWithBody<SaveResearchDraftResponse>('POST', `/api/research/drafts/${id}/save`, {}),
+
+  // email intake (manual paste/import; vault write only on explicit save)
+  createEmailIntakeDraft: (payload: CreateEmailIntakeDraftRequest) =>
+    fetchWithBody<EmailIntakeDraft>('POST', '/api/email-intake/drafts', payload),
+  listEmailIntakeDrafts:  ()                => get<EmailIntakeDraftsResponse>('/api/email-intake/drafts'),
+  getEmailIntakeDraft:    (id: string)      => get<EmailIntakeDraft>(`/api/email-intake/drafts/${id}`),
+  updateEmailIntakeDraft: (id: string, p: UpdateEmailIntakeDraftRequest) =>
+    fetchWithBody<EmailIntakeDraft>('PATCH', `/api/email-intake/drafts/${id}`, p),
+  saveEmailIntakeDraft:   (id: string)      =>
+    fetchWithBody<SaveEmailIntakeDraftResponse>('POST', `/api/email-intake/drafts/${id}/save`, {}),
 
   // health / config
   health:       ()                    => get<BackendHealth>('/api/health'),
@@ -1249,6 +1531,7 @@ export async function streamAgentMessage(
           const data = JSON.parse(dataStr);
           if      (eventName === 'meta')  handlers.onMeta(data);
           else if (eventName === 'token') handlers.onToken((data as { text: string }).text ?? '');
+          else if (eventName === 'structured') handlers.onStructured?.(data as AgentStructuredOutput);
           else if (eventName === 'done')  handlers.onDone(data);
           else if (eventName === 'error') handlers.onError(data);
         } catch { /* ignore malformed SSE */ }

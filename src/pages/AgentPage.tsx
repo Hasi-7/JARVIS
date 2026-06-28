@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api, streamAgentMessage } from '@/lib/api';
-import type { ConversationSummary } from '@/lib/api';
+import type { ConversationSummary, AgentToolRequestResponse, AgentStructuredOutput } from '@/lib/api';
 import { AGENT_MODES, AGENT_STATES } from '@/data/mock';
 import { AgentSphere } from '@/components/ui/AgentSphere';
 import { ModeBadge } from '@/components/ui/ModeBadge';
@@ -16,6 +16,7 @@ interface ChatMessage {
   content:     string;
   timestamp:   string;
   durationMs?: number;
+  structured?: AgentStructuredOutput;   // evaluate-only tool requests parsed from this reply
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -41,6 +42,229 @@ function isoToDateLabel(iso: string): string {
     if (diffH < 48) return 'Yesterday';
     return d.toLocaleDateString('en', { month: 'short', day: 'numeric' });
   } catch { return ''; }
+}
+
+// ── agent tool requests (evaluate-only; never executes) ─────────────────────────
+
+const TOOL_OPTIONS = [
+  'brain.status', 'brain.raw_status', 'brain.vault_path',
+  'gmail.search', 'gmail.send', 'obsidian.search', 'browser.search', 'shell.run',
+];
+
+// Only these low-risk read-only brain tools can actually execute (manually, on
+// Tool Connections). A request is "reviewable" only when the gateway said so.
+const SAFE_LOCAL_TOOLS = ['brain.status', 'brain.raw_status', 'brain.vault_path'];
+
+function isReviewable(tool: string, ev: { allowed: boolean; executionEnabled: boolean }): boolean {
+  return ev.executionEnabled === true && ev.allowed === true && SAFE_LOCAL_TOOLS.includes(tool);
+}
+
+function decisionTone(decision: string): 'green' | 'amber' | 'red' | 'grey' {
+  if (decision === 'allowed') return 'green';
+  if (decision === 'requires_approval' || decision === 'not_wired') return 'amber';
+  if (decision === 'disabled' || decision === 'denied') return 'red';
+  return 'grey';
+}
+
+function ChatStructuredPanel({ s }: { s: AgentStructuredOutput }) {
+  const navigate = useAppStore((st) => st.navigate);
+  const setToolReviewTarget = useAppStore((st) => st.setToolReviewTarget);
+  if (s.toolRequests.length === 0 && s.parseErrors.length === 0) return null;
+
+  function review(r: AgentToolRequestResponse) {
+    // Prefill only — never reconstruct raw args from the sanitized summary, never execute.
+    setToolReviewTarget({
+      tool: r.tool, argsSummary: r.argsSummary, reason: r.reason ?? undefined,
+      requestedBy: r.requestedBy, source: 'agent-chat', relatedId: r.id,
+    });
+    navigate('tools');
+  }
+
+  return (
+    <div style={{ marginTop: 6, padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 'var(--r2)', background: 'var(--surface)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <Icon name="shield" size={11} style={{ color: 'var(--amber)' }} />
+        <span style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--txt-1)' }}>Structured tool requests detected</span>
+      </div>
+      {s.toolRequests.map((r) => {
+        const ev = r.evaluation;
+        const reviewable = isReviewable(r.tool, ev);
+        return (
+          <div key={r.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, fontSize: 10.5 }}>
+            <StatusDot tone={decisionTone(ev.decision)} />
+            <span className="mono" style={{ fontWeight: 600, color: 'var(--txt-0)' }}>{r.tool}</span>
+            <span style={{ fontWeight: 600, color: `var(--${decisionTone(ev.decision) === 'green' ? 'green' : decisionTone(ev.decision) === 'red' ? 'red' : decisionTone(ev.decision) === 'amber' ? 'amber' : 'txt-3'})` }}>{ev.decision}</span>
+            <span style={{ color: 'var(--txt-3)' }}>risk {ev.riskLevel}</span>
+            <span style={{ color: 'var(--txt-3)' }}>exec {String(ev.executionEnabled)}</span>
+            <span style={{ color: 'var(--txt-3)' }}>· {r.status}</span>
+            <span className="mono" style={{ color: 'var(--txt-3)' }}>log {ev.logId.slice(0, 8)}…</span>
+            {r.reason && <span style={{ color: 'var(--txt-2)', width: '100%' }}>{r.reason}</span>}
+            <div style={{ width: '100%' }}>
+              {reviewable ? (
+                <button className="btn btn-sm btn-ghost" style={{ fontSize: 10, padding: '2px 7px' }} onClick={() => review(r)}>
+                  <Icon name="arrow-right" size={11} /> Review in Tool Connections
+                </button>
+              ) : (
+                <span style={{ fontSize: 9.5, color: 'var(--txt-3)', fontStyle: 'italic' }}>Evaluation only — not executable in this build</span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      {s.parseErrors.map((e, i) => (
+        <div key={i} style={{ fontSize: 10, color: 'var(--amber)' }}>{e}</div>
+      ))}
+      <div style={{ fontSize: 9.5, color: 'var(--txt-3)', lineHeight: 1.4 }}>
+        Structured tool requests are evaluated only. They are not executed from chat. Safe-local execution remains manual in Tool Connections.
+      </div>
+    </div>
+  );
+}
+
+function AgentToolRequestsPanel({ convId, refreshSignal }: { convId: string | null; refreshSignal?: number }) {
+  const navigate = useAppStore((st) => st.navigate);
+  const setToolReviewTarget = useAppStore((st) => st.setToolReviewTarget);
+  const [tool, setTool]       = useState('brain.status');
+  const [reason, setReason]   = useState('');
+  const [argsText, setArgsText] = useState('');
+  const [busy, setBusy]       = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [requests, setRequests] = useState<AgentToolRequestResponse[] | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api.listAgentToolRequests({ limit: 20 });
+      setRequests(res.requests);
+    } catch {
+      // non-fatal — leave list as-is
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+  // Reload when chat produces new evaluated tool requests.
+  useEffect(() => { if (refreshSignal) load(); }, [refreshSignal, load]);
+
+  async function submit() {
+    setFormError(null);
+    if (!tool.trim()) { setFormError('Tool is required.'); return; }
+    let args: Record<string, unknown> | null = null;
+    const raw = argsText.trim();
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          setFormError('Args must be a JSON object, e.g. { "query": "…" }.');
+          return;
+        }
+        args = parsed as Record<string, unknown>;
+      } catch {
+        setFormError('Invalid JSON in args. Fix the syntax or leave it empty.');
+        return;
+      }
+    }
+    setBusy(true);
+    try {
+      await api.createAgentToolRequest({
+        tool: tool.trim(), args, reason: reason.trim() || null,
+        requestedBy: 'local-agent', conversationId: convId,
+      });
+      setReason(''); setArgsText('');
+      await load();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Failed to create request.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', background: 'var(--surface-3)', color: 'var(--txt-0)',
+    border: '1px solid var(--line)', borderRadius: 'var(--r2)',
+    fontSize: 11, padding: '5px 7px', boxSizing: 'border-box', fontFamily: 'var(--font-ui)',
+  };
+
+  return (
+    <div className="panel panel-pad">
+      <div className="eyebrow" style={{ marginBottom: 'var(--s3)' }}>Agent Tool Requests</div>
+      <div style={{ fontSize: 10.5, color: 'var(--txt-2)', lineHeight: 1.45, marginBottom: 'var(--s3)' }}>
+        Agent Tool Request v0 evaluates requests only. It does not execute tools. The Local Agent is
+        still tool-less — requests are classified by the backend permission gateway and logged for review.
+      </div>
+
+      {/* manual / simulated request form */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <select value={tool} onChange={(e) => setTool(e.target.value)} style={inputStyle} disabled={busy}>
+          {TOOL_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="reason (optional)" style={inputStyle} disabled={busy} />
+        <textarea
+          value={argsText} onChange={(e) => setArgsText(e.target.value)} rows={2} spellCheck={false}
+          placeholder='args JSON (optional), e.g. { "query": "x" }'
+          style={{ ...inputStyle, resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 10.5 }}
+        />
+        {formError && (
+          <div style={{ fontSize: 10.5, color: 'var(--red)', padding: '4px 6px', background: 'var(--red-bg)', borderRadius: 'var(--r1)', border: '1px solid var(--red-line)' }}>
+            {formError}
+          </div>
+        )}
+        <button className="btn btn-sm btn-primary" onClick={submit} disabled={busy} style={{ justifyContent: 'center' }}>
+          <Icon name="shield" size={12} /> {busy ? 'Evaluating…' : 'Create tool request'}
+        </button>
+      </div>
+
+      {/* recent requests */}
+      <div style={{ marginTop: 'var(--s3)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {requests === null ? (
+          <div style={{ fontSize: 10.5, color: 'var(--txt-3)' }}>Loading…</div>
+        ) : requests.length === 0 ? (
+          <div style={{ fontSize: 10.5, color: 'var(--txt-3)', fontStyle: 'italic' }}>No tool requests yet.</div>
+        ) : requests.map((r) => {
+          const ev = r.evaluation;
+          return (
+            <div key={r.id} style={{ padding: '6px 7px', border: '1px solid var(--line-soft)', borderRadius: 'var(--r2)', background: 'var(--surface-2)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <StatusDot tone={decisionTone(ev.decision)} />
+                <span className="mono" style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--txt-0)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.tool}</span>
+                <span style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em', color: `var(--${decisionTone(ev.decision) === 'green' ? 'green' : decisionTone(ev.decision) === 'red' ? 'red' : decisionTone(ev.decision) === 'amber' ? 'amber' : 'txt-3'})` }}>
+                  {ev.decision}
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: 9.5, color: 'var(--txt-3)' }}>
+                <span>risk {ev.riskLevel}</span>
+                <span>exec {String(ev.executionEnabled)}</span>
+                <span>approval {ev.requiresApproval ? 'yes' : 'no'}</span>
+                <span>status {r.status}</span>
+              </div>
+              {r.argsSummary && r.argsSummary !== '(no args)' && (
+                <div className="mono" style={{ fontSize: 9.5, color: 'var(--txt-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.argsSummary}</div>
+              )}
+              <div className="mono" style={{ fontSize: 9, color: 'var(--txt-3)' }}>log {ev.logId.slice(0, 8)}…</div>
+              {isReviewable(r.tool, ev) && (
+                <button
+                  className="btn btn-sm btn-ghost"
+                  style={{ fontSize: 9.5, padding: '2px 6px', alignSelf: 'flex-start' }}
+                  onClick={() => {
+                    setToolReviewTarget({
+                      tool: r.tool, argsSummary: r.argsSummary, reason: r.reason ?? undefined,
+                      requestedBy: r.requestedBy, source: 'agent-tool-request', relatedId: r.id,
+                    });
+                    navigate('tools');
+                  }}
+                >
+                  <Icon name="arrow-right" size={10} /> Review in Tool Connections
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 'var(--s3)', display: 'flex', gap: 6, padding: 'var(--s2) var(--s3)', borderRadius: 'var(--r2)', background: 'var(--surface-2)', fontSize: 10, color: 'var(--txt-3)', lineHeight: 1.4 }}>
+        <Icon name="shield" size={11} style={{ color: 'var(--amber)', flexShrink: 0, marginTop: 1 }} />
+        Evaluated only — no run / approve-and-execute here. Safe-local execution lives on Tool Connections.
+      </div>
+    </div>
+  );
 }
 
 // ── main component ────────────────────────────────────────────────────────────
@@ -84,6 +308,10 @@ export function AgentPage() {
   const firstTokenRef     = useRef(true);
   // Resolved conversation id from meta event (may differ from convId if newly created)
   const resolvedConvIdRef = useRef<string | null>(null);
+  // Structured tool requests from the `structured` SSE event (arrives before `done`)
+  const pendingStructuredRef = useRef<AgentStructuredOutput | null>(null);
+  // Bumped when chat produces tool requests, so the Tool Requests panel reloads
+  const [toolReqRefresh, setToolReqRefresh] = useState(0);
 
   const bottomRef   = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -175,6 +403,7 @@ export function AgentPage() {
     streamContentRef.current  = '';
     firstTokenRef.current     = true;
     resolvedConvIdRef.current = convId;
+    pendingStructuredRef.current = null;
 
     // Optimistically append user message
     setMessages((prev) => [
@@ -217,15 +446,24 @@ export function AgentPage() {
           setStreamingMsg(streamContentRef.current);
         },
 
+        onStructured: (s) => {
+          // Evaluate-only tool requests parsed from the reply. Stored here, attached
+          // to the assistant message in onDone; also refresh the Tool Requests panel.
+          pendingStructuredRef.current = s;
+          setToolReqRefresh((n) => n + 1);
+        },
+
         onDone: async (done) => {
           const full   = streamContentRef.current;
           const ts     = nowHHMM();
           const cid    = resolvedConvIdRef.current;
+          const structured = pendingStructuredRef.current ?? undefined;
+          pendingStructuredRef.current = null;
 
           // Commit streaming content to messages
           setMessages((prev) => [
             ...prev,
-            { role: 'assistant', content: full, timestamp: ts, durationMs: done.durationMs },
+            { role: 'assistant', content: full, timestamp: ts, durationMs: done.durationMs, structured },
           ]);
           setStreamingMsg(null);
           setAgentState('speaking');
@@ -572,6 +810,7 @@ export function AgentPage() {
                       <span className="mono">{msg.durationMs.toFixed(0)}ms</span>
                     )}
                   </div>
+                  {msg.role === 'assistant' && msg.structured && <ChatStructuredPanel s={msg.structured} />}
                 </div>
               </div>
             ))}
@@ -716,21 +955,8 @@ export function AgentPage() {
           </div>
         </div>
 
-        {/* tool requests — stub */}
-        <div className="panel panel-pad">
-          <div className="eyebrow" style={{ marginBottom: 'var(--s3)' }}>Tool requests</div>
-          <div style={{ fontSize: 11.5, color: 'var(--txt-3)', fontStyle: 'italic' }}>
-            No pending tool requests
-          </div>
-          <div style={{
-            marginTop: 'var(--s3)', display: 'flex', gap: 6, padding: 'var(--s3)',
-            borderRadius: 'var(--r2)', background: 'var(--surface-2)',
-            fontSize: 10.5, color: 'var(--txt-3)',
-          }}>
-            <Icon name="shield" size={11} style={{ color: 'var(--amber)', flexShrink: 0, marginTop: 1 }} />
-            Tools disabled. Requires NemoClaw/OpenShell.
-          </div>
-        </div>
+        {/* agent tool requests — evaluate-only via permission gateway */}
+        <AgentToolRequestsPanel convId={convId} refreshSignal={toolReqRefresh} />
 
         {/* research run — stub */}
         <div className="panel panel-pad">

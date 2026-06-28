@@ -24,9 +24,9 @@ export interface AgentStateInfo {
 
 export type RouteId =
   | 'dashboard' | 'agent' | 'research'
-  | 'inbox' | 'consolidate' | 'calendar' | 'tasks' | 'proposals'
+  | 'inbox' | 'consolidate' | 'email' | 'calendar' | 'tasks' | 'proposals'
   | 'projects' | 'hackathons' | 'courses' | 'business' | 'resume' | 'backfill'
-  | 'escalation' | 'safety' | 'settings';
+  | 'escalation' | 'tools' | 'safety' | 'settings';
 
 export interface NavItem {
   id: RouteId;

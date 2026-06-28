@@ -2,10 +2,21 @@ import { create } from 'zustand';
 import type { AgentStateKey, AgentMode, RouteId, CmdLogEntry } from '@/types';
 
 // Deep-link handoff from the Proposal Queue to a source page (selection/highlight only).
-export type ProposalTargetSource = 'raw-inbox' | 'chat-consolidation' | 'research';
+export type ProposalTargetSource = 'raw-inbox' | 'chat-consolidation' | 'research' | 'email-intake';
 export interface ProposalTarget {
   source: ProposalTargetSource;
   relatedId: string;
+}
+
+// Deep-link handoff from an evaluated Local Agent tool request to the Tool
+// Connections evaluator/executor (prefill only — never executes during handoff).
+export interface ToolReviewTarget {
+  tool: string;
+  argsSummary?: string;
+  reason?: string;
+  requestedBy?: string;
+  source?: 'agent-chat' | 'agent-tool-request' | 'manual';
+  relatedId?: string;
 }
 import { AGENT_MODES } from '@/data/mock';
 import type { AppSettings } from '@/lib/config';
@@ -39,6 +50,10 @@ interface AppState {
   // Consumed and cleared by the matching source page (Inbox/Consolidate/Research).
   proposalTarget: ProposalTarget | null;
 
+  // Deep-link target from a Local Agent tool request → Tool Connections evaluator.
+  // Consumed and cleared by ToolConnectionsPage on mount (prefill only, no execution).
+  toolReviewTarget: ToolReviewTarget | null;
+
   // Live command log (real output from backend)
   cmdLog: CmdLogEntry[];
 
@@ -61,6 +76,7 @@ interface AppState {
   setAgentPrefill: (msg: string) => void;
   setAgentConvTarget: (id: string | null) => void;
   setProposalTarget: (t: ProposalTarget | null) => void;
+  setToolReviewTarget: (t: ToolReviewTarget | null) => void;
   runBrainCommand: (cmd: string) => Promise<void>;
 
   setStagedCount: (n: number) => void;
@@ -89,6 +105,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   agentPrefill: '',
   agentConvTarget: null,
   proposalTarget: null,
+  toolReviewTarget: null,
   cmdLog: [],
   stagedCount: 0,
   pendingProposalCount: 0,
@@ -179,6 +196,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAgentConvTarget: (agentConvTarget) => set({ agentConvTarget }),
 
   setProposalTarget: (proposalTarget) => set({ proposalTarget }),
+
+  setToolReviewTarget: (toolReviewTarget) => set({ toolReviewTarget }),
 
   runBrainCommand: async (cmd: string) => {
     const at = nowHHMM();
