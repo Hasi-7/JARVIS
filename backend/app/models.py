@@ -852,6 +852,33 @@ class ProposalListResponse(BaseModel):
     errors:    List[ProposalListError] = []
 
 
+# ── proposal apply / reject (A1) ───────────────────────────────────────────────
+
+class ApplyProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+
+
+class ApplyBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ids: List[str]
+
+
+class ApplyProposalResult(BaseModel):
+    id:             str
+    ok:             bool
+    status:         str                    # applied | skipped | error
+    message:        str
+    targetPath:     Optional[str] = None
+    alreadyApplied: bool = False
+
+
+class ApplyBatchResponse(BaseModel):
+    results:      List[ApplyProposalResult] = []
+    appliedCount: int = 0
+    failedCount:  int = 0
+
+
 # ── tool / MCP connections (v0: read-only readiness inventory) ─────────────────
 
 class ToolConnectionStatus(BaseModel):

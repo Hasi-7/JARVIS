@@ -56,7 +56,12 @@ from app.agent_modes import (
     blocked_message as mode_blocked_message,
 )
 from app.dashboard import get_dashboard_summary
-from app.proposals import list_normalized_proposals
+from app.proposals import (
+    apply_batch,
+    apply_proposal,
+    list_normalized_proposals,
+    reject_proposal,
+)
 from app.tools import list_tool_connections
 from app.runtime_status import list_runtime_status
 from app.runtime_probe import probe_nemoclaw, read_last_probe
@@ -192,6 +197,10 @@ from app.models import (
     EntityPaths,
     CreateEscalationItemRequest,
     DashboardSummaryResponse,
+    ApplyBatchRequest,
+    ApplyBatchResponse,
+    ApplyProposalRequest,
+    ApplyProposalResult,
     ProposalItem,
     ProposalListError,
     ProposalListResponse,
@@ -376,6 +385,48 @@ def proposals_list() -> ProposalListResponse:
         proposals=[ProposalItem(**it) for it in items],
         errors=[ProposalListError(**e) for e in errors],
     )
+
+
+@app.post("/api/proposals/apply", response_model=ApplyProposalResult)
+def proposals_apply(req: ApplyProposalRequest) -> ApplyProposalResult:
+    """
+    Apply ONE proposal by dispatching to its source save/route path. Adds no new
+    write primitive — inherits every safety guarantee of the source workflow
+    (never overwrite, stay in vault, no brain/AI side effects).
+    """
+    cfg = get_config()
+    try:
+        result = apply_proposal(req.id, cfg.vault_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return ApplyProposalResult(**result)
+
+
+@app.post("/api/proposals/apply-batch", response_model=ApplyBatchResponse)
+def proposals_apply_batch(req: ApplyBatchRequest) -> ApplyBatchResponse:
+    """
+    Apply many proposals. Never fails the whole batch for one item — each item
+    gets its own success/error result.
+    """
+    cfg = get_config()
+    results = apply_batch(req.ids, cfg.vault_path)
+    applied = sum(1 for r in results if r.get("ok"))
+    failed = len(results) - applied
+    return ApplyBatchResponse(
+        results=[ApplyProposalResult(**r) for r in results],
+        appliedCount=applied,
+        failedCount=failed,
+    )
+
+
+@app.post("/api/proposals/reject", response_model=ApplyProposalResult)
+def proposals_reject(req: ApplyProposalRequest) -> ApplyProposalResult:
+    """Reject a proposal (Raw Inbox → skipped). Draft sources are not rejectable in v1."""
+    try:
+        result = reject_proposal(req.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return ApplyProposalResult(**result)
 
 
 # ── tool / MCP connections (read-only readiness inventory; v0) ─────────────────

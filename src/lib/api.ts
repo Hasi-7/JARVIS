@@ -896,6 +896,23 @@ export interface ProposalListResponse {
   errors:    ProposalListError[];
 }
 
+// ── proposal apply / reject (A1) ────────────────────────────────────────────────
+
+export interface ApplyProposalResult {
+  id:             string;
+  ok:             boolean;
+  status:         string;            // applied | skipped | error
+  message:        string;
+  targetPath:     string | null;
+  alreadyApplied: boolean;
+}
+
+export interface ApplyBatchResponse {
+  results:      ApplyProposalResult[];
+  appliedCount: number;
+  failedCount:  number;
+}
+
 // ── tool / MCP connections (v0: read-only readiness inventory) ─────────────────
 
 export type ToolConnectionCategory = 'runtime' | 'mcp' | 'browser' | 'external' | 'developer';
@@ -1485,6 +1502,15 @@ export const api = {
 
   // proposal queue (read-only aggregation; Raw Inbox + Consolidation drafts)
   getProposals: () => get<ProposalListResponse>('/api/proposals'),
+
+  // proposal apply / reject — dispatches to the source save/route path (A1).
+  // Adds no new write primitive; inherits every source-workflow safety guarantee.
+  applyProposal: (id: string) =>
+    fetchWithBody<ApplyProposalResult>('POST', '/api/proposals/apply', { id }),
+  applyProposalBatch: (ids: string[]) =>
+    fetchWithBody<ApplyBatchResponse>('POST', '/api/proposals/apply-batch', { ids }),
+  rejectProposal: (id: string) =>
+    fetchWithBody<ApplyProposalResult>('POST', '/api/proposals/reject', { id }),
 
   // tool / MCP connections (read-only readiness inventory; no tool execution)
   getToolConnectionStatus: () => get<ToolConnectionStatusResponse>('/api/tools/status'),

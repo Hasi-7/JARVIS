@@ -95,6 +95,115 @@ def _raw_inbox_proposals() -> List[dict]:
     return items
 
 
+# ── apply / reject dispatch (A1) ──────────────────────────────────────────────
+#
+# The apply spine does NOT introduce a new write primitive. It dispatches a
+# normalized proposal id to the SAME save/route function the source page already
+# uses manually, so every safety guarantee (never-overwrite, stay-in-vault,
+# path-traversal rejection, no brain/AI side effects) is inherited unchanged.
+#
+# Generalized statuses that are eligible to be applied.
+_APPLYABLE_STATUSES = {"pending", "approved"}
+
+# Normalized-id prefixes → source label, for messages.
+_KNOWN_PREFIXES = {"raw-inbox", "consolidation", "research", "email-intake"}
+
+
+def _split_proposal_id(proposal_id: str) -> Tuple[str, str]:
+    """Split "<prefix>:<relatedId>" — relatedId is a UUID/file_id (no colon)."""
+    prefix, sep, related = (proposal_id or "").partition(":")
+    if not sep or not prefix or not related:
+        raise ValueError(f"Malformed proposal id: {proposal_id!r}")
+    if prefix not in _KNOWN_PREFIXES:
+        raise ValueError(f"Unknown proposal source '{prefix}'.")
+    return prefix, related
+
+
+def _apply_raw_inbox(file_id: str, vault_path: str) -> dict:
+    from app.intake import approve_proposal, list_proposals, route_proposal
+
+    proposal = next((p for p in list_proposals() if p.file_id == file_id), None)
+    if proposal is None:
+        raise ValueError(f"Raw Inbox proposal '{file_id}' not found.")
+    if proposal.status in ("routed", "archived"):
+        return {"ok": True, "status": "applied", "alreadyApplied": True,
+                "message": "Already routed into the vault.",
+                "targetPath": proposal.routed_path}
+    if proposal.status == "skipped":
+        raise ValueError("Skipped proposal cannot be applied. Re-open it in Raw Inbox.")
+    approve_proposal(file_id)
+    routed, info = route_proposal(file_id, vault_path)
+    return {"ok": True, "status": "applied", "alreadyApplied": False,
+            "message": f"Routed into {info['relativePath']}",
+            "targetPath": info["relativePath"]}
+
+
+def _apply_draft(prefix: str, related: str, vault_path: str) -> dict:
+    if prefix == "consolidation":
+        from app.consolidation import save_draft as _save
+    elif prefix == "research":
+        from app.research import save_draft as _save
+    else:  # email-intake
+        from app.email_intake import save_draft as _save
+    draft, info = _save(related, vault_path)
+    return {"ok": True, "status": "applied", "alreadyApplied": False,
+            "message": f"Saved to {info['relativePath']}",
+            "targetPath": info["relativePath"]}
+
+
+def apply_proposal(proposal_id: str, vault_path: str) -> dict:
+    """
+    Apply one normalized proposal by dispatching to its source save/route path.
+    Returns a result dict; raises ValueError (user-facing) on failure.
+    """
+    prefix, related = _split_proposal_id(proposal_id)
+    if prefix == "raw-inbox":
+        result = _apply_raw_inbox(related, vault_path)
+    else:
+        result = _apply_draft(prefix, related, vault_path)
+    result["id"] = proposal_id
+    return result
+
+
+def apply_batch(ids: List[str], vault_path: str) -> List[dict]:
+    """Apply many; never raise for one failure — collect per-item results."""
+    results: List[dict] = []
+    for pid in ids:
+        try:
+            results.append(apply_proposal(pid, vault_path))
+        except ValueError as exc:
+            results.append({"id": pid, "ok": False, "status": "error",
+                            "alreadyApplied": False, "message": str(exc),
+                            "targetPath": None})
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("apply_batch failed for %s: %s", pid, exc)
+            results.append({"id": pid, "ok": False, "status": "error",
+                            "alreadyApplied": False,
+                            "message": "Unexpected error while applying.",
+                            "targetPath": None})
+    return results
+
+
+def reject_proposal(proposal_id: str) -> dict:
+    """
+    Reject a proposal. Supported for Raw Inbox (marks it skipped). Draft sources
+    have no reject state in v1 — edit or leave the draft unsaved instead.
+    """
+    prefix, related = _split_proposal_id(proposal_id)
+    if prefix == "raw-inbox":
+        from app.intake import skip_proposal
+        updated = skip_proposal(related)
+        if updated is None:
+            raise ValueError(f"Raw Inbox proposal '{related}' not found.")
+        return {"id": proposal_id, "ok": True, "status": "skipped",
+                "alreadyApplied": False, "message": "Marked skipped.",
+                "targetPath": None}
+    raise ValueError(
+        "Rejecting is not supported for this source yet. "
+        "Edit or leave the draft unsaved in its source page."
+    )
+
+
 def list_normalized_proposals() -> Tuple[List[dict], List[dict]]:
     """
     Return (items, errors). Read-only. Never raises for a single failing source —

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
-import type { ProposalItem, ProposalListError } from '@/lib/api';
+import type { ApplyProposalResult, ProposalItem, ProposalListError } from '@/lib/api';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -45,13 +45,31 @@ function uniq(arr: (string | null | undefined)[]): string[] {
   return [...new Set(arr.filter(Boolean) as string[])].sort();
 }
 
+// An item is applyable when it is awaiting action (pending) or approved-not-yet-routed.
+function isApplyable(p: ProposalItem): boolean {
+  return p.status === 'pending' || p.status === 'approved';
+}
+// "Safe" for batch apply: applyable and not high-risk (high-risk needs per-item confirm).
+function isSafeForBatch(p: ProposalItem): boolean {
+  return isApplyable(p) && p.riskLevel !== 'high';
+}
+
 // ── proposal card ──────────────────────────────────────────────────────────────
 
-function ProposalCard({ p, onOpen }: { p: ProposalItem; onOpen: (p: ProposalItem) => void }) {
+function ProposalCard({ p, onOpen, onApply, onReject, busy, result }: {
+  p: ProposalItem;
+  onOpen: (p: ProposalItem) => void;
+  onApply: (p: ProposalItem) => void;
+  onReject: (p: ProposalItem) => void;
+  busy: boolean;
+  result?: ApplyProposalResult;
+}) {
   const canOpenRawInbox     = p.actions.includes('open_raw_inbox');
   const canOpenConsolidation = p.actions.includes('open_consolidation');
   const canOpenResearch      = p.actions.includes('open_research');
   const canOpenEmailIntake   = p.actions.includes('open_email_intake');
+  const applyable   = isApplyable(p);
+  const canReject   = p.source === 'raw-inbox' && applyable;
   return (
     <div className="panel" style={{ padding: 'var(--s4)', display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--s3)' }}>
@@ -89,25 +107,50 @@ function ProposalCard({ p, onOpen }: { p: ProposalItem; onOpen: (p: ProposalItem
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      {result && (
+        <div style={{
+          fontSize: 11, padding: '6px 10px', borderRadius: 'var(--r2)',
+          display: 'flex', alignItems: 'center', gap: 6,
+          color: result.ok ? 'var(--green)' : 'var(--red)',
+          background: result.ok ? 'var(--green-bg)' : 'var(--red-bg)',
+          border: `1px solid ${result.ok ? 'var(--green-line)' : 'var(--red-line)'}`,
+        }}>
+          <Icon name={result.ok ? 'check' : 'x'} size={12} />
+          <span>{result.message}</span>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)', alignItems: 'center' }}>
+        {canReject && (
+          <button className="btn btn-sm btn-ghost" onClick={() => onReject(p)} disabled={busy}
+            title="Mark this proposal skipped">
+            Reject
+          </button>
+        )}
         {canOpenRawInbox && (
-          <button className="btn btn-sm" onClick={() => onOpen(p)} title="Open the source workflow to review / approve / route">
+          <button className="btn btn-sm btn-ghost" onClick={() => onOpen(p)} title="Open the source workflow to review before applying">
             Open in Raw Inbox <Icon name="chevron" size={12} />
           </button>
         )}
         {canOpenConsolidation && (
-          <button className="btn btn-sm" onClick={() => onOpen(p)} title="Open the Chat/AI Consolidation page to review / edit / save">
+          <button className="btn btn-sm btn-ghost" onClick={() => onOpen(p)} title="Open the Chat/AI Consolidation page to review / edit">
             Open in Consolidation <Icon name="chevron" size={12} />
           </button>
         )}
         {canOpenResearch && (
-          <button className="btn btn-sm" onClick={() => onOpen(p)} title="Open the Research page to review / edit / save">
+          <button className="btn btn-sm btn-ghost" onClick={() => onOpen(p)} title="Open the Research page to review / edit">
             Open in Research <Icon name="chevron" size={12} />
           </button>
         )}
         {canOpenEmailIntake && (
-          <button className="btn btn-sm" onClick={() => onOpen(p)} title="Open the Email Intake page to review / edit / save">
+          <button className="btn btn-sm btn-ghost" onClick={() => onOpen(p)} title="Open the Email Intake page to review / edit">
             Open in Email Intake <Icon name="chevron" size={12} />
+          </button>
+        )}
+        {applyable && (
+          <button className="btn btn-sm btn-primary" onClick={() => onApply(p)} disabled={busy}
+            title={p.riskLevel === 'high' ? 'High-risk — applies the source save/route now' : 'Apply now — runs the source save/route'}>
+            {busy ? 'Applying…' : 'Apply'}
           </button>
         )}
       </div>
@@ -131,6 +174,13 @@ export function ProposalsPage() {
   const [fSource, setFSource] = useState<string>(ALL);
   const [fConf,   setFConf]   = useState<string>(ALL);
   const [fSearch, setFSearch] = useState('');
+
+  // apply/reject state
+  const [busyIds,   setBusyIds]   = useState<Set<string>>(new Set());
+  const [results,   setResults]   = useState<Record<string, ApplyProposalResult>>({});
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -174,6 +224,76 @@ export function ProposalsPage() {
     }
     return true;
   });
+
+  function markBusy(id: string, on: boolean) {
+    setBusyIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id); else next.delete(id);
+      return next;
+    });
+  }
+
+  async function handleApply(p: ProposalItem) {
+    setActionError(null);
+    markBusy(p.id, true);
+    try {
+      const res = await api.applyProposal(p.id);
+      setResults((r) => ({ ...r, [p.id]: res }));
+      await load(); // reflect new backend status
+    } catch (err) {
+      setResults((r) => ({
+        ...r,
+        [p.id]: { id: p.id, ok: false, status: 'error', targetPath: null, alreadyApplied: false,
+          message: err instanceof Error ? err.message : 'Apply failed.' },
+      }));
+    } finally {
+      markBusy(p.id, false);
+    }
+  }
+
+  async function handleReject(p: ProposalItem) {
+    setActionError(null);
+    markBusy(p.id, true);
+    try {
+      const res = await api.rejectProposal(p.id);
+      setResults((r) => ({ ...r, [p.id]: res }));
+      await load();
+    } catch (err) {
+      setResults((r) => ({
+        ...r,
+        [p.id]: { id: p.id, ok: false, status: 'error', targetPath: null, alreadyApplied: false,
+          message: err instanceof Error ? err.message : 'Reject failed.' },
+      }));
+    } finally {
+      markBusy(p.id, false);
+    }
+  }
+
+  // Items eligible for "Apply all safe" within the current filtered view.
+  const safeBatch = filtered.filter(isSafeForBatch);
+
+  async function handleApplyAllSafe() {
+    setActionError(null);
+    setBatchBusy(true);
+    const ids = safeBatch.map((p) => p.id);
+    ids.forEach((id) => markBusy(id, true));
+    try {
+      const res = await api.applyProposalBatch(ids);
+      const byId: Record<string, ApplyProposalResult> = {};
+      res.results.forEach((r) => { byId[r.id] = r; });
+      setResults((r) => ({ ...r, ...byId }));
+      if (res.failedCount > 0) {
+        setActionError(`Applied ${res.appliedCount}, ${res.failedCount} failed. See per-item messages.`);
+      }
+      await load();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Batch apply failed.');
+    } finally {
+      ids.forEach((id) => markBusy(id, false));
+      setBatchBusy(false);
+      setBatchOpen(false);
+    }
+  }
 
   function handleOpen(p: ProposalItem) {
     // Set a deep-link target (highlight only) before navigating; the source page
@@ -219,10 +339,17 @@ export function ProposalsPage() {
             One place to review proposed changes before they are applied.
           </div>
         </div>
-        <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
-          <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
-          Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 'var(--s2)' }}>
+          <button className="btn btn-sm btn-primary" onClick={() => setBatchOpen(true)}
+            disabled={loading || batchBusy || safeBatch.length === 0}
+            title="Apply all pending low/medium-risk proposals in the current view">
+            Apply all safe{safeBatch.length > 0 ? ` (${safeBatch.length})` : ''}
+          </button>
+          <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
+            <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* v1 banner */}
@@ -233,9 +360,10 @@ export function ProposalsPage() {
       }}>
         <Icon name="shield" size={14} style={{ color: 'var(--amber)', marginTop: 1, flexShrink: 0 }} />
         <span>
-          <strong>Proposal Queue v1</strong> aggregates existing Raw Inbox proposals. Apply actions still
-          happen in the source workflow — this queue is read-only. Future Research, Chat Consolidation,
-          Email Intake, and Agent proposals will use this same queue.
+          Review each proposal, then <strong>Apply</strong> it here (runs the same save/route the source
+          page uses — never overwrites, stays in the vault) or <strong>Open</strong> the source page to
+          edit first. <strong>Apply all safe</strong> applies pending low/medium-risk items in the current
+          view; high-risk items must be applied one at a time.
         </span>
       </div>
 
@@ -245,6 +373,15 @@ export function ProposalsPage() {
           <StatusDot tone="red" />
           <span style={{ flex: 1 }}>{error}</span>
           <button className="btn btn-sm btn-ghost" onClick={load}>Retry</button>
+        </div>
+      )}
+
+      {/* action error (apply/reject/batch) */}
+      {actionError && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 'var(--s3) var(--s4)', borderRadius: 'var(--r2)', background: 'var(--amber-bg)', border: '1px solid var(--amber-line)', fontSize: 12 }}>
+          <StatusDot tone="amber" />
+          <span style={{ flex: 1 }}>{actionError}</span>
+          <button className="btn btn-sm btn-ghost" onClick={() => setActionError(null)}>Dismiss</button>
         </div>
       )}
 
@@ -314,7 +451,9 @@ export function ProposalsPage() {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
           {filtered.map((p) => (
-            <ProposalCard key={p.id} p={p} onOpen={handleOpen} />
+            <ProposalCard key={p.id} p={p} onOpen={handleOpen}
+              onApply={handleApply} onReject={handleReject}
+              busy={busyIds.has(p.id)} result={results[p.id]} />
           ))}
         </div>
       )}
@@ -322,8 +461,39 @@ export function ProposalsPage() {
       {/* footer note */}
       <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
         <Icon name="shield" size={12} />
-        Read-only. No proposal is approved, applied, or routed from this page — use the source workflow.
+        Applying runs the source page's own save/route: files are never overwritten and never leave the vault. No brain/AI side effects.
       </div>
+
+      {/* batch confirm modal */}
+      {batchOpen && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 50,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'var(--s4)',
+        }} onClick={() => !batchBusy && setBatchOpen(false)}>
+          <div className="panel" style={{ maxWidth: 440, width: '100%', padding: 'var(--s5)', display: 'flex', flexDirection: 'column', gap: 'var(--s4)' }}
+            onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>Apply {safeBatch.length} safe proposal{safeBatch.length === 1 ? '' : 's'}?</div>
+            <div style={{ fontSize: 12, color: 'var(--txt-2)', lineHeight: 1.5 }}>
+              This runs each item's source save/route now. Files are never overwritten and stay in the vault.
+              High-risk items are excluded and must be applied individually.
+            </div>
+            <div style={{ maxHeight: 220, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11.5 }}>
+              {safeBatch.map((p) => (
+                <div key={p.id} style={{ display: 'flex', gap: 8, alignItems: 'baseline', padding: '4px 0', borderBottom: '1px solid var(--line-soft)' }}>
+                  <span style={{ color: 'var(--txt-1)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</span>
+                  <span className="mono" style={{ color: 'var(--txt-3)', fontSize: 10 }}>{p.riskLevel}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)' }}>
+              <button className="btn btn-sm btn-ghost" onClick={() => setBatchOpen(false)} disabled={batchBusy}>Cancel</button>
+              <button className="btn btn-sm btn-primary" onClick={handleApplyAllSafe} disabled={batchBusy}>
+                {batchBusy ? 'Applying…' : `Apply ${safeBatch.length}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
