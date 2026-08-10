@@ -974,6 +974,126 @@ export interface NemoclawLastProbeResponse {
   lastProbe: NemoclawProbeResponse | null;
 }
 
+// ── NemoClaw/OpenShell policy inspection (v0: read-only, no enforcement) ─────────
+
+export type NemoclawPolicyStatus =
+  | 'not_configured' | 'missing' | 'unreadable' | 'invalid' | 'loaded' | 'error';
+
+export interface NemoclawPolicySummary {
+  declaredModes:      string[];
+  networkPolicy:      string | null;
+  filesystemScopes:   string[];
+  browserAllowed:     boolean | null;   // null = unknown (never implied allowed)
+  computerUseAllowed: boolean | null;
+  mcpAllowed:         boolean | null;
+  credentialAccess:   string;
+  unknownKeys:        string[];
+}
+
+export interface NemoclawPolicyResponse {
+  id:                string;
+  configured:        boolean;
+  pathConfigured:    boolean;
+  pathExists:        boolean;
+  readable:          boolean;
+  valid:             boolean;
+  status:            NemoclawPolicyStatus | string;
+  message:           string;
+  policyPathDisplay: string | null;
+  format:            string | null;   // json | yaml | unknown
+  summary:           NemoclawPolicySummary | null;
+  warnings:          string[];
+  errors:            string[];
+}
+
+// ── guardrail readiness (v0: read-only correlation, no enforcement/execution) ───
+
+export type GuardrailReadinessStatus =
+  | 'not_ready' | 'partially_ready' | 'ready_for_bridge_design' | 'error';
+
+export interface GuardrailReadinessComponents {
+  runtimeStatus: string;   // nemoclaw runtime item status
+  lastProbe:     string;   // cached probe status or 'not_run'
+  policy:        string;   // policy inspection status
+  modePolicy:    string;   // available | unavailable
+}
+
+export interface GuardrailCapabilityUnlocks {
+  openclawBridge: boolean;   // all false in every state — readiness enables nothing
+  browserHarness: boolean;
+  computerUse:    boolean;
+  mcpGateway:     boolean;
+  gmail:          boolean;
+}
+
+export interface GuardrailReadinessResponse {
+  id:                string;
+  status:            GuardrailReadinessStatus | string;
+  ready:             boolean;   // true ONLY for ready_for_bridge_design (never execution-ready)
+  checkedAt:         string;
+  summary:           string;
+  components:        GuardrailReadinessComponents;
+  blockers:          string[];
+  warnings:          string[];
+  nextSteps:         string[];
+  capabilityUnlocks: GuardrailCapabilityUnlocks;
+  notes:             string;
+}
+
+// ── runtime bridge contract (v0: dry-run validator, no execution) ───────────────
+
+export type RuntimeBridgeActionKind =
+  | 'browser.open' | 'browser.search' | 'browser.read_page'
+  | 'computer.click' | 'computer.type' | 'computer.screenshot'
+  | 'mcp.call' | 'gmail.search' | 'gmail.read' | 'calendar.read'
+  | 'vault.read' | 'vault.write'
+  | 'brain.status' | 'brain.raw_status' | 'brain.vault_path'
+  | 'unknown';
+
+export type RuntimeBridgeValidationStatus =
+  | 'blocked_by_mode' | 'blocked' | 'validated' | 'error';
+
+export interface RuntimeBridgeAction {
+  kind:    RuntimeBridgeActionKind | string;
+  target?: string | null;
+  args?:   Record<string, unknown> | null;   // untrusted; summarized only, never executed
+}
+
+export interface RuntimeBridgeValidationRequest {
+  source:          string;                    // default 'openclaw'
+  mode?:           string | null;
+  requestedAction: RuntimeBridgeAction;
+  reason?:         string | null;
+  conversationId?: string | null;
+}
+
+export interface RuntimeBridgeValidationChecks {
+  schemaValid:                   boolean;
+  modeAllowsEvaluation:          boolean;
+  guardrailReadyForBridgeDesign: boolean;
+  runtimeBridgeImplemented:      boolean;     // always false — bridge not implemented
+  permissionGatewayDecision:     string;      // gateway dry-run decision, or 'n/a'
+}
+
+export interface RuntimeBridgeValidationResponse {
+  id:               string;
+  status:           RuntimeBridgeValidationStatus | string;
+  allowed:          boolean;                  // always false — never an approval to run
+  requiresApproval: boolean;
+  executionEnabled: boolean;                  // always false — nothing executes
+  mode:             string;
+  source:           string;
+  actionKind:       string;
+  riskLevel:        string;                   // low | medium | high
+  decision:         string;
+  message:          string;
+  checks:           RuntimeBridgeValidationChecks;
+  blockers:         string[];
+  warnings:         string[];
+  logId:            string | null;
+  createdAt:        string;
+}
+
 // ── permission gateway (v0: deny-by-default classification, no execution) ───────
 
 export type ToolDecision      = 'denied' | 'requires_approval' | 'not_wired' | 'disabled';
@@ -1377,6 +1497,21 @@ export const api = {
   probeNemoclawRuntime: (payload?: NemoclawProbeRequest) =>
     fetchWithBody<NemoclawProbeResponse>('POST', '/api/runtime/probe/nemoclaw', payload ?? {}),
   getLastNemoclawProbe: () => get<NemoclawLastProbeResponse>('/api/runtime/probe/nemoclaw/last'),
+
+  // NemoClaw/OpenShell policy inspection — read-only summarized view of the configured
+  // policy file. Does not enforce policy, start the runtime, or enable any capability.
+  getNemoclawPolicy: () => get<NemoclawPolicyResponse>('/api/runtime/policy/nemoclaw'),
+
+  // Guardrail readiness — read-only correlation of runtime status + last probe +
+  // policy inspection + mode policy. Enforces nothing, unlocks nothing, runs no fresh
+  // probe (reads the cached last probe only); refreshing it triggers no health probe.
+  getGuardrailReadiness: () => get<GuardrailReadinessResponse>('/api/runtime/guardrail-readiness'),
+
+  // Runtime bridge contract — DRY-RUN validator for a future bridge request. Validates
+  // shape + mode + readiness + a permission-gateway dry-run classification. Executes
+  // nothing, calls no runtime, unlocks nothing; a valid request is not an approval to run.
+  validateRuntimeBridgeRequest: (payload: RuntimeBridgeValidationRequest) =>
+    fetchWithBody<RuntimeBridgeValidationResponse>('POST', '/api/runtime/bridge/validate', payload),
 
   // permission gateway (deny-by-default classification; v0 executes nothing)
   getPermissionPolicies: () => get<PermissionPolicyResponse>('/api/permissions/policies'),

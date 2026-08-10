@@ -443,6 +443,53 @@ def log_execution(
     return entry
 
 
+def log_bridge_validation(
+    *,
+    action_kind: str,
+    decision: str,
+    risk_level: str,
+    requires_approval: bool,
+    sanitized_args_summary: str,
+    source: Optional[str] = None,
+    reason: Optional[str] = None,
+    message: Optional[str] = None,
+) -> dict:
+    """
+    Append one redacted audit entry for a runtime-bridge DRY-RUN validation.
+
+    Nothing is executed by bridge validation — this only records that a proposed
+    future bridge request was validated. `sanitized_args_summary` must already be the
+    redacted/truncated summary (raw args and secret values are never passed in or
+    stored). Returns the stored entry (including its generated id).
+    """
+    entry = {
+        "id":                   str(uuid.uuid4()),
+        "timestamp":            datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds"),
+        "source":               "runtime_bridge_validation",
+        "tool":                 action_kind,
+        "requestedBy":          _truncate_plain(source, _MAX_REQUESTED_BY_LEN),
+        "reason":               _truncate_plain(reason, _MAX_REASON_LEN),
+        "decision":             decision,
+        "riskLevel":            risk_level,
+        "allowed":              False,   # bridge validation never approves execution
+        "requiresApproval":     bool(requires_approval),
+        "executionEnabled":     False,   # bridge validation never executes
+        "sanitizedArgsSummary": sanitized_args_summary,
+        "policyNotes":          _truncate_plain(message, _MAX_REASON_LEN),
+        "result":               "validated_only",   # dry-run — nothing executed
+        "exitCode":             None,
+        "stdoutPreview":        None,
+        "stderrPreview":        None,
+        "durationMs":           None,
+    }
+    _append_log_entry(entry)
+    logger.info(
+        "Runtime bridge validation logged: id=%s kind=%s decision=%s (validated_only)",
+        entry["id"], entry["tool"], entry["decision"],
+    )
+    return entry
+
+
 def _append_log_entry(entry: dict) -> None:
     with _log_lock:
         entries = _read_log_entries()

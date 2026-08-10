@@ -495,7 +495,7 @@ NemoClaw/OpenShell, OpenClaw tool bridge, Browser, Computer use, MCP, Gmail, Res
 | Chat/AI Consolidation — manual paste/import | **Real v1** — paste a transcript → `POST /api/consolidation/drafts` creates a backend draft (no vault write); edit summary fields; **Save to vault** writes one Markdown summary under `raw/chats/<source>/`. No AI, no brain, no browser/computer-use capture |
 | Research — manual capture | **Real v1** — capture notes/links/findings → `POST /api/research/drafts` creates a backend draft (no vault write); edit fields; **Save to vault** writes one Markdown note under `raw/research/<topic>/`. No AI, no URL fetch, no web search, no browser/computer-use |
 | OpenClaw tool bridge | **Not wired** — read-only readiness via `GET /api/runtime/status` (status `not_configured`); no bridge, no execution |
-| NemoClaw / OpenShell | **Not wired (probe only)** — read-only readiness via `GET /api/runtime/status`; an explicit opt-in reachability probe (`POST /api/runtime/probe/nemoclaw`) can check a configured *local* runtime URL, but unlocks nothing and starts no runtime; dependents stay blocked |
+| NemoClaw / OpenShell | **Not wired (probe + policy inspection + readiness + bridge-contract dry-run only)** — read-only readiness via `GET /api/runtime/status`; an explicit opt-in reachability probe (`POST /api/runtime/probe/nemoclaw`) can check a configured *local* runtime URL; a read-only policy inspection (`GET /api/runtime/policy/nemoclaw`) summarizes the configured policy file; a read-only **Guardrail Readiness** correlation (`GET /api/runtime/guardrail-readiness`) reports whether the system is ready for future *bridge design* (`ready_for_bridge_design` ≠ execution-ready); a **Bridge Contract Validator** (`POST /api/runtime/bridge/validate`) dry-run-validates a proposed future bridge request (shape + mode + readiness + permission-gateway dry-run) and executes nothing. All unlock nothing, start no runtime, run no fresh probe, and enforce no policy; dependents stay blocked |
 | Browser harness | **Not wired** — `disabled`/blocked while NemoClaw/OpenShell is unavailable (shown via `GET /api/runtime/status`) |
 | Computer use | **Not wired** — `disabled`/blocked while NemoClaw/OpenShell is unavailable (shown via `GET /api/runtime/status`) |
 | MCP gateway | **Not wired** — read-only readiness via `GET /api/runtime/status` (status `not_configured`) |
@@ -711,7 +711,7 @@ Every Permission Gateway request writes **redacted, backend-local audit entries*
 
 - **Storage:** `backend/data/tool-logs/evaluations.json` (backend app-data, **not** the vault). Latest **500** entries kept (simple cap, no rotation). Vault `ops/tool-logs/` writes remain future work.
 - **`GET /api/permissions/logs`** — read-only, newest first. Query params: `limit` (default 50, clamped to [1, 200]), `tool` (exact match), `decision` (exact match).
-- **Entry fields:** `id`, `timestamp`, `source` (`gateway_eval` | `gateway_execution`), `tool`, `requestedBy`, `reason`, `decision`, `riskLevel`, `allowed`, `requiresApproval`, `executionEnabled`, `sanitizedArgsSummary`, `policyNotes`, `result` (`evaluated_only` | `success` | `failure`), and execution-only `exitCode`, `stdoutPreview`, `stderrPreview`, `durationMs`.
+- **Entry fields:** `id`, `timestamp`, `source` (`gateway_eval` | `gateway_execution` | `runtime_bridge_validation`), `tool`, `requestedBy`, `reason`, `decision`, `riskLevel`, `allowed`, `requiresApproval`, `executionEnabled`, `sanitizedArgsSummary`, `policyNotes`, `result` (`evaluated_only` | `success` | `failure` | `validated_only`), and execution-only `exitCode`, `stdoutPreview`, `stderrPreview`, `durationMs`. (Runtime Bridge Contract dry-run validations write `runtime_bridge_validation` / `validated_only` entries — `allowed` and `executionEnabled` always false.)
 - **Redaction:** only the already-sanitized args summary is stored — **raw args and secret values are never persisted**. `reason`/`requestedBy` are truncated; stdout/stderr are stored only as **truncated previews**.
 - **UI:** a *Permission Evaluation Logs* panel lists recent entries (eval + execution badges, decision/risk/result/exit/duration/stdout-preview); filters by decision and tool; **Refresh only** + auto-refresh after evaluate/execute — there is no clear / delete / replay / approve-and-execute action.
 
@@ -884,6 +884,114 @@ it unlocks nothing.
   NemoClaw/OpenShell** button + result (status, checked time, duration, message, URL/policy configured,
   redacted host) and the copy *"Browser and computer-use remain disabled until a separate runtime
   bridge is implemented and explicitly enabled."* No start/connect/enable control is added.
+
+### NemoClaw/OpenShell Policy Inspection v0 — read-only, no enforcement
+
+Makes the future runtime guardrail **inspectable** before any privileged bridge is built. It reads a
+configured NemoClaw/OpenShell policy file, parses it **defensively**, and shows a safe summarized view
+of declared scopes. It **inspects only** — it does **not** enforce the policy, start NemoClaw/OpenShell,
+execute tools, or enable browser/computer-use/MCP/OpenClaw.
+
+- **`GET /api/runtime/policy/nemoclaw`** (`backend/app/runtime_policy.py`). Response:
+  `{ id, configured, pathConfigured, pathExists, readable, valid, status, message, policyPathDisplay,
+  format, summary{ declaredModes, networkPolicy, filesystemScopes, browserAllowed, computerUseAllowed,
+  mcpAllowed, credentialAccess, unknownKeys }, warnings[], errors[] }`. `status` ∈
+  `not_configured | missing | unreadable | invalid | loaded | error`.
+- **Reads only the configured path.** Only `NEMOCLAW_POLICY_PATH` is read — **never a frontend-supplied
+  path** (the endpoint takes no path argument). No directory listing, no symlink chasing beyond the OS
+  resolve, no arbitrary path traversal. If no path is configured → `not_configured` with **no file read**.
+- **Path safety:** the configured path is resolved; a missing target → `missing`, a directory (or other
+  non-file) → `unreadable`. The file is read as **UTF-8 text only**, capped at **256 KB** (oversized →
+  `invalid`, rejected before contents are read). The policy file is **never executed or imported as code**.
+- **Format support:** **JSON** always (stdlib `json`); **YAML** only if PyYAML is importable — parsed with
+  `yaml.safe_load` (SafeLoader, never the unsafe full loader). PyYAML is **optional**, not a hard
+  dependency: when absent, YAML files are reported honestly as unsupported (`invalid`) rather than failing.
+- **Defensive summary:** an unrecognized-but-parseable object is `loaded` with its **unknown keys
+  surfaced**; capabilities (`browserAllowed` / `computerUseAllowed` / `mcpAllowed`) default to **unknown**
+  (`null`) and are only reported `Allowed` when the policy **clearly** declares them so — we never imply a
+  capability is allowed. `credentialAccess` defaults to `unknown`. A non-object root → `invalid`.
+- **Enforces nothing / unlocks nothing:** capabilities remain disabled regardless of what the policy
+  declares. No network call, no process launch, no shell/`brain`, no credential read, no vault write, no
+  tool execution.
+- **Frontend:** the Tool Connections **Runtime Guardrails** section adds a read-only **NemoClaw/OpenShell
+  Policy** panel (configured/exists/readable/valid, status, path display, declared modes, network policy,
+  filesystem scopes, browser/computer-use/MCP allowed-blocked-unknown, credential access, warnings/errors)
+  plus a **Reload inspection** button and the required copy *"Policy inspection is read-only. It does not
+  enforce policy or enable runtime actions."* / *"Capabilities remain disabled until the runtime bridge is
+  implemented separately."* The Dashboard runtime card shows one compact honest **Policy:** line. There is
+  **no** edit / apply / enable / start control.
+
+### Guardrail Readiness v0 — read-only correlation, no enforcement
+
+Correlates the four guardrail surfaces into a single honest readiness view — the final readiness view
+before an actual NemoClaw/OpenShell bridge **contract** is designed. It **correlates only**: it does
+**not** enforce policy, run a fresh health probe, make a network call, start any runtime, execute tools,
+or unlock browser / computer-use / MCP / OpenClaw / Gmail.
+
+- **`GET /api/runtime/guardrail-readiness`** (`backend/app/guardrail_readiness.py`) correlates runtime
+  status, the **cached last** NemoClaw/OpenShell probe, policy inspection, and the agent mode policy.
+  Response: `{ id, status, ready, checkedAt, summary, components{ runtimeStatus, lastProbe, policy,
+  modePolicy }, blockers[], warnings[], nextSteps[], capabilityUnlocks{ openclawBridge, browserHarness,
+  computerUse, mcpGateway, gmail }, notes }`. `status` ∈
+  `not_ready | partially_ready | ready_for_bridge_design | error`.
+- **Correlation rules:** `not_ready` = no reachable probe **and** no loaded policy; `partially_ready` =
+  reachable probe **xor** loaded policy; `ready_for_bridge_design` = reachable (per the last probe) **and**
+  loaded/valid policy **and** mode policy present **and** no dependent falsely reporting browser/computer-use
+  as enabled.
+- **`ready_for_bridge_design` does not mean execution-ready.** `ready: true` is set **only** for that
+  status and means only "ready for a bridge to be *designed*". `capabilityUnlocks.*` is **false in every
+  state** — readiness enables nothing.
+- **Reads the cached last probe only** (loading it is not a probe). It makes **no** fresh probe, network
+  call, process launch, shell/`brain`, credential read, or vault write; refreshing readiness triggers **no**
+  health probe.
+- **Frontend:** the Tool Connections **Runtime Guardrails** section adds a read-only **Guardrail Readiness**
+  panel (status, summary, component chips, blockers, suggested next steps, capability unlocks all disabled,
+  warnings) with a **Refresh readiness** button (no probe) and the required copy *"Guardrail readiness is
+  informational only. It does not enable OpenClaw, browser, computer-use, MCP, or Gmail actions."* /
+  *"Ready for bridge design does not mean ready for execution."* The Dashboard runtime card shows one
+  compact **Guardrail readiness:** line; the Local Agent runtime-guardrail note shows the same. There is
+  **no** enable / start / bridge / execute control.
+
+### NemoClaw/OpenShell Bridge Contract v0 — dry-run validator, no execution
+
+Defines the backend **request/response contract** for a future NemoClaw/OpenShell bridge and a **dry-run
+validator** that answers, for a proposed bridge request: would it be blocked, would it require approval, and
+is its shape structurally acceptable for a future bridge to be *designed*? It **validates only** — it does
+**not** call NemoClaw/OpenShell or OpenClaw, execute browser/computer-use/MCP/Gmail/Calendar/vault/brain
+actions, start a runtime, run a fresh probe, run shell/`brain`, write the vault, or unlock any capability.
+
+- **`POST /api/runtime/bridge/validate`** (`backend/app/runtime_bridge_contract.py`). Request:
+  `{ source, mode, requestedAction{ kind, target?, args? }, reason?, conversationId? }`. Response:
+  `{ id, status, allowed, requiresApproval, executionEnabled, mode, source, actionKind, riskLevel, decision,
+  message, checks{ schemaValid, modeAllowsEvaluation, guardrailReadyForBridgeDesign, runtimeBridgeImplemented,
+  permissionGatewayDecision }, blockers[], warnings[], logId, createdAt }`. `status` ∈
+  `blocked_by_mode | blocked | validated | error`.
+- **Dry-run pipeline:** validate request shape → normalize mode via the agent mode policy → check the mode
+  allows evaluation → read Guardrail Readiness (**cached — no probe**) → map the action kind to a
+  conservative risk → run a Permission Gateway **dry-run** classification → write one sanitized audit entry
+  (log source `runtime_bridge_validation`) → return a clear blocked/validated result.
+- **Recognized future action kinds** (none execute): `browser.open`, `browser.search`, `browser.read_page`,
+  `computer.click`, `computer.type`, `computer.screenshot`, `mcp.call`, `gmail.search`, `gmail.read`,
+  `calendar.read`, `vault.read`, `vault.write`, `brain.status`, `brain.raw_status`, `brain.vault_path`,
+  `unknown`. Conservative risk: safe-local reads (`brain.*`, `vault.read`) `low`; browser/MCP/Gmail/calendar
+  `medium`; computer-use/`vault.write`/`unknown` `high`.
+- **Mode rules:** `locked`/`observe`/`computer_use` → `blocked_by_mode`; `draft`/`assist`/`research`/
+  `escalation` validate only; in `assist`, a safe-local action may be noted as review-handoff-eligible later
+  (still never executed here).
+- **Honesty rule:** `allowed` and `executionEnabled` are **always false** — a valid bridge request is *not*
+  an approval to run it — and `runtimeBridgeImplemented` is **always false**. Even safe-local `brain.status`
+  does **not** execute here; manual safe-local execution remains only in Tool Connections. When Guardrail
+  Readiness is not `ready_for_bridge_design` the response includes a blocker saying so; when it *is* ready a
+  safe-local request is marked `validated` (schema acceptable for future design) but **still** does not run.
+- **Logging:** only a sanitized summary is stored (secret-bearing keys redacted, long values truncated) —
+  never raw args, full page contents, or credentials.
+- **Frontend:** the Tool Connections **Runtime Guardrails** section adds a **Bridge Contract Validator**
+  panel (source, current mode, action-kind dropdown, reason, JSON args) with a **Validate bridge request**
+  button (invalid JSON is caught client-side and does not submit) and the required copy *"This validates a
+  future runtime bridge request. It does not call NemoClaw/OpenShell or execute the action."* / *"A valid
+  bridge request is not an approval to run it."* The result shows status, decision, risk, mode, action kind,
+  checks, blockers, warnings, and the log id. The Dashboard runtime card shows a compact **Runtime bridge:
+  contract validator only** line. There is **no** execute / approve / start-bridge / connect control.
 
 ## Escalation Queue
 

@@ -60,6 +60,9 @@ from app.proposals import list_normalized_proposals
 from app.tools import list_tool_connections
 from app.runtime_status import list_runtime_status
 from app.runtime_probe import probe_nemoclaw, read_last_probe
+from app.runtime_policy import inspect_nemoclaw_policy
+from app.guardrail_readiness import get_guardrail_readiness
+from app.runtime_bridge_contract import validate_bridge_request
 from app.permission_gateway import (
     list_policies,
     evaluate_tool_request,
@@ -199,6 +202,10 @@ from app.models import (
     NemoclawProbeRequest,
     NemoclawProbeResponse,
     NemoclawLastProbeResponse,
+    NemoclawPolicyResponse,
+    GuardrailReadinessResponse,
+    RuntimeBridgeValidationRequest,
+    RuntimeBridgeValidationResponse,
     PermissionPolicy,
     PermissionPolicyResponse,
     ToolRequestEvaluationRequest,
@@ -432,6 +439,61 @@ def runtime_probe_nemoclaw_last() -> NemoclawLastProbeResponse:
     return NemoclawLastProbeResponse(
         lastProbe=NemoclawProbeResponse(**last) if last else None,
     )
+
+
+@app.get("/api/runtime/policy/nemoclaw", response_model=NemoclawPolicyResponse)
+def runtime_policy_nemoclaw() -> NemoclawPolicyResponse:
+    """
+    Read-only inspection of the configured NemoClaw/OpenShell policy file.
+
+    Reads ONLY the operator-configured NEMOCLAW_POLICY_PATH (never a frontend-supplied
+    path), parses it defensively (JSON always, YAML only if PyYAML is present), and
+    returns a safe summarized view of declared scopes. Enforcement is NOT wired: this
+    does not enforce the policy, start the runtime, make a network call, execute/import
+    the policy file, run shell/`brain`, write the vault, or unlock any capability.
+    """
+    return NemoclawPolicyResponse(**inspect_nemoclaw_policy())
+
+
+@app.get("/api/runtime/guardrail-readiness", response_model=GuardrailReadinessResponse)
+def runtime_guardrail_readiness() -> GuardrailReadinessResponse:
+    """
+    Read-only Guardrail Readiness v0. Correlates runtime status + the cached last
+    NemoClaw/OpenShell probe + policy inspection + agent mode policy into one honest
+    readiness view for FUTURE bridge design.
+
+    Pure/read-only: runs NO fresh health probe (reads the cached last probe only),
+    makes no network call, launches no runtime, runs no shell/`brain`, reads no
+    credentials, writes no vault, executes no tool, and UNLOCKS NOTHING — every
+    capability stays disabled and `ready_for_bridge_design` never means execution-ready.
+    """
+    return GuardrailReadinessResponse(**get_guardrail_readiness())
+
+
+@app.post("/api/runtime/bridge/validate", response_model=RuntimeBridgeValidationResponse)
+def runtime_bridge_validate(req: RuntimeBridgeValidationRequest) -> RuntimeBridgeValidationResponse:
+    """
+    Dry-run validator for a FUTURE NemoClaw/OpenShell bridge request. Validates the
+    request shape, checks agent mode policy, reads guardrail readiness (cached — no
+    fresh probe), maps the action kind to a conservative risk, and runs a Permission
+    Gateway DRY-RUN classification — then logs a sanitized audit entry.
+
+    Executes NOTHING: never calls NemoClaw/OpenShell/OpenClaw, never runs browser/
+    computer-use/MCP/Gmail/Calendar/vault/brain actions, never runs shell/`brain`,
+    starts no runtime/process, reads no credentials, writes no vault, and UNLOCKS
+    NOTHING. `allowed`/`executionEnabled` are always False — a valid request is not an
+    approval to run it.
+    """
+    result = validate_bridge_request(
+        source=req.source,
+        mode=req.mode,
+        action_kind=req.requestedAction.kind,
+        target=req.requestedAction.target,
+        args=req.requestedAction.args,
+        reason=req.reason,
+        conversation_id=req.conversationId,
+    )
+    return RuntimeBridgeValidationResponse(**result)
 
 
 # ── permission gateway (deny-by-default classification; v0 — no execution) ──────

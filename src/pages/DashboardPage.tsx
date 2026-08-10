@@ -12,7 +12,7 @@ import { Icon } from '@/components/ui/Icon';
 import { StatusCard } from '@/components/dashboard/StatusCard';
 import { SystemRow } from '@/components/dashboard/SystemRow';
 import { resolveModePolicy, modePolicySummary, MODE_TRUTHS } from '@/lib/agentModes';
-import { useRuntimeStatus, RUNTIME_TRUTHS } from '@/lib/runtimeStatus';
+import { useRuntimeStatus, RUNTIME_TRUTHS, policyDashboardLine, readinessDashboardLine } from '@/lib/runtimeStatus';
 import { RuntimeStatusRows } from '@/components/runtime/RuntimeStatus';
 import { api } from '@/lib/api';
 import type {
@@ -795,6 +795,26 @@ export function DashboardPage() {
   // OpenClaw / NemoClaw runtime readiness (read-only; static fallback when backend down).
   const runtime = useRuntimeStatus();
 
+  // NemoClaw/OpenShell policy inspection — one compact honest line (read-only, no enforcement).
+  const [policyStatus, setPolicyStatus] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.getNemoclawPolicy()
+      .then((r) => { if (alive) setPolicyStatus(r.status); })
+      .catch(() => { /* non-fatal — hide the line */ });
+    return () => { alive = false; };
+  }, []);
+
+  // Guardrail readiness — one compact honest line (read-only; refresh triggers no probe).
+  const [readinessStatus, setReadinessStatus] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.getGuardrailReadiness()
+      .then((r) => { if (alive) setReadinessStatus(r.status); })
+      .catch(() => { /* non-fatal — hide the line */ });
+    return () => { alive = false; };
+  }, []);
+
   const [ask, setAsk] = useState('');
 
   // ── dashboard summary ──────────────────────────────────────────────────────
@@ -1389,6 +1409,19 @@ export function DashboardPage() {
               Agent runtimes {runtime.degraded ? '· backend unreachable' : ''}
             </div>
             <RuntimeStatusRows items={runtime.items} />
+            {policyStatus && (
+              <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 'var(--s2)' }}>
+                Policy: <span style={{ color: 'var(--txt-2)', fontWeight: 500 }}>{policyDashboardLine(policyStatus)}</span>
+              </div>
+            )}
+            {readinessStatus && (
+              <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 'var(--s1)' }}>
+                Guardrail readiness: <span style={{ color: 'var(--txt-2)', fontWeight: 500 }}>{readinessDashboardLine(readinessStatus)}</span>
+              </div>
+            )}
+            <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 'var(--s1)' }}>
+              Runtime bridge: <span style={{ color: 'var(--txt-2)', fontWeight: 500 }}>contract validator only</span>
+            </div>
             <div style={{ fontSize: 10, color: 'var(--txt-3)', lineHeight: 1.45, marginTop: 'var(--s2)' }}>
               {RUNTIME_TRUTHS.notWired} {RUNTIME_TRUTHS.browserBlocked}
             </div>

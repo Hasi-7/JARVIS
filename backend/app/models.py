@@ -923,6 +923,112 @@ class NemoclawLastProbeResponse(BaseModel):
     lastProbe: Optional[NemoclawProbeResponse] = None
 
 
+# ── NemoClaw/OpenShell policy inspection (v0: read-only, no enforcement) ─────────
+
+class NemoclawPolicySummary(BaseModel):
+    declaredModes:      List[str] = []
+    networkPolicy:      Optional[str] = None
+    filesystemScopes:   List[str] = []
+    browserAllowed:     Optional[bool] = None    # None = unknown (never implied allowed)
+    computerUseAllowed: Optional[bool] = None
+    mcpAllowed:         Optional[bool] = None
+    credentialAccess:   str = "unknown"
+    unknownKeys:        List[str] = []
+
+
+class NemoclawPolicyResponse(BaseModel):
+    id:                str = "nemoclaw_openshell"
+    configured:        bool
+    pathConfigured:    bool
+    pathExists:        bool
+    readable:          bool
+    valid:             bool
+    status:            str            # not_configured | missing | unreadable | invalid | loaded | error
+    message:           str
+    policyPathDisplay: Optional[str] = None
+    format:            Optional[str] = None       # json | yaml | unknown
+    summary:           Optional[NemoclawPolicySummary] = None
+    warnings:          List[str] = []
+    errors:            List[str] = []
+
+
+# ── guardrail readiness (v0: read-only correlation, no enforcement/execution) ───
+
+class GuardrailReadinessComponents(BaseModel):
+    runtimeStatus: str    # nemoclaw runtime item status (available|unavailable|not_configured|disabled|...)
+    lastProbe:     str    # cached probe status (reachable|unavailable|not_configured|error) or not_run
+    policy:        str    # policy inspection status (loaded|not_configured|missing|unreadable|invalid|error)
+    modePolicy:    str    # available | unavailable
+
+
+class GuardrailCapabilityUnlocks(BaseModel):
+    # Every unlock is False in every state — readiness enables nothing.
+    openclawBridge: bool = False
+    browserHarness: bool = False
+    computerUse:    bool = False
+    mcpGateway:     bool = False
+    gmail:          bool = False
+
+
+class GuardrailReadinessResponse(BaseModel):
+    id:                str = "nemoclaw_openshell_guardrail"
+    status:            str            # not_ready | partially_ready | ready_for_bridge_design | error
+    ready:             bool           # true ONLY for ready_for_bridge_design (never "ready to execute")
+    checkedAt:         str
+    summary:           str
+    components:        GuardrailReadinessComponents
+    blockers:          List[str] = []
+    warnings:          List[str] = []
+    nextSteps:         List[str] = []
+    capabilityUnlocks: GuardrailCapabilityUnlocks
+    notes:             str
+
+
+# ── runtime bridge contract (v0: dry-run validator only, no execution) ──────────
+
+class RuntimeBridgeAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind:   str                                   # e.g. browser.open (see runtime_bridge_contract action kinds)
+    target: Optional[str] = None                  # optional URL / selector / path (untrusted; never fetched)
+    args:   Optional[Dict[str, Any]] = None       # untrusted; summarized only, never executed
+
+
+class RuntimeBridgeValidationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source:          str = "openclaw"             # openclaw | nemoclaw | ... (echoed only)
+    mode:            Optional[str] = None          # normalized via agent mode policy
+    requestedAction: RuntimeBridgeAction
+    reason:          Optional[str] = None
+    conversationId:  Optional[str] = None
+
+
+class RuntimeBridgeValidationChecks(BaseModel):
+    schemaValid:                   bool
+    modeAllowsEvaluation:          bool
+    guardrailReadyForBridgeDesign: bool
+    runtimeBridgeImplemented:      bool = False    # always False — the bridge is not implemented
+    permissionGatewayDecision:     str             # gateway dry-run decision, or "n/a"
+
+
+class RuntimeBridgeValidationResponse(BaseModel):
+    id:               str
+    status:           str          # blocked_by_mode | blocked | validated | error
+    allowed:          bool         # always False — a valid request is never an approval to run
+    requiresApproval: bool
+    executionEnabled: bool         # always False — nothing executes here
+    mode:             str
+    source:           str
+    actionKind:       str
+    riskLevel:        str          # low | medium | high
+    decision:         str
+    message:          str
+    checks:           RuntimeBridgeValidationChecks
+    blockers:         List[str] = []
+    warnings:         List[str] = []
+    logId:            Optional[str] = None
+    createdAt:        str
+
+
 # ── permission gateway (v0: deny-by-default classification, no execution) ───────
 
 class PermissionPolicy(BaseModel):

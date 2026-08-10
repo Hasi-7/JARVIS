@@ -33,6 +33,135 @@ export const PROBE_COPY = {
   stillDisabled: 'Browser and computer-use remain disabled until a separate runtime bridge is implemented and explicitly enabled.',
 };
 
+// ── NemoClaw/OpenShell policy inspection display helpers ────────────────────────
+
+export function policyStatusLabel(status: string): string {
+  switch (status) {
+    case 'loaded':         return 'Loaded for inspection';
+    case 'not_configured': return 'Not configured';
+    case 'missing':        return 'File missing';
+    case 'unreadable':     return 'Unreadable';
+    case 'invalid':        return 'Invalid';
+    case 'error':          return 'Error';
+    default:               return status;
+  }
+}
+
+export function policyStatusTone(status: string): RuntimeTone {
+  if (status === 'loaded') return 'green';
+  if (status === 'invalid' || status === 'unreadable' || status === 'missing') return 'amber';
+  if (status === 'error') return 'red';
+  return 'grey';
+}
+
+// Tri-state capability rendering: allowed / blocked / unknown (never implies allowed).
+export function capabilityLabel(v: boolean | null | undefined): string {
+  if (v === true) return 'Allowed';
+  if (v === false) return 'Blocked';
+  return 'Unknown';
+}
+
+export function capabilityTone(v: boolean | null | undefined): RuntimeTone {
+  if (v === true) return 'amber';   // declared-allowed is noteworthy, but still not wired
+  if (v === false) return 'grey';
+  return 'grey';
+}
+
+// A compact one-line policy state for the Dashboard runtime card.
+export function policyDashboardLine(status: string): string {
+  switch (status) {
+    case 'loaded':         return 'Loaded for inspection';
+    case 'invalid':        return 'Invalid';
+    case 'unreadable':     return 'Unreadable';
+    case 'missing':        return 'File missing';
+    case 'error':          return 'Error';
+    default:               return 'Not configured';
+  }
+}
+
+// Required read-only copy shown wherever the policy panel appears.
+export const POLICY_COPY = {
+  readOnly: 'Policy inspection is read-only. It does not enforce policy or enable runtime actions.',
+  disabled: 'Capabilities remain disabled until the runtime bridge is implemented separately.',
+};
+
+// ── guardrail readiness display helpers (read-only correlation) ─────────────────
+
+export function readinessStatusLabel(status: string): string {
+  switch (status) {
+    case 'ready_for_bridge_design': return 'Ready for bridge design';
+    case 'partially_ready':         return 'Partial';
+    case 'not_ready':               return 'Not ready';
+    case 'error':                   return 'Error';
+    default:                        return status;
+  }
+}
+
+export function readinessStatusTone(status: string): RuntimeTone {
+  if (status === 'ready_for_bridge_design') return 'green';
+  if (status === 'partially_ready') return 'amber';
+  if (status === 'error') return 'red';
+  return 'grey';
+}
+
+// Compact one-word-ish state for the Dashboard runtime card.
+export function readinessDashboardLine(status: string): string {
+  switch (status) {
+    case 'ready_for_bridge_design': return 'Ready for bridge design';
+    case 'partially_ready':         return 'Partial';
+    case 'error':                   return 'Error';
+    default:                        return 'Not ready';
+  }
+}
+
+// Required read-only copy shown wherever the readiness panel appears.
+export const READINESS_COPY = {
+  informational: 'Guardrail readiness is informational only. It does not enable OpenClaw, browser, computer-use, MCP, or Gmail actions.',
+  notExecution: 'Ready for bridge design does not mean ready for execution.',
+};
+
+// ── runtime bridge contract validator display helpers (dry-run only) ────────────
+
+export function bridgeStatusLabel(status: string): string {
+  switch (status) {
+    case 'validated':       return 'Schema acceptable';
+    case 'blocked':         return 'Blocked';
+    case 'blocked_by_mode': return 'Blocked by mode';
+    case 'error':           return 'Error';
+    default:                return status;
+  }
+}
+
+export function bridgeStatusTone(status: string): RuntimeTone {
+  if (status === 'validated') return 'green';
+  if (status === 'blocked' || status === 'blocked_by_mode') return 'amber';
+  if (status === 'error') return 'red';
+  return 'grey';
+}
+
+export function riskTone(risk: string): RuntimeTone {
+  if (risk === 'high') return 'red';
+  if (risk === 'medium') return 'amber';
+  if (risk === 'low') return 'grey';
+  return 'grey';
+}
+
+// Recognized future action kinds for the validator dropdown (mirrors the backend).
+export const BRIDGE_ACTION_KINDS = [
+  'browser.open', 'browser.search', 'browser.read_page',
+  'computer.click', 'computer.type', 'computer.screenshot',
+  'mcp.call', 'gmail.search', 'gmail.read', 'calendar.read',
+  'vault.read', 'vault.write',
+  'brain.status', 'brain.raw_status', 'brain.vault_path',
+  'unknown',
+];
+
+// Required read-only copy shown on the validator panel.
+export const BRIDGE_COPY = {
+  dryRun: 'This validates a future runtime bridge request. It does not call NemoClaw/OpenShell or execute the action.',
+  notApproval: 'A valid bridge request is not an approval to run it.',
+};
+
 // Standing truths required by the PRD / spec wherever runtime status is shown.
 export const RUNTIME_TRUTHS = {
   notWired: 'Privileged agent runtimes are not wired yet.',
