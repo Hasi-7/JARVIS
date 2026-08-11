@@ -4,11 +4,14 @@ import type {
   EmailIntakeDraft,
   EmailIntakeDomain,
   EmailConfidence,
+  EmailIntakeAssistPreview,
   CreateEmailIntakeDraftRequest,
+  DraftAssistModelTier,
 } from '@/lib/api';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { DraftAssistPreview as DraftAssistPreviewPanel } from '@/components/ui/DraftAssistPreview';
 import { useAppStore } from '@/store/useAppStore';
 
 const DOMAINS: EmailIntakeDomain[] = ['course', 'business', 'personal', 'unknown'];
@@ -138,7 +141,7 @@ function NewDraftForm({ onCreated }: { onCreated: () => void }) {
         <label style={labelStyle}>Raw email <span style={{ color: 'var(--red)' }}>*</span></label>
         <textarea value={rawEmail} onChange={(e) => setRawEmail(e.target.value)} placeholder="Paste the full email content here…" style={{ ...fieldStyle, minHeight: 140, resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 11.5 }} disabled={busy} />
         <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 3 }}>
-          Email content is treated as untrusted text. No instructions inside it are followed, it is never sent to an AI, and Gmail is never contacted.
+          Email content is untrusted text. Instructions inside it are never followed and Gmail is never contacted. AI assist processes it only when explicitly requested from an unsaved draft.
         </div>
       </div>
 
@@ -198,9 +201,107 @@ function EditDraftModal({ draft, onClose, onSaved }: { draft: EmailIntakeDraft; 
   const [calRows, setCalRows]     = useState(arrayToLines(draft.proposedCalendarRows));
   const [busy, setBusy]   = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [modelTier, setModelTier] = useState<DraftAssistModelTier>('everyday');
+  const [assistPreview, setAssistPreview] = useState<EmailIntakeAssistPreview | null>(null);
+  const [assisting, setAssisting] = useState(false);
+  const [assistError, setAssistError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setAssistPreview(null);
+    setAssistError(null);
+  }, [draft.id, draft.updatedAt]);
+
+  const formSnapshot = JSON.stringify({
+    subject: subject.trim(),
+    sender: sender.trim() || null,
+    receivedAt: receivedAt.trim() || null,
+    domain,
+    entity: entity.trim() || null,
+    summary,
+    actionRequired: actionRequired.trim() || null,
+    dueDate: dueDate.trim() || null,
+    confidence: confidence || null,
+    proposedTaskRows: linesToArray(taskRows),
+    proposedCalendarRows: linesToArray(calRows),
+  });
+  const persistedSnapshot = JSON.stringify({
+    subject: draft.subject,
+    sender: draft.sender,
+    receivedAt: draft.receivedAt,
+    domain: draft.domain,
+    entity: draft.entity,
+    summary: draft.summary,
+    actionRequired: draft.actionRequired,
+    dueDate: draft.dueDate,
+    confidence: draft.confidence,
+    proposedTaskRows: draft.proposedTaskRows,
+    proposedCalendarRows: draft.proposedCalendarRows,
+  });
+  const formMatchesDraft = formSnapshot === persistedSnapshot;
+  const assistContext = `${draft.id}:${draft.updatedAt}:${formSnapshot}`;
+  const assistContextRef = useRef(assistContext);
+  assistContextRef.current = assistContext;
+
+  const previewStale = assistPreview !== null && (
+    assistPreview.draftUpdatedAt !== draft.updatedAt || !formMatchesDraft
+  );
+  const previewRows = assistPreview ? [
+    { label: 'Subject', value: assistPreview.suggestions.subject },
+    { label: 'Sender', value: assistPreview.suggestions.sender },
+    { label: 'Received date', value: assistPreview.suggestions.receivedAt },
+    { label: 'Domain', value: assistPreview.suggestions.domain },
+    { label: 'Entity', value: assistPreview.suggestions.entity },
+    { label: 'Summary', value: assistPreview.suggestions.summary },
+    { label: 'Action required', value: assistPreview.suggestions.actionRequired },
+    { label: 'Due date', value: assistPreview.suggestions.dueDate },
+    { label: 'Confidence', value: assistPreview.suggestions.confidence },
+    { label: 'Task rows', value: assistPreview.suggestions.proposedTaskRows },
+    { label: 'Calendar rows', value: assistPreview.suggestions.proposedCalendarRows },
+  ].filter((row) => row.value !== undefined) : [];
+
+  async function requestAssist() {
+    if (!formMatchesDraft) {
+      setAssistPreview(null);
+      setAssistError('Save changes before requesting AI assist.');
+      return;
+    }
+    const requestContext = assistContext;
+    setAssisting(true); setAssistError(null); setAssistPreview(null);
+    try {
+      const response = await api.assistEmailIntakeDraft(draft.id, modelTier);
+      if (assistContextRef.current !== requestContext || response.draftUpdatedAt !== draft.updatedAt) {
+        setAssistError('The draft or form changed while AI assist was running. Save changes, then request a new preview.');
+        return;
+      }
+      setAssistPreview(response);
+    } catch (err) {
+      setAssistError(err instanceof Error ? err.message : 'Failed to generate AI assist preview.');
+    } finally {
+      setAssisting(false);
+    }
+  }
+
+  function applyAssistPreview() {
+    if (!assistPreview || assistPreview.draftUpdatedAt !== draft.updatedAt || !formMatchesDraft) return;
+    const s = assistPreview.suggestions;
+    if (s.subject !== undefined) setSubject(s.subject);
+    if (s.sender !== undefined) setSender(s.sender ?? '');
+    if (s.receivedAt !== undefined) setReceivedAt(s.receivedAt ?? '');
+    if (s.domain !== undefined) setDomain(s.domain);
+    if (s.entity !== undefined) setEntity(s.entity ?? '');
+    if (s.confidence !== undefined) setConfidence(s.confidence ?? '');
+    if (s.summary !== undefined) setSummary(s.summary);
+    if (s.actionRequired !== undefined) setActionRequired(s.actionRequired ?? '');
+    if (s.dueDate !== undefined) setDueDate(s.dueDate ?? '');
+    if (s.proposedTaskRows !== undefined) setTaskRows(arrayToLines(s.proposedTaskRows));
+    if (s.proposedCalendarRows !== undefined) setCalRows(arrayToLines(s.proposedCalendarRows));
+    setAssistPreview(null);
+    setAssistError(null);
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (assisting) return;
     if (!subject.trim()) { setError('Subject is required.'); return; }
     setBusy(true); setError(null);
     try {
@@ -226,7 +327,7 @@ function EditDraftModal({ draft, onClose, onSaved }: { draft: EmailIntakeDraft; 
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      onClick={(e) => { if (e.target === e.currentTarget && !busy && !assisting) onClose(); }}>
       <form className="panel" onSubmit={submit} style={{ width: 580, padding: 'var(--s5)', display: 'flex', flexDirection: 'column', gap: 'var(--s3)', boxShadow: 'var(--shadow-pop)', maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ fontWeight: 700, fontSize: 14 }}>Edit draft</div>
         <div style={{ fontSize: 11, color: 'var(--txt-3)' }}>
@@ -294,13 +395,27 @@ function EditDraftModal({ draft, onClose, onSaved }: { draft: EmailIntakeDraft; 
           </div>
         </div>
 
+        <DraftAssistPreviewPanel
+          modelTier={modelTier}
+          onModelTierChange={(tier) => { setModelTier(tier); setAssistPreview(null); setAssistError(null); }}
+          onRequest={requestAssist}
+          requesting={assisting}
+          disabled={busy || draft.status === 'saved'}
+          preview={assistPreview}
+          rows={previewRows}
+          stale={previewStale}
+          error={assistError}
+          onApply={applyAssistPreview}
+          onDismiss={() => { setAssistPreview(null); setAssistError(null); }}
+        />
+
         {error && (
           <div style={{ fontSize: 11.5, color: 'var(--red)', padding: 'var(--s2) var(--s3)', background: 'var(--red-bg)', borderRadius: 'var(--r2)', border: '1px solid var(--red-line)' }}>{error}</div>
         )}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)' }}>
-          <button type="button" className="btn btn-sm btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="submit" className="btn btn-sm btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
+          <button type="button" className="btn btn-sm btn-ghost" onClick={onClose} disabled={busy || assisting}>Cancel</button>
+          <button type="submit" className="btn btn-sm btn-primary" disabled={busy || assisting}>{busy ? 'Saving…' : 'Save changes'}</button>
         </div>
       </form>
     </div>
@@ -493,7 +608,7 @@ export function EmailIntakePage() {
         <span>
           <strong>Gmail MCP is not wired.</strong> This page uses <strong>manual paste/import only</strong> — there is no Gmail
           connection, no email search/read, and Gmail mutations (send/delete/archive/labels) are <strong>disabled</strong>.
-          Nothing is written to the vault until you explicitly choose <em>Save to vault</em>. No AI is called.
+          Nothing is written to the vault until you explicitly choose <em>Save to vault</em>. AI assist is opt-in and preview-only.
         </span>
       </div>
 
@@ -546,8 +661,8 @@ export function EmailIntakePage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
           <Icon name="shield" size={12} /> <strong style={{ color: 'var(--txt-2)' }}>Safety</strong>
         </div>
-        Manual paste only · no Gmail connection · no send / delete / archive / label changes · no MCP · no AI summarization ·
-        no email instructions are followed · a vault write happens only after you confirm <em>Save to vault</em>. Saving creates
+        Manual paste only · no Gmail connection · no send / delete / archive / label changes · no MCP · AI assist is opt-in and
+        preview-only · no email instructions are followed · a vault write happens only after you confirm <em>Save to vault</em>. Saving creates
         one Markdown file under <span className="mono">raw/quercus/emails/</span>, <span className="mono">raw/business/&lt;area&gt;/emails/</span>,
         <span className="mono"> raw/personal/email/</span>, or <span className="mono">raw/inbox/email/</span>, and never creates tasks or calendar rows.
         Proposed task / calendar rows are informational only in v0.

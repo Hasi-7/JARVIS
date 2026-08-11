@@ -158,3 +158,17 @@ def test_log_evaluation_is_evaluated_only():
     assert e["result"] == "evaluated_only"
     assert e["allowed"] is False
     assert e["executionEnabled"] is False
+
+
+@pytest.mark.parametrize("corrupt", ["{not-json", '{"not":"a-list"}'])
+def test_corrupt_log_history_fails_closed_and_is_not_overwritten(corrupt):
+    pg.TOOL_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    pg.EVALUATIONS_FILE.write_text(corrupt, encoding="utf-8")
+    before = pg.EVALUATIONS_FILE.read_bytes()
+
+    with pytest.raises(pg.ToolLogError):
+        list_logs()
+    with pytest.raises(pg.ToolLogError):
+        log_evaluation(evaluate_tool_request("brain.status", {}))
+
+    assert pg.EVALUATIONS_FILE.read_bytes() == before

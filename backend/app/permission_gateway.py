@@ -30,6 +30,7 @@ this classification logic.
 
 import json
 import logging
+import os
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -38,10 +39,14 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Privileged-execution kill-switch. Stays False: no privileged/external tool ever
-# executes. Safe-local execution is opt-in PER TOOL via _EXECUTABLE_TOOLS below —
-# it does NOT flip this flag.
+
+class ToolLogError(RuntimeError):
+    pass
+
+# Backward-compatible default value. The real privileged kill switch is read from
+# the environment by privileged_execution_enabled() on every privileged transition.
 EXECUTION_ENABLED = False
+PRIVILEGED_EXECUTION_ENV = "BRAIN_UI_PRIVILEGED_EXECUTION_ENABLED"
 
 # Backend-local audit log of Permission Gateway evaluations + executions (NOT the
 # vault). Vault ops/tool-logs/ writes remain future work.
@@ -49,13 +54,12 @@ TOOL_LOGS_DIR:    Path = Path(__file__).parent.parent / "data" / "tool-logs"
 EVALUATIONS_FILE: Path = TOOL_LOGS_DIR / "evaluations.json"
 
 _MAX_STORED_LOGS = 500     # retention cap (latest N kept)
+_MAX_TRANSITION_LOGS = 500 # recent terminal/unreferenced transitions
 _DEFAULT_LOG_LIMIT = 50
 _MAX_LOG_LIMIT = 200
 _MAX_REASON_LEN = 300
 _MAX_REQUESTED_BY_LEN = 80
 _MAX_OUTPUT_PREVIEW = 2000  # stdout/stderr preview truncation in execution logs
-
-_log_lock = threading.Lock()
 
 _log_lock = threading.Lock()
 
@@ -99,12 +103,14 @@ _POLICIES: List[dict] = [
     {"tool": "brain.status",     "category": "brain", "riskLevel": "low",    "status": "available", "requiresApproval": False, "notes": "Safe allowlisted read-only brain command. Executable through the gateway via the safe brain wrapper."},
     {"tool": "brain.raw_status", "category": "brain", "riskLevel": "low",    "status": "available", "requiresApproval": False, "notes": "Safe allowlisted read-only brain command (raw-status). Executable through the gateway via the safe brain wrapper."},
     {"tool": "brain.vault_path", "category": "brain", "riskLevel": "low",    "status": "available", "requiresApproval": False, "notes": "Safe allowlisted read-only brain command (vault-path). Executable through the gateway via the safe brain wrapper."},
-    {"tool": "brain.today",      "category": "brain", "riskLevel": "low",    "status": "available", "requiresApproval": False, "notes": "Allowlisted brain command, implemented elsewhere. Not executable through the gateway in this build."},
-    {"tool": "brain.sync_raw",   "category": "brain", "riskLevel": "medium", "status": "available", "requiresApproval": True,  "notes": "Allowlisted brain command (moves raw files). Implemented elsewhere; not executable through the gateway in this build."},
+    {"tool": "brain.today",      "category": "brain", "riskLevel": "low",    "status": "available", "requiresApproval": True,  "notes": "Allowlisted local brain command. Runs only through the Assist-mode approval queue when privileged execution is enabled."},
+    {"tool": "brain.sync_raw",   "category": "brain", "riskLevel": "medium", "status": "available", "requiresApproval": True,  "notes": "Allowlisted brain command (moves raw files). Runs only through the Assist-mode approval queue when privileged execution is enabled."},
 
     # Filesystem / vault
     {"tool": "filesystem.read_vault",  "category": "filesystem", "riskLevel": "low",    "status": "available", "requiresApproval": False, "notes": "Read-only vault access, implemented elsewhere. Permission Gateway v0 does not execute it."},
     {"tool": "filesystem.write_vault", "category": "filesystem", "riskLevel": "medium", "status": "available", "requiresApproval": True,  "notes": "Real vault writes use backup-before-write elsewhere. Permission Gateway v0 does not execute it."},
+    {"tool": "vault.create_task",       "category": "filesystem", "riskLevel": "medium", "status": "available", "requiresApproval": True,  "notes": "Creates one task through the existing validated, backup-before-write vault adapter. Assist approval required."},
+    {"tool": "calendar.create_candidate", "category": "calendar", "riskLevel": "medium", "status": "available", "requiresApproval": True, "notes": "Creates one vault calendar candidate only; never writes Google Calendar. Assist approval required."},
 ]
 
 _POLICY_BY_TOOL: Dict[str, dict] = {p["tool"]: p for p in _POLICIES}
@@ -120,6 +126,15 @@ _BRAIN_TOOL_COMMANDS: Dict[str, str] = {
 }
 _EXECUTABLE_TOOLS = frozenset(_BRAIN_TOOL_COMMANDS)
 
+# Deliberately separate from _EXECUTABLE_TOOLS. These tools can only be reached
+# through tool_approvals' state machine and narrow dispatcher.
+_APPROVAL_REQUIRED_TOOLS = frozenset({
+    "brain.today",
+    "brain.sync_raw",
+    "vault.create_task",
+    "calendar.create_candidate",
+})
+
 
 def is_executable(tool: str) -> bool:
     """True only for the allowlisted safe-local tools enabled this build."""
@@ -129,6 +144,18 @@ def is_executable(tool: str) -> bool:
 def brain_command_for(tool: str) -> Optional[str]:
     """Map an executable tool id to its safe brain subcommand (or None)."""
     return _BRAIN_TOOL_COMMANDS.get(tool)
+
+
+def privileged_execution_enabled(env=None) -> bool:
+    """Return the operator-controlled privileged execution kill-switch state."""
+    source = os.environ if env is None else env
+    value = str(source.get(PRIVILEGED_EXECUTION_ENV, "false")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def is_approval_required_tool(tool: str) -> bool:
+    """True only for tools owned by the gated approval dispatcher."""
+    return tool in _APPROVAL_REQUIRED_TOOLS
 
 
 # ── argument sanitization ───────────────────────────────────────────────────────
@@ -222,7 +249,8 @@ def list_policies() -> List[dict]:
     out: List[dict] = []
     for p in _POLICIES:
         item = dict(p)
-        # Only the allowlisted safe-local tools are executable; all others False.
+        # This field means immediately executable through /permissions/execute.
+        # Approval-only tools remain false even when their separate kill switch is on.
         item["executionEnabled"] = p["tool"] in _EXECUTABLE_TOOLS
         out.append(item)
     return out
@@ -305,7 +333,7 @@ def evaluate_tool_request(
         "riskLevel": risk,
         "tool": tool,
         "requiresApproval": requires_approval,
-        "executionEnabled": executable,   # True only for allowlisted safe-local tools
+        "executionEnabled": executable,
         "reason": msg,
         "policyNotes": policy["notes"],
         "sanitizedArgsSummary": sanitized,
@@ -330,18 +358,22 @@ def _read_log_entries() -> List[dict]:
         return []
     try:
         data = json.loads(EVALUATIONS_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.error("Corrupted tool-log file, starting fresh: %s", exc)
-        return []
+        if not isinstance(data, list):
+            raise ToolLogError("Tool-log root must be a list.")
+        return data
+    except Exception as exc:
+        logger.error("Could not read tool-log history safely: %s", exc)
+        raise ToolLogError("Tool-log history is unreadable; refusing to overwrite it.") from exc
 
 
 def _write_log_entries(entries: List[dict]) -> None:
     _ensure_log_dir()
-    EVALUATIONS_FILE.write_text(
-        json.dumps(entries, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    tmp = EVALUATIONS_FILE.with_name(f"{EVALUATIONS_FILE.name}.{uuid.uuid4().hex}.tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(entries, indent=2, ensure_ascii=False))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, EVALUATIONS_FILE)
 
 
 def _truncate_plain(value: Optional[str], limit: int) -> Optional[str]:
@@ -365,6 +397,7 @@ def log_evaluation(
     evaluation: dict,
     requested_by: Optional[str] = None,
     reason: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> dict:
     """
     Append one redacted audit entry for a Permission Gateway evaluation.
@@ -393,6 +426,10 @@ def log_evaluation(
         "stdoutPreview":        None,
         "stderrPreview":        None,
         "durationMs":           None,
+        "approvalId":           None,
+        "requestId":            request_id,
+        "approvedBy":           None,
+        "approvedAt":           None,
     }
     _append_log_entry(entry)
     logger.info(
@@ -439,6 +476,92 @@ def log_execution(
     logger.info(
         "Permission execution logged: id=%s tool=%s result=%s exit=%s",
         entry["id"], entry["tool"], entry["result"], entry["exitCode"],
+    )
+    return entry
+
+
+def log_approved_execution(
+    *,
+    evaluation: dict,
+    ok: bool,
+    result: Optional[dict] = None,
+    error: Optional[str] = None,
+    duration_ms: Optional[float] = None,
+    requested_by: Optional[str] = None,
+    reason: Optional[str] = None,
+    approval_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    approved_by: Optional[str] = None,
+    approved_at: Optional[str] = None,
+) -> dict:
+    """Audit one approval-dispatch execution without storing canonical arguments."""
+    exit_code = result.get("exitCode") if isinstance(result, dict) else None
+    entry = {
+        "id":                   str(uuid.uuid4()),
+        "timestamp":            datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds"),
+        "source":               "gateway_execution",
+        "tool":                 evaluation.get("tool", ""),
+        "requestedBy":          _truncate_plain(requested_by, _MAX_REQUESTED_BY_LEN),
+        "reason":               _truncate_plain(reason, _MAX_REASON_LEN),
+        "decision":             "executed" if ok else "failed",
+        "riskLevel":            evaluation.get("riskLevel", ""),
+        "allowed":              bool(ok),
+        "requiresApproval":     True,
+        "executionEnabled":     True,
+        "sanitizedArgsSummary": evaluation.get("sanitizedArgsSummary", ""),
+        "policyNotes":          evaluation.get("policyNotes"),
+        "result":               "success" if ok else "failure",
+        "exitCode":             exit_code,
+        # Approval-backed execution logs are metadata-only. Raw/canonical tool
+        # results and brain output never enter this audit path.
+        "stdoutPreview":        None,
+        "stderrPreview":        None,
+        "durationMs":           duration_ms,
+        "approvalId":           approval_id,
+        "requestId":            request_id,
+        "approvedBy":           _truncate_plain(approved_by, _MAX_REQUESTED_BY_LEN),
+        "approvedAt":           approved_at,
+    }
+    _append_log_entry(entry)
+    logger.info(
+        "Approved tool execution logged: id=%s tool=%s result=%s",
+        entry["id"], entry["tool"], entry["result"],
+    )
+    return entry
+
+
+def log_approval_transition(record: dict, transition: str) -> dict:
+    """Audit an approved/rejected transition using display-safe request fields."""
+    if transition not in {"approved", "rejected"}:
+        raise ValueError("Unsupported approval transition.")
+    entry = {
+        "id":                   str(uuid.uuid4()),
+        "timestamp":            datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds"),
+        "source":               "approval_transition",
+        "tool":                 record.get("tool", ""),
+        "requestedBy":          _truncate_plain(record.get("requestedBy"), _MAX_REQUESTED_BY_LEN),
+        "reason":               _truncate_plain(record.get("reason"), _MAX_REASON_LEN),
+        "decision":             transition,
+        "riskLevel":            record.get("riskLevel", ""),
+        "allowed":              transition == "approved",
+        "requiresApproval":     True,
+        "executionEnabled":     False,
+        "sanitizedArgsSummary": record.get("argsSummary", ""),
+        "policyNotes":          "Operator-authorized approval state transition.",
+        "result":               transition,
+        "exitCode":             None,
+        "stdoutPreview":        None,
+        "stderrPreview":        None,
+        "durationMs":           None,
+        "approvalId":           record.get("id"),
+        "requestId":            record.get("requestId"),
+        "approvedBy":           _truncate_plain(record.get("approvedBy"), _MAX_REQUESTED_BY_LEN),
+        "approvedAt":           record.get("approvedAt"),
+    }
+    _append_log_entry(entry)
+    logger.info(
+        "Approval transition logged: id=%s approval=%s transition=%s",
+        entry["id"], entry["approvalId"], transition,
     )
     return entry
 
@@ -491,12 +614,44 @@ def log_bridge_validation(
 
 
 def _append_log_entry(entry: dict) -> None:
+    # Resolve protected IDs before taking the log lock. Approval code may call
+    # logging while holding its process RLock; this ordering avoids log->approval
+    # lock inversion while the helper's RLock permits same-thread nesting.
+    from app.tool_approvals import protected_live_transition_log_ids
+    protected_transition_ids = protected_live_transition_log_ids()
+
     with _log_lock:
         entries = _read_log_entries()
         entries.append(entry)
-        if len(entries) > _MAX_STORED_LOGS:
-            entries = entries[-_MAX_STORED_LOGS:]
+        # Preserve evidence referenced by approved/executing records, then retain
+        # only the newest capped terminal/unreferenced transition history.
+        transition_indexes = [
+            index for index, item in enumerate(entries)
+            if item.get("source") == "approval_transition"
+            and item.get("id") not in protected_transition_ids
+        ]
+        transition_excess = len(transition_indexes) - _MAX_TRANSITION_LOGS
+        remove = set(transition_indexes[:max(0, transition_excess)])
+
+        ordinary_indexes = [
+            index for index, item in enumerate(entries)
+            if item.get("source") != "approval_transition"
+        ]
+        excess = len(ordinary_indexes) - _MAX_STORED_LOGS
+        if excess > 0:
+            remove.update(ordinary_indexes[:excess])
+        if remove:
+            entries = [item for index, item in enumerate(entries) if index not in remove]
         _write_log_entries(entries)
+
+
+def get_log_entry_internal(log_id: str) -> Optional[dict]:
+    """Internal exact-id lookup used to validate durable transition evidence."""
+    with _log_lock:
+        for entry in _read_log_entries():
+            if entry.get("id") == log_id:
+                return dict(entry)
+    return None
 
 
 def list_logs(

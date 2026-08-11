@@ -724,7 +724,9 @@ def batch_ai_classify_proposals(file_ids: List[str]) -> tuple:  # (List[Proposal
       skipped    — List[dict] with {"fileId": str, "reason": str} for each failure
     """
     from app.classify_ai import ai_classify_file
-    from app.agent import LOCAL_MODEL
+    from app.agent import resolve_model_tier
+
+    everyday_model = resolve_model_tier("everyday")
 
     classified: List[Proposal] = []
     skipped:    List[dict]     = []
@@ -822,7 +824,7 @@ def batch_ai_classify_proposals(file_ids: List[str]) -> tuple:  # (List[Proposal
             proposal.reason               = result["reason"]
             proposal.status               = "proposed"
             proposal.classified_by        = "local-ai"
-            proposal.ai_model             = LOCAL_MODEL
+            proposal.ai_model             = everyday_model
             proposal.ai_classified_at     = now
             classified.append(proposal)
 
@@ -854,7 +856,9 @@ def ai_classify_proposal(file_id: str) -> Optional[Proposal]:
     """
     # Local imports to avoid circular dependency at module load time.
     from app.classify_ai import ai_classify_file
-    from app.agent import LOCAL_MODEL
+    from app.agent import resolve_model_tier
+
+    everyday_model = resolve_model_tier("everyday")
 
     # ── phase 1: read under lock ──────────────────────────────────────────────
     with _lock:
@@ -906,12 +910,12 @@ def ai_classify_proposal(file_id: str) -> Optional[Proposal]:
         proposal.reason               = result["reason"]
         proposal.status               = "proposed"
         proposal.classified_by        = "local-ai"
-        proposal.ai_model             = LOCAL_MODEL
+        proposal.ai_model             = everyday_model
         proposal.ai_classified_at     = datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds")
 
         _write_proposals(proposals)
         logger.info(
             "AI classified %s → domain=%s dest=%s model=%s",
-            file_id, proposal.domain, proposal.proposed_destination, LOCAL_MODEL,
+            file_id, proposal.domain, proposal.proposed_destination, everyday_model,
         )
         return proposal

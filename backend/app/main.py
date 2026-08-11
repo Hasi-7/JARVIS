@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -40,6 +40,7 @@ from app.agent import (
     chat_with_agent,
     get_agent_status,
     stream_ollama_chat,
+    OllamaBusyError,
     LOCAL_MODEL,
     CONTEXT_WINDOW_MESSAGES,
 )
@@ -75,7 +76,23 @@ from app.permission_gateway import (
     log_execution,
     list_logs,
     is_executable,
+    is_approval_required_tool,
     brain_command_for,
+)
+from app.tool_approvals import (
+    ApprovalConflict,
+    ApprovalDisabled,
+    ApprovalAuthNotConfigured,
+    ApprovalAuditError,
+    ApprovalCapacityError,
+    ApprovalForbidden,
+    ApprovalNotFound,
+    ApprovalUnauthorized,
+    authorize_approval_token,
+    approve as approve_tool_approval,
+    execute as execute_tool_approval,
+    list_approvals,
+    reject as reject_tool_approval,
 )
 from app.consolidation import (
     create_draft as create_consolidation_draft,
@@ -97,6 +114,15 @@ from app.email_intake import (
     get_draft as get_email_draft,
     update_draft as update_email_draft,
     save_draft as save_email_draft,
+)
+from app.capture_assist import (
+    AssistDraftNotFound,
+    AssistDraftChanged,
+    AssistOutputError,
+    AssistSavedDraft,
+    assist_consolidation,
+    assist_email,
+    assist_research,
 )
 from app.escalations import (
     add_escalation_item,
@@ -229,6 +255,15 @@ from app.models import (
     AgentModePolicy,
     AgentModesResponse,
     AgentModeBlockedResponse,
+    ToolApprovalResponse,
+    ToolApprovalListResponse,
+    ApproveToolApprovalRequest,
+    RejectToolApprovalRequest,
+    ExecuteToolApprovalRequest,
+    CaptureAssistRequest,
+    ConsolidationAssistResponse,
+    ResearchAssistResponse,
+    EmailIntakeAssistResponse,
     ConsolidationDraftResponse,
     ConsolidationDraftsResponse,
     CreateConsolidationDraftRequest,
@@ -274,7 +309,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Brain-Approval-Token"],
 )
 
 
@@ -626,7 +661,7 @@ def permissions_execute(req: ToolRequestEvaluationRequest) -> ToolExecutionRespo
             decision=result["decision"],
             riskLevel=result["riskLevel"],
             requiresApproval=result["requiresApproval"],
-            executionEnabled=result["executionEnabled"],
+            executionEnabled=False,
             evaluationLogId=eval_entry["id"],
             executionLogId=None,
             ok=False,
@@ -653,6 +688,100 @@ def permissions_execute(req: ToolRequestEvaluationRequest) -> ToolExecutionRespo
         stderr=brain_result.stderr,
         durationMs=brain_result.durationMs,
     )
+
+
+def _approval_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ApprovalUnauthorized):
+        return HTTPException(status_code=401, detail=str(exc))
+    if isinstance(exc, ApprovalForbidden):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, ApprovalAuthNotConfigured):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, ApprovalAuditError):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, ApprovalCapacityError):
+        return HTTPException(status_code=429, detail=str(exc))
+    if isinstance(exc, ApprovalNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, ApprovalDisabled):
+        return HTTPException(status_code=503, detail=str(exc))
+    return HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/api/tool-approvals", response_model=ToolApprovalListResponse)
+def tool_approvals_list(
+    limit: int = 50,
+    x_brain_approval_token: Optional[str] = Header(
+        default=None, alias="X-Brain-Approval-Token",
+    ),
+) -> ToolApprovalListResponse:
+    """List authenticated review metadata without exposing canonicalArgs."""
+    try:
+        authorize_approval_token(x_brain_approval_token)
+        return ToolApprovalListResponse(
+            approvals=[ToolApprovalResponse(**r) for r in list_approvals(limit)],
+        )
+    except (
+        ApprovalAuthNotConfigured, ApprovalUnauthorized, ApprovalForbidden,
+    ) as exc:
+        raise _approval_http_error(exc)
+
+
+@app.post("/api/tool-approvals/{approval_id}/approve", response_model=ToolApprovalResponse)
+def tool_approval_approve(
+    approval_id: str,
+    req: ApproveToolApprovalRequest,
+    x_brain_approval_token: Optional[str] = Header(
+        default=None, alias="X-Brain-Approval-Token",
+    ),
+) -> ToolApprovalResponse:
+    try:
+        authorize_approval_token(x_brain_approval_token)
+        return ToolApprovalResponse(**approve_tool_approval(approval_id, req.approvedBy))
+    except (
+        ApprovalAuthNotConfigured, ApprovalAuditError, ApprovalUnauthorized, ApprovalForbidden,
+        ApprovalNotFound, ApprovalDisabled, ApprovalConflict,
+    ) as exc:
+        raise _approval_http_error(exc)
+
+
+@app.post("/api/tool-approvals/{approval_id}/reject", response_model=ToolApprovalResponse)
+def tool_approval_reject(
+    approval_id: str,
+    req: RejectToolApprovalRequest,
+    x_brain_approval_token: Optional[str] = Header(
+        default=None, alias="X-Brain-Approval-Token",
+    ),
+) -> ToolApprovalResponse:
+    try:
+        authorize_approval_token(x_brain_approval_token)
+        return ToolApprovalResponse(**reject_tool_approval(
+            approval_id, actor=req.rejectedBy, reason=req.reason,
+        ))
+    except (
+        ApprovalAuthNotConfigured, ApprovalAuditError, ApprovalUnauthorized, ApprovalForbidden,
+        ApprovalNotFound, ApprovalConflict,
+    ) as exc:
+        raise _approval_http_error(exc)
+
+
+@app.post("/api/tool-approvals/{approval_id}/execute", response_model=ToolApprovalResponse)
+def tool_approval_execute(
+    approval_id: str,
+    req: ExecuteToolApprovalRequest,
+    x_brain_approval_token: Optional[str] = Header(
+        default=None, alias="X-Brain-Approval-Token",
+    ),
+) -> ToolApprovalResponse:
+    # req is deliberately empty and extra=forbid: callers cannot replace tool/args.
+    try:
+        authorize_approval_token(x_brain_approval_token)
+        return ToolApprovalResponse(**execute_tool_approval(approval_id))
+    except (
+        ApprovalAuthNotConfigured, ApprovalUnauthorized, ApprovalForbidden,
+        ApprovalNotFound, ApprovalDisabled, ApprovalConflict,
+    ) as exc:
+        raise _approval_http_error(exc)
 
 
 # ── chat / AI consolidation (v1: manual paste/import) ──────────────────────────
@@ -713,6 +842,30 @@ def consolidation_get(draft_id: str) -> ConsolidationDraftResponse:
     if draft is None:
         raise HTTPException(status_code=404, detail=f"Consolidation draft '{draft_id}' not found.")
     return _consolidation_to_response(draft)
+
+
+@app.post(
+    "/api/consolidation/drafts/{draft_id}/assist",
+    response_model=ConsolidationAssistResponse,
+)
+def consolidation_assist(
+    draft_id: str, req: CaptureAssistRequest,
+) -> ConsolidationAssistResponse:
+    """Generate a validated preview only; never updates or saves the draft."""
+    try:
+        return ConsolidationAssistResponse(**assist_consolidation(draft_id, req.modelTier))
+    except AssistDraftNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except AssistSavedDraft as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except AssistDraftChanged as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except AssistOutputError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except OllamaBusyError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.patch("/api/consolidation/drafts/{draft_id}", response_model=ConsolidationDraftResponse)
@@ -819,6 +972,28 @@ def research_get(draft_id: str) -> ResearchDraftResponse:
     if draft is None:
         raise HTTPException(status_code=404, detail=f"Research draft '{draft_id}' not found.")
     return _research_to_response(draft)
+
+
+@app.post(
+    "/api/research/drafts/{draft_id}/assist",
+    response_model=ResearchAssistResponse,
+)
+def research_assist(draft_id: str, req: CaptureAssistRequest) -> ResearchAssistResponse:
+    """Generate a source-bounded research preview without fetching URLs or writing."""
+    try:
+        return ResearchAssistResponse(**assist_research(draft_id, req.modelTier))
+    except AssistDraftNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except AssistSavedDraft as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except AssistDraftChanged as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except AssistOutputError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except OllamaBusyError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.patch("/api/research/drafts/{draft_id}", response_model=ResearchDraftResponse)
@@ -930,6 +1105,30 @@ def email_intake_get(draft_id: str) -> EmailIntakeDraftResponse:
     if draft is None:
         raise HTTPException(status_code=404, detail=f"Email intake draft '{draft_id}' not found.")
     return _email_to_response(draft)
+
+
+@app.post(
+    "/api/email-intake/drafts/{draft_id}/assist",
+    response_model=EmailIntakeAssistResponse,
+)
+def email_intake_assist(
+    draft_id: str, req: CaptureAssistRequest,
+) -> EmailIntakeAssistResponse:
+    """Generate an informational email preview without mutating any workflow."""
+    try:
+        return EmailIntakeAssistResponse(**assist_email(draft_id, req.modelTier))
+    except AssistDraftNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except AssistSavedDraft as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except AssistDraftChanged as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except AssistOutputError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except OllamaBusyError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.patch("/api/email-intake/drafts/{draft_id}", response_model=EmailIntakeDraftResponse)
@@ -2178,7 +2377,12 @@ def agent_modes_list() -> AgentModesResponse:
 # ── agent tool requests (v0: evaluate-only via Permission Gateway; no execution) ─
 
 @app.post("/api/agent/tool-request", response_model=None)
-def agent_tool_request_create(req: CreateAgentToolRequestRequest):
+def agent_tool_request_create(
+    req: CreateAgentToolRequestRequest,
+    x_brain_approval_token: Optional[str] = Header(
+        default=None, alias="X-Brain-Approval-Token",
+    ),
+):
     """
     Evaluate a structured agent tool-request proposal through the Permission Gateway
     and log the evaluation. NEVER executes the tool, never calls /execute, the brain
@@ -2195,13 +2399,20 @@ def agent_tool_request_create(req: CreateAgentToolRequestRequest):
         return AgentModeBlockedResponse(mode=mode, message=mode_blocked_message(mode))
 
     try:
+        if mode == "assist" and is_approval_required_tool(req.tool.strip()):
+            authorize_approval_token(x_brain_approval_token)
         record = create_agent_tool_request(
             tool=req.tool,
             args=req.args,
             reason=req.reason,
             requested_by=req.requestedBy,
             conversation_id=req.conversationId,
+            mode=mode,
         )
+    except (ApprovalAuthNotConfigured, ApprovalUnauthorized, ApprovalForbidden) as exc:
+        raise _approval_http_error(exc)
+    except ApprovalCapacityError as exc:
+        raise _approval_http_error(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return AgentToolRequestResponse(**record)
@@ -2258,7 +2469,7 @@ def agent_chat(req: AgentChatRequest) -> AgentChatResponse:
     mode = normalize_mode(req.mode)
     structured_model = None
     if can_evaluate_tool_requests(mode):
-        structured = evaluate_structured_output(result["message"], conv_id)
+        structured = evaluate_structured_output(result["message"], conv_id, mode=mode)
         if structured["toolRequests"] or structured["parseErrors"]:
             structured_model = AgentChatStructured(
                 toolRequests=[AgentToolRequestResponse(**r) for r in structured["toolRequests"]],
@@ -2410,7 +2621,7 @@ def agent_chat_stream(req: AgentChatRequest) -> StreamingResponse:
             # Failures here must never break the stream, so guard defensively.
             try:
                 if can_evaluate_tool_requests(mode):
-                    structured = evaluate_structured_output(full_content, conv_id)
+                    structured = evaluate_structured_output(full_content, conv_id, mode=mode)
                     if structured["toolRequests"] or structured["parseErrors"]:
                         yield _sse("structured", {
                             **structured,

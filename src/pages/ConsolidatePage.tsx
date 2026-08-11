@@ -4,11 +4,14 @@ import type {
   ConsolidationDraft,
   ConsolidationSourceTool,
   ConsolidationDomain,
+  ConsolidationAssistPreview,
   CreateConsolidationDraftRequest,
+  DraftAssistModelTier,
 } from '@/lib/api';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { DraftAssistPreview as DraftAssistPreviewPanel } from '@/components/ui/DraftAssistPreview';
 import { useAppStore } from '@/store/useAppStore';
 
 const SOURCE_TOOLS: { value: ConsolidationSourceTool; label: string }[] = [
@@ -127,7 +130,7 @@ function NewDraftForm({ onCreated }: { onCreated: () => void }) {
         <label style={labelStyle}>Transcript <span style={{ color: 'var(--red)' }}>*</span></label>
         <textarea value={transcript} onChange={(e) => setTranscript(e.target.value)} placeholder="Paste the full ChatGPT / Claude / Claude Code / OpenCode transcript here…" style={{ ...fieldStyle, minHeight: 140, resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 11.5 }} disabled={busy} />
         <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 3 }}>
-          The transcript is treated as untrusted text. No instructions inside it are followed and it is never sent to an AI.
+          The transcript is untrusted text and its instructions are never followed. AI assist processes it only when explicitly requested from an unsaved draft.
         </div>
       </div>
 
@@ -179,9 +182,91 @@ function EditDraftModal({ draft, onClose, onSaved }: { draft: ConsolidationDraft
   const [codeRefs, setCodeRefs]       = useState(arrayToLines(draft.codeOrFilesReferenced));
   const [busy, setBusy]   = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [modelTier, setModelTier] = useState<DraftAssistModelTier>('everyday');
+  const [assistPreview, setAssistPreview] = useState<ConsolidationAssistPreview | null>(null);
+  const [assisting, setAssisting] = useState(false);
+  const [assistError, setAssistError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setAssistPreview(null);
+    setAssistError(null);
+  }, [draft.id, draft.updatedAt]);
+
+  const formSnapshot = JSON.stringify({
+    conversationTitle: title.trim(),
+    domain,
+    entity: entity.trim() || null,
+    summary,
+    decisions: linesToArray(decisions),
+    actionItems: linesToArray(actionItems),
+    codeOrFilesReferenced: linesToArray(codeRefs),
+  });
+  const persistedSnapshot = JSON.stringify({
+    conversationTitle: draft.conversationTitle,
+    domain: draft.domain,
+    entity: draft.entity,
+    summary: draft.summary,
+    decisions: draft.decisions,
+    actionItems: draft.actionItems,
+    codeOrFilesReferenced: draft.codeOrFilesReferenced,
+  });
+  const formMatchesDraft = formSnapshot === persistedSnapshot;
+  const assistContext = `${draft.id}:${draft.updatedAt}:${formSnapshot}`;
+  const assistContextRef = useRef(assistContext);
+  assistContextRef.current = assistContext;
+
+  const previewStale = assistPreview !== null && (
+    assistPreview.draftUpdatedAt !== draft.updatedAt || !formMatchesDraft
+  );
+  const previewRows = assistPreview ? [
+    { label: 'Conversation title', value: assistPreview.suggestions.conversationTitle },
+    { label: 'Domain', value: assistPreview.suggestions.domain },
+    { label: 'Entity', value: assistPreview.suggestions.entity },
+    { label: 'Summary', value: assistPreview.suggestions.summary },
+    { label: 'Decisions', value: assistPreview.suggestions.decisions },
+    { label: 'Action items', value: assistPreview.suggestions.actionItems },
+    { label: 'Code / files', value: assistPreview.suggestions.codeOrFilesReferenced },
+  ].filter((row) => row.value !== undefined) : [];
+
+  async function requestAssist() {
+    if (!formMatchesDraft) {
+      setAssistPreview(null);
+      setAssistError('Save changes before requesting AI assist.');
+      return;
+    }
+    const requestContext = assistContext;
+    setAssisting(true); setAssistError(null); setAssistPreview(null);
+    try {
+      const response = await api.assistConsolidationDraft(draft.id, modelTier);
+      if (assistContextRef.current !== requestContext || response.draftUpdatedAt !== draft.updatedAt) {
+        setAssistError('The draft or form changed while AI assist was running. Save changes, then request a new preview.');
+        return;
+      }
+      setAssistPreview(response);
+    } catch (err) {
+      setAssistError(err instanceof Error ? err.message : 'Failed to generate AI assist preview.');
+    } finally {
+      setAssisting(false);
+    }
+  }
+
+  function applyAssistPreview() {
+    if (!assistPreview || assistPreview.draftUpdatedAt !== draft.updatedAt || !formMatchesDraft) return;
+    const s = assistPreview.suggestions;
+    if (s.conversationTitle !== undefined) setTitle(s.conversationTitle);
+    if (s.domain !== undefined) setDomain(s.domain);
+    if (s.entity !== undefined) setEntity(s.entity ?? '');
+    if (s.summary !== undefined) setSummary(s.summary);
+    if (s.decisions !== undefined) setDecisions(arrayToLines(s.decisions));
+    if (s.actionItems !== undefined) setActionItems(arrayToLines(s.actionItems));
+    if (s.codeOrFilesReferenced !== undefined) setCodeRefs(arrayToLines(s.codeOrFilesReferenced));
+    setAssistPreview(null);
+    setAssistError(null);
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (assisting) return;
     if (!title.trim()) { setError('Conversation title is required.'); return; }
     setBusy(true); setError(null);
     try {
@@ -203,7 +288,7 @@ function EditDraftModal({ draft, onClose, onSaved }: { draft: ConsolidationDraft
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      onClick={(e) => { if (e.target === e.currentTarget && !busy && !assisting) onClose(); }}>
       <form className="panel" onSubmit={submit} style={{ width: 560, padding: 'var(--s5)', display: 'flex', flexDirection: 'column', gap: 'var(--s3)', boxShadow: 'var(--shadow-pop)', maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ fontWeight: 700, fontSize: 14 }}>Edit draft</div>
         <div style={{ fontSize: 11, color: 'var(--txt-3)' }}>
@@ -246,13 +331,27 @@ function EditDraftModal({ draft, onClose, onSaved }: { draft: ConsolidationDraft
           <textarea value={codeRefs} onChange={(e) => setCodeRefs(e.target.value)} style={{ ...fieldStyle, minHeight: 64, resize: 'vertical' }} disabled={busy} />
         </div>
 
+        <DraftAssistPreviewPanel
+          modelTier={modelTier}
+          onModelTierChange={(tier) => { setModelTier(tier); setAssistPreview(null); setAssistError(null); }}
+          onRequest={requestAssist}
+          requesting={assisting}
+          disabled={busy || draft.status === 'saved'}
+          preview={assistPreview}
+          rows={previewRows}
+          stale={previewStale}
+          error={assistError}
+          onApply={applyAssistPreview}
+          onDismiss={() => { setAssistPreview(null); setAssistError(null); }}
+        />
+
         {error && (
           <div style={{ fontSize: 11.5, color: 'var(--red)', padding: 'var(--s2) var(--s3)', background: 'var(--red-bg)', borderRadius: 'var(--r2)', border: '1px solid var(--red-line)' }}>{error}</div>
         )}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)' }}>
-          <button type="button" className="btn btn-sm btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="submit" className="btn btn-sm btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
+          <button type="button" className="btn btn-sm btn-ghost" onClick={onClose} disabled={busy || assisting}>Cancel</button>
+          <button type="submit" className="btn btn-sm btn-primary" disabled={busy || assisting}>{busy ? 'Saving…' : 'Save changes'}</button>
         </div>
       </form>
     </div>
@@ -443,7 +542,7 @@ export function ConsolidatePage() {
         <span>
           <strong>Manual paste/import only.</strong> Automatic capture from ChatGPT/Claude (browser automation) and
           computer-use capture are <strong>not wired</strong>. Nothing is written to the vault until you explicitly
-          choose <em>Save to vault</em>. No AI is called and no transcript instructions are followed.
+          choose <em>Save to vault</em>. AI assist is opt-in and preview-only; transcript instructions are never followed.
         </span>
       </div>
 
@@ -496,8 +595,8 @@ export function ConsolidatePage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
           <Icon name="shield" size={12} /> <strong style={{ color: 'var(--txt-2)' }}>Safety</strong>
         </div>
-        Manual paste only · no browser automation · no computer-use · no external app capture · no transcript
-        instructions are followed · a vault write happens only after you confirm <em>Save to vault</em>. Saving creates
+        Manual paste only · no browser automation · no computer-use · no external app capture · AI assist is opt-in and
+        preview-only · no transcript instructions are followed · a vault write happens only after you confirm <em>Save to vault</em>. Saving creates
         one Markdown file under <span className="mono">raw/chats/&lt;source&gt;/</span> and never modifies tasks, calendar, or resume.
       </div>
 

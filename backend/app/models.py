@@ -1,6 +1,6 @@
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -189,6 +189,10 @@ class AgentStatusResponse(BaseModel):
     model: str
     available: bool
     message: str
+    everydayModel: Optional[str] = None
+    heavyModel: Optional[str] = None
+    everydayAvailable: Optional[bool] = None
+    heavyAvailable: Optional[bool] = None
 
 
 class AgentChatContext(BaseModel):
@@ -368,6 +372,8 @@ class TaskStatusUpdateResponse(BaseModel):
 
 
 class CreateVaultTaskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title:    str
     status:   str              # todo | in progress | blocked | done
     area:     Optional[str] = None
@@ -410,6 +416,8 @@ class UpdateCalendarCandidateRequest(BaseModel):
 
 
 class CreateCalendarCandidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     date:     str
     time:     Optional[str] = None
     duration: Optional[str] = None
@@ -1097,7 +1105,10 @@ class ToolRequestEvaluationResponse(BaseModel):
 class PermissionEvaluationLog(BaseModel):
     id:                   str
     timestamp:            str
-    source:               Optional[str] = "gateway_eval"   # gateway_eval | gateway_execution
+    source:               Optional[Literal[
+        "gateway_eval", "gateway_execution", "runtime_bridge_validation",
+        "approval_transition",
+    ]] = "gateway_eval"
     tool:                 str
     requestedBy:          Optional[str] = None
     reason:               Optional[str] = None
@@ -1114,6 +1125,10 @@ class PermissionEvaluationLog(BaseModel):
     stdoutPreview:        Optional[str]   = None
     stderrPreview:        Optional[str]   = None
     durationMs:           Optional[float] = None
+    approvalId:           Optional[str]   = None
+    requestId:            Optional[str]   = None
+    approvedBy:           Optional[str]   = None
+    approvedAt:           Optional[str]   = None
 
 
 class PermissionEvaluationLogsResponse(BaseModel):
@@ -1169,9 +1184,17 @@ class AgentToolRequestResponse(BaseModel):
     reason:         Optional[str] = None
     requestedBy:    str
     conversationId: Optional[str] = None
+    mode:           str = "locked"
+    approvalId:     Optional[str] = None
+    approvalStatus: Optional[Literal[
+        "pending_approval", "approved", "executing", "executed", "failed", "rejected",
+    ]] = None
     evaluation:     AgentToolRequestEvaluation
     createdAt:      str
-    status:         str             # evaluated_only in v0
+    status:         Literal[
+        "evaluated_only", "pending_approval", "approved", "executing",
+        "executed", "failed", "rejected",
+    ]
 
 
 class AgentToolRequestListResponse(BaseModel):
@@ -1213,6 +1236,173 @@ class AgentModeBlockedResponse(BaseModel):
     status:  str = "blocked_by_mode"
     mode:    str
     message: str
+
+
+# ── gated local tool approvals (A3) ───────────────────────────────────────────
+
+class ToolApprovalExecutionSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ok:         bool
+    resultType: Literal["brain_command", "task_created", "calendar_candidate_created"]
+    message:    str = Field(max_length=300)
+    path:       Optional[str] = Field(default=None, max_length=500)
+    id:         Optional[str] = Field(default=None, max_length=100)
+
+
+class ToolApprovalBrainReviewFields(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ToolApprovalTaskReviewFields(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title:    str = Field(max_length=300)
+    status:   Literal["todo", "in progress", "blocked", "done"]
+    area:     Optional[str] = Field(default=None, max_length=500)
+    priority: Optional[Literal["low", "medium", "high"]] = None
+    due:      Optional[str] = Field(default=None, max_length=10)
+    source:   Optional[str] = Field(default=None, max_length=500)
+
+
+class ToolApprovalCalendarReviewFields(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    date:     str = Field(max_length=10)
+    time:     Optional[str] = Field(default=None, max_length=5)
+    duration: Optional[str] = Field(default=None, max_length=50)
+    title:    str = Field(max_length=300)
+    reason:   Optional[str] = Field(default=None, max_length=500)
+    source:   Optional[str] = Field(default=None, max_length=500)
+    approved: Literal["No"] = "No"
+
+
+class ToolApprovalResponse(BaseModel):
+    id:                     str
+    requestId:              str
+    status:                 Literal[
+        "pending_approval", "approved", "executing", "executed", "failed", "rejected",
+    ]
+    tool:                   str
+    mode:                   str
+    risk:                   str
+    argsSummary:            str = Field(max_length=240)
+    reviewFields:           Union[
+        ToolApprovalTaskReviewFields,
+        ToolApprovalCalendarReviewFields,
+        ToolApprovalBrainReviewFields,
+    ]
+    reason:                 Optional[str] = Field(default=None, max_length=300)
+    requestedBy:            str
+    approvedBy:             Optional[str] = None
+    rejectedBy:             Optional[str] = None
+    createdAt:              str
+    approvedAt:             Optional[str] = None
+    rejectedAt:             Optional[str] = None
+    executionStartedAt:     Optional[str] = None
+    executedAt:             Optional[str] = None
+    failedAt:               Optional[str] = None
+    evaluationLogId:        Optional[str] = None
+    executionLogId:         Optional[str] = None
+    transitionLogId:        Optional[str] = None
+    result:                 Optional[ToolApprovalExecutionSummary] = None
+    error:                  Optional[str] = Field(default=None, max_length=300)
+    auditWarning:           Optional[str] = Field(default=None, max_length=200)
+
+
+class ToolApprovalListResponse(BaseModel):
+    approvals: List[ToolApprovalResponse] = []
+
+
+class ApproveToolApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approvedBy: Optional[str] = Field(default=None, max_length=80)
+
+
+class RejectToolApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rejectedBy: Optional[str] = Field(default=None, max_length=80)
+    reason: Optional[str] = Field(default=None, max_length=300)
+
+
+class ExecuteToolApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+# ── capture AI assist (A2: preview only) ──────────────────────────────────────
+
+AssistString = Annotated[str, Field(max_length=500)]
+
+
+class CaptureAssistRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    modelTier: Literal["everyday", "heavy"]
+
+
+class ConsolidationAssistPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    conversationTitle: str = Field(min_length=1, max_length=300)
+    domain: Literal["project", "course", "business", "research", "personal", "unknown"]
+    entity: Optional[str] = Field(max_length=200)
+    summary: str = Field(max_length=4000)
+    decisions: List[AssistString] = Field(max_length=20)
+    actionItems: List[AssistString] = Field(max_length=20)
+    codeOrFilesReferenced: List[AssistString] = Field(max_length=20)
+
+
+class ResearchAssistPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=300)
+    topic: Optional[str] = Field(max_length=200)
+    domain: Literal[
+        "project", "course", "business", "personal",
+        "technical", "market", "general", "unknown",
+    ]
+    entity: Optional[str] = Field(max_length=200)
+    researchQuestion: Optional[str] = Field(max_length=1000)
+    summary: str = Field(max_length=4000)
+    keyFindings: List[AssistString] = Field(max_length=20)
+    openQuestions: List[AssistString] = Field(max_length=20)
+    recommendedNextActions: List[AssistString] = Field(max_length=20)
+
+
+class EmailIntakeAssistPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    subject: str = Field(min_length=1, max_length=500)
+    sender: Optional[str] = Field(max_length=300)
+    receivedAt: Optional[str] = Field(max_length=100)
+    domain: Literal["course", "business", "personal", "unknown"]
+    entity: Optional[str] = Field(max_length=200)
+    summary: str = Field(max_length=4000)
+    actionRequired: Optional[str] = Field(max_length=1000)
+    dueDate: Optional[str] = Field(max_length=100)
+    confidence: Optional[Literal["High", "Medium", "Low"]]
+    proposedTaskRows: List[AssistString] = Field(max_length=20)
+    proposedCalendarRows: List[AssistString] = Field(max_length=20)
+
+
+class ConsolidationAssistResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    modelTier: Literal["everyday", "heavy"]
+    model: str
+    durationMs: float
+    draftUpdatedAt: str
+    suggestions: ConsolidationAssistPreview
+
+
+class ResearchAssistResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    modelTier: Literal["everyday", "heavy"]
+    model: str
+    durationMs: float
+    draftUpdatedAt: str
+    suggestions: ResearchAssistPreview
+
+
+class EmailIntakeAssistResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    modelTier: Literal["everyday", "heavy"]
+    model: str
+    durationMs: float
+    draftUpdatedAt: str
+    suggestions: EmailIntakeAssistPreview
 
 
 # ── chat / AI consolidation (v1: manual paste/import) ──────────────────────────

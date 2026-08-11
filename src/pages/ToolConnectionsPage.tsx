@@ -8,6 +8,7 @@ import { PanelHeader } from '@/components/ui/PanelHeader';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useRuntimeStatus } from '@/lib/runtimeStatus';
 import { RuntimeGuardrails } from '@/components/runtime/RuntimeStatus';
+import { ToolApprovalQueue } from '@/components/tools/ToolApprovalQueue';
 
 // Category display config + render order. Maps backend category ids → section labels.
 const CATEGORY_ORDER: { id: string; label: string; icon: string }[] = [
@@ -155,6 +156,16 @@ function policyStatusColor(status: string): string {
 
 function decisionStyle(decision: string): { css: React.CSSProperties; dot: 'amber' | 'green' | 'grey' | 'red'; label: string } {
   switch (decision) {
+    case 'allowed':
+      return { css: { color: 'var(--green)', border: '1px solid var(--green-line)', background: 'var(--green-bg)' }, dot: 'green', label: 'Allowed' };
+    case 'approved':
+      return { css: { color: 'var(--green)', border: '1px solid var(--green-line)', background: 'var(--green-bg)' }, dot: 'green', label: 'Approved' };
+    case 'executed':
+      return { css: { color: 'var(--green)', border: '1px solid var(--green-line)', background: 'var(--green-bg)' }, dot: 'green', label: 'Executed' };
+    case 'rejected':
+      return { css: { color: 'var(--red)', border: '1px solid var(--red-line)', background: 'var(--red-bg)' }, dot: 'red', label: 'Rejected' };
+    case 'failed':
+      return { css: { color: 'var(--red)', border: '1px solid var(--red-line)', background: 'var(--red-bg)' }, dot: 'red', label: 'Failed' };
     case 'requires_approval':
       return { css: { color: 'var(--amber)', border: '1px solid var(--amber-line)', background: 'var(--amber-bg)' }, dot: 'amber', label: 'Requires approval' };
     case 'not_wired':
@@ -221,7 +232,7 @@ function ResultPanel({ r }: { r: ToolRequestEvaluationResponse }) {
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 5, paddingTop: 'var(--s2)', borderTop: '1px solid var(--line-soft)' }}>
         {row('Allowed', <span style={{ color: 'var(--red)' }}>false</span>)}
-        {row('Execution enabled', <span style={{ color: 'var(--txt-3)' }}>{String(r.executionEnabled)} (v0 executes nothing)</span>)}
+        {row('Execution enabled', <span style={{ color: 'var(--txt-3)' }}>{String(r.executionEnabled)} (classification result; running is a separate action)</span>)}
         {row('Risk level', <span style={{ color: riskBadgeColor(r.riskLevel), fontWeight: 600 }}>{r.riskLevel}</span>)}
         {row('Approval required', r.requiresApproval ? 'Yes' : 'No')}
         {row('Would log', String(r.wouldLog))}
@@ -233,7 +244,10 @@ function ResultPanel({ r }: { r: ToolRequestEvaluationResponse }) {
   );
 }
 
-const LOG_DECISIONS = ['denied', 'requires_approval', 'not_wired', 'disabled'] as const;
+const LOG_DECISIONS = [
+  'allowed', 'denied', 'requires_approval', 'not_wired', 'disabled',
+  'approved', 'rejected', 'executed', 'failed',
+] as const;
 
 // Only these low-risk read-only brain tools may execute through the gateway.
 const EXECUTABLE_TOOLS = ['brain.status', 'brain.raw_status', 'brain.vault_path'];
@@ -280,26 +294,34 @@ function ExecResultPanel({ r }: { r: ToolExecutionResponse }) {
   );
 }
 
-function sourceBadge(source?: string): { label: string; css: React.CSSProperties } {
+function sourceBadge(source?: string | null): { label: string; css: React.CSSProperties } {
   if (source === 'gateway_execution') {
     return { label: 'execution', css: { color: 'var(--live)', border: '1px solid var(--live-line)', background: 'var(--live-bg)' } };
+  }
+  if (source === 'approval_transition') {
+    return { label: 'approval', css: { color: 'var(--amber)', border: '1px solid var(--amber-line)', background: 'var(--amber-bg)' } };
+  }
+  if (source === 'runtime_bridge_validation') {
+    return { label: 'bridge dry-run', css: { color: 'var(--txt-2)', border: '1px solid var(--line)', background: 'transparent' } };
   }
   return { label: 'eval', css: { color: 'var(--txt-2)', border: '1px solid var(--line)', background: 'transparent' } };
 }
 
 function LogRow({ l }: { l: PermissionEvaluationLog }) {
-  const d = decisionStyle(l.decision === 'executed' ? 'requires_approval' : l.decision);
+  const d = decisionStyle(l.decision);
   const sb = sourceBadge(l.source);
   const isExec = l.source === 'gateway_execution';
   const when = l.timestamp.slice(0, 19).replace('T', ' ');
-  const resultColor = l.result === 'success' ? 'var(--green)' : l.result === 'failure' ? 'var(--red)' : 'var(--txt-2)';
+  const resultColor = l.result === 'success' || l.result === 'approved'
+    ? 'var(--green)'
+    : l.result === 'failure' || l.result === 'rejected' ? 'var(--red)' : 'var(--txt-2)';
   return (
     <div style={{ padding: 'var(--s3)', border: '1px solid var(--line-soft)', borderRadius: 'var(--r2)', background: 'var(--surface-2)', display: 'flex', flexDirection: 'column', gap: 4 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--s2)' }}>
         <StatusDot tone={isExec ? (l.result === 'success' ? 'green' : 'red') : d.dot} />
         <span style={{ fontSize: 9.5, fontWeight: 600, padding: '1px 5px', borderRadius: 'var(--r1)', textTransform: 'uppercase', letterSpacing: '0.04em', ...sb.css }}>{sb.label}</span>
         <span className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--txt-0)' }}>{l.tool}</span>
-        <span style={{ fontSize: 10.5, fontWeight: 600, padding: '1px 6px', borderRadius: 'var(--r1)', textTransform: 'uppercase', letterSpacing: '0.04em', ...d.css }}>{isExec ? l.decision : d.label}</span>
+        <span style={{ fontSize: 10.5, fontWeight: 600, padding: '1px 6px', borderRadius: 'var(--r1)', textTransform: 'uppercase', letterSpacing: '0.04em', ...d.css }}>{d.label}</span>
         <span style={{ fontSize: 10, color: riskBadgeColor(l.riskLevel), fontWeight: 600 }}>{l.riskLevel}</span>
         <span className="mono" style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--txt-3)' }}>{when}</span>
       </div>
@@ -313,6 +335,14 @@ function LogRow({ l }: { l: PermissionEvaluationLog }) {
       <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-2)' }}>
         <span style={{ color: 'var(--txt-3)' }}>args</span> {l.sanitizedArgsSummary || '(no args)'}
       </div>
+      {(l.approvalId || l.requestId || l.approvedBy || l.approvedAt) && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px var(--s3)', fontSize: 10, color: 'var(--txt-2)' }}>
+          {l.approvalId && <span>approval <span className="mono" title={l.approvalId}>{l.approvalId.slice(0, 10)}…</span></span>}
+          {l.requestId && <span>request <span className="mono" title={l.requestId}>{l.requestId.slice(0, 10)}…</span></span>}
+          {l.approvedBy && <span>approved by {l.approvedBy}</span>}
+          {l.approvedAt && <span>approved at <span className="mono">{l.approvedAt.slice(0, 19).replace('T', ' ')}</span></span>}
+        </div>
+      )}
       {isExec && l.stdoutPreview && (
         <pre className="mono" style={{ fontSize: 10, color: 'var(--txt-1)', background: 'var(--bg-0)', borderRadius: 'var(--r1)', padding: '6px 8px', margin: 0, maxHeight: 120, overflow: 'auto', whiteSpace: 'pre-wrap' }}>{l.stdoutPreview}</pre>
       )}
@@ -325,7 +355,7 @@ function LogRow({ l }: { l: PermissionEvaluationLog }) {
   );
 }
 
-function PermissionGatewaySection() {
+function PermissionGatewaySection({ refreshSignal }: { refreshSignal?: number }) {
   const [policies, setPolicies] = useState<PermissionPolicy[] | null>(null);
   const [polError, setPolError] = useState<string | null>(null);
 
@@ -377,6 +407,7 @@ function PermissionGatewaySection() {
 
   useEffect(() => { loadPolicies(); }, [loadPolicies]);
   useEffect(() => { loadLogs(); }, [loadLogs]);
+  useEffect(() => { if (refreshSignal) loadLogs(); }, [refreshSignal, loadLogs]);
 
   // Consume a Local Agent handoff once on mount: prefill the form only — never
   // reconstruct raw args from the sanitized summary, never auto-evaluate/execute.
@@ -469,9 +500,9 @@ function PermissionGatewaySection() {
           right={<button className="btn btn-sm btn-ghost" onClick={loadPolicies}><Icon name="sync" size={13} /> Reload</button>}
         />
         <div style={{ fontSize: 11.5, color: 'var(--txt-1)', lineHeight: 1.5, marginBottom: 'var(--s3)' }}>
-          Permission Gateway v0 does not execute tools. It only classifies and explains tool requests.
-          MCP, Gmail, browser, computer-use, and calendar tools are not wired yet. Dangerous actions
-          remain disabled by default.
+          Permission Gateway classifies and explains tool requests. Its separate run action is restricted
+          to low-risk local brain reads. Privileged Assist-mode tools use the approval queue above; MCP,
+          Gmail, browser, and computer-use remain not wired, and dangerous actions stay disabled by default.
         </div>
         {polError ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 'var(--s3)', borderRadius: 'var(--r2)', background: 'var(--red-bg)', border: '1px solid var(--red-line)', fontSize: 12 }}>
@@ -487,7 +518,7 @@ function PermissionGatewaySection() {
 
       {/* evaluator */}
       <div className="panel panel-pad">
-        <PanelHeader icon="bolt" title="Evaluate a tool request" sub="read-only classification — nothing is executed" />
+        <PanelHeader icon="bolt" title="Evaluate a tool request" sub="classification · separate safe-local read action" />
         {reviewNotice && (
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: 'var(--s3) var(--s4)', marginBottom: 'var(--s3)', borderRadius: 'var(--r2)', background: 'var(--live-bg)', border: '1px solid var(--live-line)', fontSize: 11.5, color: 'var(--txt-1)', lineHeight: 1.5 }}>
             <StatusDot tone="live" />
@@ -545,7 +576,7 @@ function PermissionGatewaySection() {
             <span style={{ fontSize: 10.5, color: 'var(--txt-3)' }}>
               {isExecutableTool
                 ? 'Only low-risk local brain status tools can execute through the gateway in this build.'
-                : 'Execution disabled in this build. Gmail, MCP, browser, computer-use, calendar, and filesystem write tools remain disabled.'}
+                : 'Direct gateway execution is disabled for this tool. Approval-owned task/calendar writes must originate in Assist and use the authenticated queue; Gmail, MCP, browser, and computer-use remain disabled.'}
             </span>
           </div>
 
@@ -558,15 +589,15 @@ function PermissionGatewaySection() {
       <div className="panel panel-pad">
         <PanelHeader
           icon="layers"
-          title="Permission Evaluation Logs"
-          sub="backend app-data · read-only"
+          title="Permission / Approval Audit Logs"
+          sub="evaluations · transitions · executions"
           right={<button className="btn btn-sm btn-ghost" onClick={loadLogs}><Icon name="sync" size={13} /> Refresh</button>}
         />
         <div style={{ fontSize: 11.5, color: 'var(--txt-1)', lineHeight: 1.5, marginBottom: 'var(--s3)' }}>
-          Records Permission Gateway evaluations (<span className="mono">eval</span>) and safe-local
-          executions (<span className="mono">execution</span>). Only low-risk local brain status tools can
-          execute through the gateway in this build; Gmail, MCP, browser, computer-use, calendar, and
-          filesystem write tools remain disabled. Logs are stored in backend app-data, not the vault.
+          Records gateway evaluations, safe-local reads, approval transitions, and approved executions.
+          The approval path may run allowlisted brain commands or create one validated vault task/calendar
+          candidate after separate approval and execute confirmations. It never writes Google Calendar.
+          Logs are stored in backend app-data, not the vault.
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--s2)', alignItems: 'center', marginBottom: 'var(--s3)' }}>
@@ -593,7 +624,7 @@ function PermissionGatewaySection() {
           <div style={{ textAlign: 'center', padding: 'var(--s6)', color: 'var(--txt-3)', fontSize: 12 }}>Loading logs…</div>
         ) : logs.length === 0 ? (
           <div style={{ fontSize: 12, color: 'var(--txt-3)', padding: 'var(--s4)', textAlign: 'center' }}>
-            No evaluations logged yet. Evaluate a tool request above to create an entry.
+            No audit entries yet. Evaluations, approval transitions, and executions appear here.
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s2)' }}>
@@ -613,6 +644,7 @@ export function ToolConnectionsPage() {
   const [items, setItems]     = useState<ToolConnectionStatus[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState<string | null>(null);
+  const [logRefresh, setLogRefresh] = useState(0);
 
   // OpenClaw / NemoClaw runtime readiness (read-only; static fallback when backend down).
   const runtime = useRuntimeStatus();
@@ -649,8 +681,8 @@ export function ToolConnectionsPage() {
         <div>
           <div style={{ fontSize: 18, fontWeight: 700 }}>MCP / Tool Connections</div>
           <div style={{ fontSize: 11.5, color: 'var(--txt-2)', marginTop: 3, maxWidth: 620, lineHeight: 1.5 }}>
-            Privileged tools are not enabled yet. This page shows planned integrations and what is
-            currently allowed or blocked.
+            Inspect tool policy, manually authorize queued Assist-mode requests, and review audit logs.
+            Privileged execution remains off unless the backend operator explicitly enables it.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -672,9 +704,9 @@ export function ToolConnectionsPage() {
       }}>
         <Icon name="shield" size={14} style={{ color: 'var(--amber)', marginTop: 1, flexShrink: 0 }} />
         <span>
-          Read-only inventory. No MCP, Gmail, browser, computer-use, Google, GitHub, or Drive calls are
-          made — and no tool is launched or executed. Connecting/enabling privileged tools is not
-          implemented in this build.
+          Connection inventory and runtime guardrails remain read-only. The approval queue below is a
+          separate, token-gated path for the backend's narrow approved tool allowlist; it does not enable
+          MCP, Gmail, browser, computer-use, Google, GitHub, or Drive integrations.
         </span>
       </div>
 
@@ -716,13 +748,17 @@ export function ToolConnectionsPage() {
         </>
       )}
 
+      {/* A3 approval queue — token-gated, explicit approve then explicit execute */}
+      <ToolApprovalQueue onChanged={() => setLogRefresh((n) => n + 1)} />
+
       {/* permission gateway v0 — deny-by-default classification */}
-      <PermissionGatewaySection />
+      <PermissionGatewaySection refreshSignal={logRefresh} />
 
       {/* footer note */}
       <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
         <Icon name="shield" size={12} />
-        Read-only. No connect / enable / authenticate / test / launch / run action is available from this page.
+        Connect, enable, authenticate, test, and runtime launch actions are not available. Approval actions
+        require the dedicated in-memory operator token and the backend kill switch.
       </div>
     </div>
   );

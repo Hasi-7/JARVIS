@@ -4,11 +4,14 @@ import type {
   ResearchDraft,
   ResearchDomain,
   ResearchSource,
+  ResearchAssistPreview,
   CreateResearchDraftRequest,
+  DraftAssistModelTier,
 } from '@/lib/api';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { DraftAssistPreview as DraftAssistPreviewPanel } from '@/components/ui/DraftAssistPreview';
 import { useAppStore } from '@/store/useAppStore';
 
 const DOMAINS: ResearchDomain[] = ['project', 'course', 'business', 'personal', 'technical', 'market', 'general', 'unknown'];
@@ -169,7 +172,7 @@ function DraftFieldSet({ f, set, disabled }: {
         <label style={labelStyle}>Raw notes</label>
         <textarea value={f.rawNotes} onChange={(e) => set('rawNotes', e.target.value)} placeholder="Paste raw research notes, snippets, and links here…" style={{ ...fieldStyle, minHeight: 120, resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 11.5 }} disabled={disabled} />
         <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 3 }}>
-          Notes and sources are treated as untrusted text. URLs are never fetched, nothing is sent to an AI, and no instructions inside them are followed.
+          Notes and sources are untrusted text. URLs are never fetched and instructions inside them are never followed. AI assist processes saved notes only when explicitly requested; source URLs and source details are not sent.
         </div>
       </div>
     </>
@@ -229,6 +232,102 @@ function EditDraftModal({ draft, onClose, onSaved }: { draft: ResearchDraft; onC
   const [f, setF] = useState<DraftFields>(() => fieldsFromDraft(draft));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [modelTier, setModelTier] = useState<DraftAssistModelTier>('everyday');
+  const [assistPreview, setAssistPreview] = useState<ResearchAssistPreview | null>(null);
+  const [assisting, setAssisting] = useState(false);
+  const [assistError, setAssistError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setAssistPreview(null);
+    setAssistError(null);
+  }, [draft.id, draft.updatedAt]);
+
+  const formSnapshot = JSON.stringify({
+    title: f.title.trim(),
+    topic: f.topic.trim() || null,
+    domain: f.domain,
+    entity: f.entity.trim() || null,
+    researchQuestion: f.researchQuestion.trim() || null,
+    summary: f.summary,
+    keyFindings: linesToArray(f.keyFindings),
+    sources: f.sources,
+    openQuestions: linesToArray(f.openQuestions),
+    recommendedNextActions: linesToArray(f.recommendedNextActions),
+    rawNotes: f.rawNotes,
+  });
+  const persistedSnapshot = JSON.stringify({
+    title: draft.title,
+    topic: draft.topic,
+    domain: draft.domain,
+    entity: draft.entity,
+    researchQuestion: draft.researchQuestion,
+    summary: draft.summary,
+    keyFindings: draft.keyFindings,
+    sources: draft.sources,
+    openQuestions: draft.openQuestions,
+    recommendedNextActions: draft.recommendedNextActions,
+    rawNotes: draft.rawNotes,
+  });
+  const formMatchesDraft = formSnapshot === persistedSnapshot;
+  const assistContext = `${draft.id}:${draft.updatedAt}:${formSnapshot}`;
+  const assistContextRef = useRef(assistContext);
+  assistContextRef.current = assistContext;
+
+  const previewStale = assistPreview !== null && (
+    assistPreview.draftUpdatedAt !== draft.updatedAt || !formMatchesDraft
+  );
+  const previewRows = assistPreview ? [
+    { label: 'Title', value: assistPreview.suggestions.title },
+    { label: 'Topic', value: assistPreview.suggestions.topic },
+    { label: 'Domain', value: assistPreview.suggestions.domain },
+    { label: 'Entity', value: assistPreview.suggestions.entity },
+    { label: 'Research question', value: assistPreview.suggestions.researchQuestion },
+    { label: 'Summary', value: assistPreview.suggestions.summary },
+    { label: 'Key findings', value: assistPreview.suggestions.keyFindings },
+    { label: 'Open questions', value: assistPreview.suggestions.openQuestions },
+    { label: 'Next actions', value: assistPreview.suggestions.recommendedNextActions },
+  ].filter((row) => row.value !== undefined) : [];
+
+  async function requestAssist() {
+    if (!formMatchesDraft) {
+      setAssistPreview(null);
+      setAssistError('Save changes before requesting AI assist.');
+      return;
+    }
+    const requestContext = assistContext;
+    setAssisting(true); setAssistError(null); setAssistPreview(null);
+    try {
+      const response = await api.assistResearchDraft(draft.id, modelTier);
+      if (assistContextRef.current !== requestContext || response.draftUpdatedAt !== draft.updatedAt) {
+        setAssistError('The draft or form changed while AI assist was running. Save changes, then request a new preview.');
+        return;
+      }
+      setAssistPreview(response);
+    } catch (err) {
+      setAssistError(err instanceof Error ? err.message : 'Failed to generate AI assist preview.');
+    } finally {
+      setAssisting(false);
+    }
+  }
+
+  function applyAssistPreview() {
+    if (!assistPreview || assistPreview.draftUpdatedAt !== draft.updatedAt || !formMatchesDraft) return;
+    const s = assistPreview.suggestions;
+    setF((prev) => ({
+      ...prev,
+      ...(s.title !== undefined ? { title: s.title } : {}),
+      ...(s.topic !== undefined ? { topic: s.topic ?? '' } : {}),
+      ...(s.domain !== undefined ? { domain: s.domain } : {}),
+      ...(s.entity !== undefined ? { entity: s.entity ?? '' } : {}),
+      ...(s.researchQuestion !== undefined ? { researchQuestion: s.researchQuestion ?? '' } : {}),
+      ...(s.summary !== undefined ? { summary: s.summary } : {}),
+      ...(s.keyFindings !== undefined ? { keyFindings: arrayToLines(s.keyFindings) } : {}),
+      ...(s.openQuestions !== undefined ? { openQuestions: arrayToLines(s.openQuestions) } : {}),
+      ...(s.recommendedNextActions !== undefined ? { recommendedNextActions: arrayToLines(s.recommendedNextActions) } : {}),
+    }));
+    setAssistPreview(null);
+    setAssistError(null);
+  }
 
   function set<K extends keyof DraftFields>(k: K, v: DraftFields[K]) {
     setF((prev) => ({ ...prev, [k]: v }));
@@ -236,6 +335,7 @@ function EditDraftModal({ draft, onClose, onSaved }: { draft: ResearchDraft; onC
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (assisting) return;
     if (!f.title.trim()) { setError('Title is required.'); return; }
     setBusy(true); setError(null);
     try {
@@ -250,16 +350,29 @@ function EditDraftModal({ draft, onClose, onSaved }: { draft: ResearchDraft; onC
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      onClick={(e) => { if (e.target === e.currentTarget && !busy && !assisting) onClose(); }}>
       <form className="panel" onSubmit={submit} style={{ width: 640, padding: 'var(--s5)', display: 'flex', flexDirection: 'column', gap: 'var(--s3)', boxShadow: 'var(--shadow-pop)', maxHeight: '92vh', overflowY: 'auto' }}>
         <div style={{ fontWeight: 700, fontSize: 14 }}>Edit research draft</div>
         <DraftFieldSet f={f} set={set} disabled={busy} />
+        <DraftAssistPreviewPanel
+          modelTier={modelTier}
+          onModelTierChange={(tier) => { setModelTier(tier); setAssistPreview(null); setAssistError(null); }}
+          onRequest={requestAssist}
+          requesting={assisting}
+          disabled={busy || draft.status === 'saved'}
+          preview={assistPreview}
+          rows={previewRows}
+          stale={previewStale}
+          error={assistError}
+          onApply={applyAssistPreview}
+          onDismiss={() => { setAssistPreview(null); setAssistError(null); }}
+        />
         {error && (
           <div style={{ fontSize: 11.5, color: 'var(--red)', padding: 'var(--s2) var(--s3)', background: 'var(--red-bg)', borderRadius: 'var(--r2)', border: '1px solid var(--red-line)' }}>{error}</div>
         )}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--s2)' }}>
-          <button type="button" className="btn btn-sm btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="submit" className="btn btn-sm btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
+          <button type="button" className="btn btn-sm btn-ghost" onClick={onClose} disabled={busy || assisting}>Cancel</button>
+          <button type="submit" className="btn btn-sm btn-primary" disabled={busy || assisting}>{busy ? 'Saving…' : 'Save changes'}</button>
         </div>
       </form>
     </div>
@@ -448,8 +561,8 @@ export function ResearchPage() {
         <Icon name="shield" size={14} style={{ color: 'var(--amber)', marginTop: 1, flexShrink: 0 }} />
         <span>
           <strong>Manual capture only.</strong> Browser research automation, web search, and computer-use are
-          <strong> not wired</strong>. URLs you paste are never fetched and no AI is called. Nothing is written to
-          the vault until you explicitly choose <em>Save to vault</em>.
+          <strong> not wired</strong>. URLs you paste are never fetched. AI assist is opt-in and preview-only; nothing is
+          written to the vault until you explicitly choose <em>Save to vault</em>.
         </span>
       </div>
 
@@ -502,8 +615,8 @@ export function ResearchPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
           <Icon name="shield" size={12} /> <strong style={{ color: 'var(--txt-2)' }}>Safety</strong>
         </div>
-        Manual capture only · no browser automation · no external web fetch · no computer-use · no MCP · no AI
-        research · a vault write happens only after you confirm <em>Save to vault</em>. Saving creates one Markdown
+        Manual capture only · no browser automation · no external web fetch · no computer-use · no MCP · no automated AI
+        research · AI assist is opt-in and preview-only · a vault write happens only after you confirm <em>Save to vault</em>. Saving creates one Markdown
         note under <span className="mono">raw/research/</span> and never modifies tasks, calendar, or resume.
       </div>
 

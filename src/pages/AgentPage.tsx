@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
-import { api, streamAgentMessage, isBlockedByMode } from '@/lib/api';
+import { api, ApiError, streamAgentMessage, isBlockedByMode } from '@/lib/api';
 import type { ConversationSummary, AgentToolRequestResponse, AgentStructuredOutput, AgentModePolicy } from '@/lib/api';
 import { resolveModePolicy } from '@/lib/agentModes';
 import { useRuntimeStatus } from '@/lib/runtimeStatus';
@@ -10,6 +10,7 @@ import { AgentSphere } from '@/components/ui/AgentSphere';
 import { ModeBadge } from '@/components/ui/ModeBadge';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { Icon } from '@/components/ui/Icon';
+import { ToolApprovalQueue } from '@/components/tools/ToolApprovalQueue';
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -19,7 +20,7 @@ interface ChatMessage {
   content:     string;
   timestamp:   string;
   durationMs?: number;
-  structured?: AgentStructuredOutput;   // evaluate-only tool requests parsed from this reply
+  structured?: AgentStructuredOutput;   // chat-proposed requests; never auto-executed
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -47,11 +48,16 @@ function isoToDateLabel(iso: string): string {
   } catch { return ''; }
 }
 
-// ── agent tool requests (evaluate-only; never executes) ─────────────────────────
+// ── agent tool requests (chat never executes; Assist may queue for review) ──────
 
 const TOOL_OPTIONS = [
   'brain.status', 'brain.raw_status', 'brain.vault_path',
+  'brain.today', 'brain.sync_raw', 'vault.create_task', 'calendar.create_candidate',
   'gmail.search', 'gmail.send', 'obsidian.search', 'browser.search', 'shell.run',
+];
+
+const APPROVAL_REQUIRED_TOOLS = [
+  'brain.today', 'brain.sync_raw', 'vault.create_task', 'calendar.create_candidate',
 ];
 
 // Only these low-risk read-only brain tools can actually execute (manually, on
@@ -87,7 +93,8 @@ function ChatStructuredPanel({ s, canReview }: { s: AgentStructuredOutput; canRe
         </div>
         <div style={{ fontSize: 9.5, color: 'var(--txt-3)', lineHeight: 1.4 }}>
           The reply proposed tool requests, but they were not evaluated or stored. Switch to Draft,
-          Assist, Research, or Escalation to evaluate them (evaluation only — nothing executes).
+          Assist, Research, or Escalation to evaluate them. Chat never executes tools; eligible Assist
+          requests may enter the authenticated queue for separate approval and execution.
         </div>
       </div>
     );
@@ -120,7 +127,7 @@ function ChatStructuredPanel({ s, canReview }: { s: AgentStructuredOutput; canRe
             <span style={{ fontWeight: 600, color: `var(--${decisionTone(ev.decision) === 'green' ? 'green' : decisionTone(ev.decision) === 'red' ? 'red' : decisionTone(ev.decision) === 'amber' ? 'amber' : 'txt-3'})` }}>{ev.decision}</span>
             <span style={{ color: 'var(--txt-3)' }}>risk {ev.riskLevel}</span>
             <span style={{ color: 'var(--txt-3)' }}>exec {String(ev.executionEnabled)}</span>
-            <span style={{ color: 'var(--txt-3)' }}>· {r.status}</span>
+            <span style={{ color: 'var(--txt-3)' }}>· {r.approvalStatus ?? r.status}</span>
             <span className="mono" style={{ color: 'var(--txt-3)' }}>log {ev.logId.slice(0, 8)}…</span>
             {r.reason && <span style={{ color: 'var(--txt-2)', width: '100%' }}>{r.reason}</span>}
             <div style={{ width: '100%' }}>
@@ -129,7 +136,9 @@ function ChatStructuredPanel({ s, canReview }: { s: AgentStructuredOutput; canRe
                   <Icon name="arrow-right" size={11} /> Review in Tool Connections
                 </button>
               ) : (
-                <span style={{ fontSize: 9.5, color: 'var(--txt-3)', fontStyle: 'italic' }}>Evaluation only — not executable in this build</span>
+                <span style={{ fontSize: 9.5, color: 'var(--txt-3)', fontStyle: 'italic' }}>
+                  {r.approvalId ? 'Queued below for authenticated operator review' : 'No direct execution from chat'}
+                </span>
               )}
             </div>
           </div>
@@ -139,29 +148,32 @@ function ChatStructuredPanel({ s, canReview }: { s: AgentStructuredOutput; canRe
         <div key={i} style={{ fontSize: 10, color: 'var(--amber)' }}>{e}</div>
       ))}
       <div style={{ fontSize: 9.5, color: 'var(--txt-3)', lineHeight: 1.4 }}>
-        Structured tool requests are evaluated only. They are not executed from chat. Safe-local execution remains manual in Tool Connections.
+        Chat never auto-executes. Eligible Assist requests enter the authenticated queue; approval and execution remain two explicit operator actions.
       </div>
     </div>
   );
 }
 
-function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview }: {
+function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview, onRequestCreated }: {
   convId: string | null;
   refreshSignal?: number;
   modePolicy: AgentModePolicy;
   canReview: boolean;
+  onRequestCreated?: () => void;
 }) {
   const navigate = useAppStore((st) => st.navigate);
   const setToolReviewTarget = useAppStore((st) => st.setToolReviewTarget);
   const [tool, setTool]       = useState('brain.status');
   const [reason, setReason]   = useState('');
   const [argsText, setArgsText] = useState('');
+  const [requestToken, setRequestToken] = useState('');
   const [busy, setBusy]       = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [blockedNotice, setBlockedNotice] = useState<string | null>(null);
   const [requests, setRequests] = useState<AgentToolRequestResponse[] | null>(null);
 
   const canEvaluate = modePolicy.canEvaluateToolRequests;
+  const needsApprovalToken = modePolicy.id === 'assist' && APPROVAL_REQUIRED_TOOLS.includes(tool.trim());
 
   const load = useCallback(async () => {
     try {
@@ -175,6 +187,8 @@ function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview }
   useEffect(() => { load(); }, [load]);
   // Reload when chat produces new evaluated tool requests.
   useEffect(() => { if (refreshSignal) load(); }, [refreshSignal, load]);
+  useEffect(() => { if (!needsApprovalToken) setRequestToken(''); }, [needsApprovalToken]);
+  useEffect(() => () => setRequestToken(''), []);
 
   async function submit() {
     setFormError(null);
@@ -185,6 +199,10 @@ function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview }
       return;
     }
     if (!tool.trim()) { setFormError('Tool is required.'); return; }
+    if (needsApprovalToken && !requestToken) {
+      setFormError('This manual Assist request requires the transient operator approval token.');
+      return;
+    }
     let args: Record<string, unknown> | null = null;
     const raw = argsText.trim();
     if (raw) {
@@ -205,16 +223,28 @@ function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview }
       const res = await api.createAgentToolRequest({
         tool: tool.trim(), args, reason: reason.trim() || null,
         requestedBy: 'local-agent', conversationId: convId, mode: modePolicy.id,
-      });
+      }, needsApprovalToken ? requestToken : undefined);
       if (isBlockedByMode(res)) {
         // Backend enforced the block — show a clear notice, not a gateway error.
         setBlockedNotice(res.message);
         return;
       }
-      setReason(''); setArgsText('');
+      setReason(''); setArgsText(''); setRequestToken('');
       await load();
+      onRequestCreated?.();
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Failed to create request.');
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        setRequestToken('');
+        setFormError(err.status === 401
+          ? 'Approval authentication is required. Re-enter the transient token.'
+          : 'The transient approval token was rejected.');
+      } else if (err instanceof ApiError && err.status === 503) {
+        setFormError(requestToken && err.detail.includes(requestToken)
+          ? err.detail.split(requestToken).join('[credential redacted]')
+          : err.detail);
+      } else {
+        setFormError('Failed to create the tool request.');
+      }
     } finally {
       setBusy(false);
     }
@@ -230,8 +260,8 @@ function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview }
     <div className="panel panel-pad">
       <div className="eyebrow" style={{ marginBottom: 'var(--s3)' }}>Agent Tool Requests</div>
       <div style={{ fontSize: 10.5, color: 'var(--txt-2)', lineHeight: 1.45, marginBottom: 'var(--s3)' }}>
-        Agent Tool Request v0 evaluates requests only. It does not execute tools. The Local Agent is
-        still tool-less — requests are classified by the backend permission gateway and logged for review.
+        The Local Agent remains tool-less and chat never auto-executes. Eligible Assist requests can enter
+        the authenticated queue below; approval and execution remain separate explicit operator actions.
       </div>
 
       {/* mode gate — backend-enforced. Blocked modes cannot create requests. */}
@@ -255,6 +285,17 @@ function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview }
           disabled={busy || !canEvaluate}
           style={{ ...inputStyle, resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 10.5 }}
         />
+        {needsApprovalToken && (
+          <label style={{ fontSize: 9.5, color: 'var(--amber)', lineHeight: 1.4 }}>
+            Operator token required for this manual Assist request
+            <input
+              type="password" value={requestToken} autoComplete="off" spellCheck={false}
+              onChange={(e) => setRequestToken(e.target.value)} placeholder="BRAIN_UI_APPROVAL_TOKEN"
+              disabled={busy || !canEvaluate} style={{ ...inputStyle, marginTop: 4 }}
+            />
+            <span style={{ display: 'block', marginTop: 3, color: 'var(--txt-3)' }}>Kept in this form's memory only. Structured model requests can instead flow into the queue without exposing a token to chat.</span>
+          </label>
+        )}
         {formError && (
           <div style={{ fontSize: 10.5, color: 'var(--red)', padding: '4px 6px', background: 'var(--red-bg)', borderRadius: 'var(--r1)', border: '1px solid var(--red-line)' }}>
             {formError}
@@ -265,7 +306,7 @@ function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview }
             Blocked by mode: {blockedNotice}
           </div>
         )}
-        <button className="btn btn-sm btn-primary" onClick={submit} disabled={busy || !canEvaluate} style={{ justifyContent: 'center' }}>
+        <button className="btn btn-sm btn-primary" onClick={submit} disabled={busy || !canEvaluate || (needsApprovalToken && !requestToken)} style={{ justifyContent: 'center' }}>
           <Icon name="shield" size={12} /> {busy ? 'Evaluating…' : 'Create tool request'}
         </button>
       </div>
@@ -278,6 +319,7 @@ function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview }
           <div style={{ fontSize: 10.5, color: 'var(--txt-3)', fontStyle: 'italic' }}>No tool requests yet.</div>
         ) : requests.map((r) => {
           const ev = r.evaluation;
+          const effectiveStatus = r.approvalStatus ?? r.status;
           return (
             <div key={r.id} style={{ padding: '6px 7px', border: '1px solid var(--line-soft)', borderRadius: 'var(--r2)', background: 'var(--surface-2)', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -291,7 +333,8 @@ function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview }
                 <span>risk {ev.riskLevel}</span>
                 <span>exec {String(ev.executionEnabled)}</span>
                 <span>approval {ev.requiresApproval ? 'yes' : 'no'}</span>
-                <span>status {r.status}</span>
+                <span>status {effectiveStatus}</span>
+                {r.approvalId && <span className="mono">approval {r.approvalId.slice(0, 8)}…</span>}
               </div>
               {r.argsSummary && r.argsSummary !== '(no args)' && (
                 <div className="mono" style={{ fontSize: 9.5, color: 'var(--txt-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.argsSummary}</div>
@@ -319,7 +362,7 @@ function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview }
 
       <div style={{ marginTop: 'var(--s3)', display: 'flex', gap: 6, padding: 'var(--s2) var(--s3)', borderRadius: 'var(--r2)', background: 'var(--surface-2)', fontSize: 10, color: 'var(--txt-3)', lineHeight: 1.4 }}>
         <Icon name="shield" size={11} style={{ color: 'var(--amber)', flexShrink: 0, marginTop: 1 }} />
-        Evaluated only — no run / approve-and-execute here. Safe-local execution lives on Tool Connections.
+        Chat never auto-executes. Assist approval-required requests move through the authenticated queue below; approve and execute are always separate.
       </div>
     </div>
   );
@@ -328,6 +371,7 @@ function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview }
 // ── main component ────────────────────────────────────────────────────────────
 
 export function AgentPage() {
+  const navigate         = useAppStore((s) => s.navigate);
   const agentState       = useAppStore((s) => s.agentState);
   const setAgentState    = useAppStore((s) => s.setAgentState);
   const agentMode        = useAppStore((s) => s.agentMode);
@@ -746,7 +790,7 @@ export function AgentPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                 <StatusDot tone={!modeAvailable ? 'grey' : canEvaluate ? 'green' : 'amber'} />
-                <span>Tool requests: {!modeAvailable ? 'unavailable' : canEvaluate ? 'evaluated only (nothing executes)' : 'blocked'}</span>
+                <span>Tool requests: {!modeAvailable ? 'unavailable' : canEvaluate ? 'evaluated; eligible Assist requests may queue' : 'blocked'}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                 <StatusDot tone={canReview ? 'green' : 'grey'} />
@@ -1052,8 +1096,11 @@ export function AgentPage() {
           </div>
         </div>
 
-        {/* agent tool requests — evaluate-only via permission gateway, gated by mode */}
-        <AgentToolRequestsPanel convId={convId} refreshSignal={toolReqRefresh} modePolicy={modePolicy} canReview={canReview} />
+        {/* Agent requests are mode-gated; Assist approval-required requests may queue. */}
+        <AgentToolRequestsPanel convId={convId} refreshSignal={toolReqRefresh} modePolicy={modePolicy} canReview={canReview} onRequestCreated={() => setToolReqRefresh((n) => n + 1)} />
+
+        {/* Assist-mode privileged requests enter this separate manual queue. Chat never executes them. */}
+        <ToolApprovalQueue compact onChanged={() => setToolReqRefresh((n) => n + 1)} onOpenLogs={() => navigate('tools')} />
 
         {/* runtime guardrail — read-only OpenClaw/NemoClaw readiness */}
         <RuntimeGuardrailNote items={runtime.items} />

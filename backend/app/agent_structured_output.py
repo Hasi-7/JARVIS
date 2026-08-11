@@ -147,7 +147,9 @@ def parse_structured_output(text: Optional[str]) -> dict:
     return {"requests": requests, "parseErrors": errors}
 
 
-def evaluate_structured_output(text: Optional[str], conversation_id: Optional[str]) -> dict:
+def evaluate_structured_output(
+    text: Optional[str], conversation_id: Optional[str], mode: Optional[str] = None,
+) -> dict:
     """
     Parse structured output and route each valid tool request through the
     evaluate-only Agent Tool Request path. NOTHING is executed.
@@ -170,6 +172,7 @@ def evaluate_structured_output(text: Optional[str], conversation_id: Optional[st
                 reason=spec["reason"],
                 requested_by="local-agent",
                 conversation_id=conversation_id,
+                mode=mode,
             )
             records.append(record)
         except ValueError as exc:

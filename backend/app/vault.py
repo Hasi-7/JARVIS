@@ -35,6 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from app.write_lock import serialized_vault_write
+
 logger = logging.getLogger(__name__)
 
 _PREVIEW_CHARS = 2000
@@ -485,6 +487,7 @@ def _backup_task_file(task_path: Path) -> Path:
     return bak_path
 
 
+@serialized_vault_write
 def update_task_status(vault_path: str, task_id: str, new_status: str) -> dict:
     """
     Update a single task's status in the vault task file.
@@ -1480,6 +1483,7 @@ def _extract_table_col_map(lines: list) -> list:
 
 # ── task creation (append-only) ───────────────────────────────────────────────
 
+@serialized_vault_write
 def create_task(
     vault_path: str,
     title: str,

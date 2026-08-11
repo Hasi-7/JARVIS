@@ -31,25 +31,40 @@ When the backend is running, Dashboard buttons and the ⌘K palette call the rea
 
 ## Local agent (Ollama)
 
-Brain UI supports a local chat agent via Ollama. This is **local-agent mode only** — no tools, no vault, no files, no browser, no shell. Responses are text drafts only.
+Brain UI supports a local chat agent via Ollama. Chat never runs tools directly. In Assist mode it may create structured requests for a separate authenticated approval queue; approval and execution remain explicit operator actions.
 
 ### Setup
 
 1. [Install Ollama](https://ollama.com)
-2. Pull a model: `ollama pull llama3.2` (or any model you prefer)
+2. Pull the configured models:
+   `ollama pull gemma4:12b-it-qat` and `ollama pull gemma4:26b-a4b-it-qat`
 3. Start Ollama: `ollama serve`
 4. Set env var before starting the backend:
    ```
-   $env:BRAIN_UI_LOCAL_MODEL = "llama3.2"
+   $env:BRAIN_UI_LOCAL_MODEL = "gemma4:12b-it-qat"
+   $env:BRAIN_UI_LOCAL_MODEL_HEAVY = "gemma4:26b-a4b-it-qat"
    $env:BRAIN_UI_OLLAMA_BASE_URL = "http://localhost:11434"  # default
    ```
 
-The backend default model placeholder is `llama3.2`. Set `BRAIN_UI_LOCAL_MODEL` to any model you have installed.
+The backend maps the public `everyday` and `heavy` tiers to these two environment variables. API callers cannot supply arbitrary model names.
+
+### Approval-gated local execution
+
+Privileged Assist-mode tools are disabled by default. To enable the four narrow approval tools, set both values before starting the backend:
+
+```powershell
+$env:BRAIN_UI_PRIVILEGED_EXECUTION_ENABLED = "true"
+$env:BRAIN_UI_APPROVAL_TOKEN = "<a-long-random-local-secret>"
+```
+
+Enter the same token in the Agent or Tool Connections approval queue. The token stays in component memory only and is sent in `X-Brain-Approval-Token`; it is not saved in localStorage or backend data. Queue visibility, approve, reject, and execute all require the token. Approval and execution are separate confirmations.
+
+Approval-only tools are `brain.today`, `brain.sync_raw`, `vault.create_task`, and `calendar.create_candidate`. Calendar candidates always start with `Approved = No`. Arbitrary shell, arbitrary `brain` commands, generic filesystem writes, Gmail mutations, browser actions, and external writes remain unavailable.
 
 ### What the local agent can do
 
 - Answer questions, help plan, draft suggestions
-- It does **not** have tools in this mode
+- It does **not** execute tools from chat; Assist-mode requests enter the separate approval queue
 - It cannot access files, vault, email, calendar, browser, or shell
 - If asked to perform an action, it will explain it can only draft/suggest
 
@@ -491,9 +506,9 @@ NemoClaw/OpenShell, OpenClaw tool bridge, Browser, Computer use, MCP, Gmail, Res
 | Escalation Queue — field edit | **Real** — `PATCH /api/vault/escalations/{id}`, edits non-status fields, backup + conflict detection |
 | Escalation Queue — copy handoff prompt | **Real** (frontend only) — copies prompt to clipboard, no process launched |
 | Dashboard Escalations count | **Real** — `summary.escalations.active` (new + ready + in-progress + blocked) |
-| Proposal Queue page | **Real (read-only)** — `GET /api/proposals` aggregates Raw Inbox classification proposals, Chat/AI Consolidation drafts, **and** Research drafts into a normalized shape; lists/filters/searches only. No approve/apply here — actions **deep-link to the exact source item** (Open in Raw Inbox / Consolidation / Research, which highlight the related row/draft) |
-| Chat/AI Consolidation — manual paste/import | **Real v1** — paste a transcript → `POST /api/consolidation/drafts` creates a backend draft (no vault write); edit summary fields; **Save to vault** writes one Markdown summary under `raw/chats/<source>/`. No AI, no brain, no browser/computer-use capture |
-| Research — manual capture | **Real v1** — capture notes/links/findings → `POST /api/research/drafts` creates a backend draft (no vault write); edit fields; **Save to vault** writes one Markdown note under `raw/research/<topic>/`. No AI, no URL fetch, no web search, no browser/computer-use |
+| Proposal Queue page | **Real** — aggregates Raw Inbox, Consolidation, Research, and Email Intake; supports source deep-links plus explicit individual/reviewed batch apply through existing source write paths |
+| Chat/AI Consolidation | **Real + opt-in AI preview** — manual transcript draft/edit/save plus everyday/heavy structured assistance; preview never saves or writes the vault |
+| Research | **Real + opt-in AI preview** — manual capture plus everyday/heavy organization of saved notes; no URL fetch and source URLs/details are not sent to the model |
 | OpenClaw tool bridge | **Not wired** — read-only readiness via `GET /api/runtime/status` (status `not_configured`); no bridge, no execution |
 | NemoClaw / OpenShell | **Not wired (probe + policy inspection + readiness + bridge-contract dry-run only)** — read-only readiness via `GET /api/runtime/status`; an explicit opt-in reachability probe (`POST /api/runtime/probe/nemoclaw`) can check a configured *local* runtime URL; a read-only policy inspection (`GET /api/runtime/policy/nemoclaw`) summarizes the configured policy file; a read-only **Guardrail Readiness** correlation (`GET /api/runtime/guardrail-readiness`) reports whether the system is ready for future *bridge design* (`ready_for_bridge_design` ≠ execution-ready); a **Bridge Contract Validator** (`POST /api/runtime/bridge/validate`) dry-run-validates a proposed future bridge request (shape + mode + readiness + permission-gateway dry-run) and executes nothing. All unlock nothing, start no runtime, run no fresh probe, and enforce no policy; dependents stay blocked |
 | Browser harness | **Not wired** — `disabled`/blocked while NemoClaw/OpenShell is unavailable (shown via `GET /api/runtime/status`) |
@@ -565,7 +580,7 @@ claude-code → raw/chats/claude-code/   opencode → raw/chats/opencode/   othe
 
 ## Email Intake (v0 — manual paste/import)
 
-The **Email Intake** page (nav: Intake → Email Intake) is the PRD's **manual fallback** for Gmail/email intake (§33) while Gmail stays disconnected. The user pastes raw email content, reviews/edits the extracted fields, and explicitly saves one Markdown summary into the vault. **Gmail MCP is not wired**; there is no email search/read and **all Gmail mutations (send/delete/archive/labels) are disabled**. No AI is called.
+The **Email Intake** page (nav: Intake → Email Intake) is the PRD's **manual fallback** for Gmail/email intake (§33) while Gmail stays disconnected. The user pastes raw email content, may explicitly request preview-only local AI extraction, reviews/edits the fields, and explicitly saves one Markdown summary into the vault. **Gmail MCP is not wired**; there is no email search/read and **all Gmail mutations (send/delete/archive/labels) are disabled**.
 
 ```text
 paste email content → create structured draft → review/edit fields → Save to vault → one Markdown file under an allowed raw email path
@@ -615,7 +630,7 @@ Raw Inbox intake status maps to the generalized status as: `proposed`/`edited` �
 
 ### Actions
 
-Actions **deep-link to the exact source item** — **Open in Raw Inbox**, **Open in Consolidation**, **Open in Research**, or **Open in Email Intake** — where the existing approve / edit / route / save flow continues unchanged. The clicked item is highlighted (and scrolled into view) on the source page via an app-state handoff (`proposalTarget` in the zustand store, mirroring `agentConvTarget`); the page consumes and clears the target on mount and shows an unobtrusive "Opened from Proposal Queue." notice. A missing/deleted target falls back to plain page navigation with a non-blocking notice. **There is no approve/apply/save button in the Proposal Queue** — it is a read-only, shared review surface that does not duplicate or increase mutation power.
+Actions deep-link to the exact source item. The queue also exposes explicit Apply/Reject controls and a confirmed **Apply all safe** action; each apply dispatches to the existing source save/route function rather than adding a new write primitive. High-risk items are excluded from batch apply.
 
 ### Safety constraints
 

@@ -33,6 +33,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from app.write_lock import serialized_vault_write
+
 logger = logging.getLogger(__name__)
 
 _PARSE_CHARS   = 50_000
@@ -374,6 +376,7 @@ def _write_updated_line(file_path: Path, all_lines: list, line_num: int,
 
 # ── public writes ─────────────────────────────────────────────────────────────
 
+@serialized_vault_write
 def create_calendar_candidates_file(vault_path: str) -> dict:
     """
     Create ops/calendar-candidates.md with the starter table if it is missing.
@@ -431,6 +434,7 @@ def _validate_candidate_payload(payload: dict, *, require_date: bool) -> dict:
     }
 
 
+@serialized_vault_write
 def create_calendar_candidate(vault_path: str, payload: dict) -> dict:
     """
     Append one candidate row to an existing parseable Markdown table.
@@ -504,6 +508,7 @@ def create_calendar_candidate(vault_path: str, payload: dict) -> dict:
         "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
+@serialized_vault_write
 def update_calendar_candidate(vault_path: str, candidate_id: str, updates: dict) -> dict:
     """
     Update all editable fields in one calendar candidate row.
@@ -584,6 +589,7 @@ def update_calendar_candidate(vault_path: str, candidate_id: str, updates: dict)
     }
 
 
+@serialized_vault_write
 def approve_calendar_candidate(vault_path: str, candidate_id: str) -> dict:
     """
     Set Approved = Yes for one calendar candidate.

@@ -7,13 +7,15 @@ Uses only Python standard-library HTTP (urllib.request) — no extra deps.
 
 Config:
   BRAIN_UI_OLLAMA_BASE_URL          defaults to http://localhost:11434
-  BRAIN_UI_LOCAL_MODEL              defaults to llama3.2 (placeholder — set your own)
+  BRAIN_UI_LOCAL_MODEL              defaults to gemma4:12b-it-qat
+  BRAIN_UI_LOCAL_MODEL_HEAVY        defaults to gemma4:26b-a4b-it-qat
   BRAIN_UI_CONTEXT_WINDOW_MESSAGES  max prior user/assistant messages to send (default 10)
 """
 
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -25,7 +27,17 @@ OLLAMA_BASE_URL: str = os.environ.get(
     "BRAIN_UI_OLLAMA_BASE_URL", "http://localhost:11434"
 ).rstrip("/")
 
-LOCAL_MODEL: str = os.environ.get("BRAIN_UI_LOCAL_MODEL", "llama3.2")
+LOCAL_MODEL: str = os.environ.get("BRAIN_UI_LOCAL_MODEL", "gemma4:12b-it-qat")
+HEAVY_LOCAL_MODEL: str = os.environ.get(
+    "BRAIN_UI_LOCAL_MODEL_HEAVY", "gemma4:26b-a4b-it-qat"
+)
+MODEL_TIERS: tuple[str, ...] = ("everyday", "heavy")
+DEFAULT_CONTEXT_TOKENS = 16_384
+_INFERENCE_GATE = threading.BoundedSemaphore(1)
+
+
+class OllamaBusyError(ValueError):
+    """Raised when another local inference already owns the GPU budget."""
 
 
 def _parse_context_window() -> int:
@@ -109,6 +121,72 @@ def _post_json(url: str, payload: dict, timeout: int = 180) -> dict:
         raise ValueError(f"Could not reach Ollama at {OLLAMA_BASE_URL}: {exc.reason}") from exc
 
 
+def resolve_model_tier(tier: Optional[str] = None) -> str:
+    """Resolve a bounded public tier to its configured model; never accepts model names."""
+    resolved = "everyday" if tier is None else tier
+    if resolved not in MODEL_TIERS:
+        raise ValueError("tier must be 'everyday' or 'heavy'.")
+    return LOCAL_MODEL if resolved == "everyday" else HEAVY_LOCAL_MODEL
+
+
+def complete_ollama_chat(
+    messages: list[dict],
+    *,
+    tier: Optional[str] = None,
+    temperature: float = 0.7,
+    timeout: int = 180,
+    structured: bool = False,
+) -> dict:
+    """Central non-streaming Ollama completion with fixed model tiers and bounded context."""
+    resolved_tier = "everyday" if tier is None else tier
+    model = resolve_model_tier(resolved_tier)
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "temperature": max(0.0, min(float(temperature), 2.0)),
+            "num_ctx": DEFAULT_CONTEXT_TOKENS,
+        },
+    }
+    if structured:
+        # Ollama-native JSON mode; thinking is never requested or returned by this API.
+        payload["format"] = "json"
+        payload["think"] = False
+        payload["options"]["num_predict"] = 2_048
+
+    if not _INFERENCE_GATE.acquire(blocking=False):
+        raise OllamaBusyError("Local AI is busy with another request. Try again shortly.")
+
+    t0 = time.monotonic()
+    try:
+        try:
+            response = _post_json(f"{OLLAMA_BASE_URL}/api/chat", payload, timeout=timeout)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(f"Ollama request failed: {exc}") from exc
+    finally:
+        _INFERENCE_GATE.release()
+
+    content = response.get("message", {}).get("content", "").strip()
+    if not content:
+        raise ValueError("Ollama returned an empty response.")
+    duration_ms = round((time.monotonic() - t0) * 1000, 1)
+    logger.info(
+        "Ollama completion: %d chars in %.0fms (tier=%s model=%s)",
+        len(content), duration_ms, resolved_tier, model,
+    )
+    return {
+        "ok": True,
+        "provider": "ollama",
+        "model": model,
+        "modelTier": resolved_tier,
+        "message": content,
+        "durationMs": duration_ms,
+    }
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
 def get_agent_status() -> dict:
@@ -125,6 +203,10 @@ def get_agent_status() -> dict:
             "baseUrl": OLLAMA_BASE_URL,
             "model": LOCAL_MODEL,
             "available": False,
+            "everydayModel": LOCAL_MODEL,
+            "heavyModel": HEAVY_LOCAL_MODEL,
+            "everydayAvailable": False,
+            "heavyAvailable": False,
             "message": f"Ollama not reachable at {OLLAMA_BASE_URL}. Run: ollama serve",
         }
 
@@ -138,16 +220,24 @@ def get_agent_status() -> dict:
             "baseUrl": OLLAMA_BASE_URL,
             "model": LOCAL_MODEL,
             "available": True,
+            "everydayModel": LOCAL_MODEL,
+            "heavyModel": HEAVY_LOCAL_MODEL,
+            "everydayAvailable": None,
+            "heavyAvailable": None,
             "message": "Ollama running. Could not verify model list.",
         }
 
     model_names: list[str] = [m.get("name", "") for m in tags.get("models", [])]
-    # "llama3.2" matches "llama3.2:latest" or "llama3.2:8b"
-    model_present = any(
-        n == LOCAL_MODEL
-        or n.startswith(f"{LOCAL_MODEL}:")
-        for n in model_names
-    )
+    # An untagged configured name also matches an installed tagged variant.
+    def installed(configured: str) -> bool:
+        return any(
+            name == configured
+            or (":" not in configured and name.startswith(f"{configured}:"))
+            for name in model_names
+        )
+
+    model_present = installed(LOCAL_MODEL)
+    heavy_present = installed(HEAVY_LOCAL_MODEL)
 
     if not model_present:
         return {
@@ -156,6 +246,10 @@ def get_agent_status() -> dict:
             "baseUrl": OLLAMA_BASE_URL,
             "model": LOCAL_MODEL,
             "available": False,
+            "everydayModel": LOCAL_MODEL,
+            "heavyModel": HEAVY_LOCAL_MODEL,
+            "everydayAvailable": False,
+            "heavyAvailable": heavy_present,
             "message": (
                 f"Ollama running but model '{LOCAL_MODEL}' is not installed. "
                 f"Run: ollama pull {LOCAL_MODEL}"
@@ -168,7 +262,15 @@ def get_agent_status() -> dict:
         "baseUrl": OLLAMA_BASE_URL,
         "model": LOCAL_MODEL,
         "available": True,
-        "message": f"Ollama ready · model '{LOCAL_MODEL}' loaded",
+        "everydayModel": LOCAL_MODEL,
+        "heavyModel": HEAVY_LOCAL_MODEL,
+        "everydayAvailable": True,
+        "heavyAvailable": heavy_present,
+        "message": (
+            f"Ollama ready · everyday model '{LOCAL_MODEL}' loaded; "
+            + (f"heavy model '{HEAVY_LOCAL_MODEL}' loaded" if heavy_present
+               else f"heavy model '{HEAVY_LOCAL_MODEL}' is not installed")
+        ),
     }
 
 
@@ -198,7 +300,7 @@ def stream_ollama_chat(
         "model":    LOCAL_MODEL,
         "messages": messages,
         "stream":  True,
-        "options": {"temperature": 0.7},
+        "options": {"temperature": 0.7, "num_ctx": DEFAULT_CONTEXT_TOKENS},
     }
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -207,29 +309,35 @@ def stream_ollama_chat(
         headers={"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
+    if not _INFERENCE_GATE.acquire(blocking=False):
+        raise OllamaBusyError("Local AI is busy with another request. Try again shortly.")
+
     try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            while True:
-                line = resp.readline()
-                if not line:
-                    break
-                line_str = line.decode("utf-8").strip()
-                if not line_str:
-                    continue
-                try:
-                    chunk = json.loads(line_str)
-                except json.JSONDecodeError:
-                    continue
-                content = chunk.get("message", {}).get("content", "")
-                if content:
-                    yield content
-                if chunk.get("done", False):
-                    break
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise ValueError(f"Ollama returned HTTP {exc.code}: {body[:200]}") from exc
-    except urllib.error.URLError as exc:
-        raise ValueError(f"Could not reach Ollama at {OLLAMA_BASE_URL}: {exc.reason}") from exc
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                while True:
+                    line = resp.readline()
+                    if not line:
+                        break
+                    line_str = line.decode("utf-8").strip()
+                    if not line_str:
+                        continue
+                    try:
+                        chunk = json.loads(line_str)
+                    except json.JSONDecodeError:
+                        continue
+                    content = chunk.get("message", {}).get("content", "")
+                    if content:
+                        yield content
+                    if chunk.get("done", False):
+                        break
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise ValueError(f"Ollama returned HTTP {exc.code}: {body[:200]}") from exc
+        except urllib.error.URLError as exc:
+            raise ValueError(f"Could not reach Ollama at {OLLAMA_BASE_URL}: {exc.reason}") from exc
+    finally:
+        _INFERENCE_GATE.release()
 
 
 def chat_with_agent(
@@ -256,38 +364,17 @@ def chat_with_agent(
     if not message.strip():
         raise ValueError("message cannot be empty.")
 
-    t0 = time.monotonic()
-
     messages: list = [{"role": "system", "content": _SYSTEM_PROMPT}]
     if prior_messages:
         messages.extend(prior_messages)
     messages.append({"role": "user", "content": message})
 
-    payload = {
-        "model": LOCAL_MODEL,
-        "messages": messages,
-        "stream": False,
-        "options": {"temperature": 0.7},
-    }
-
-    try:
-        resp = _post_json(f"{OLLAMA_BASE_URL}/api/chat", payload, timeout=180)
-    except ValueError:
-        raise
-    except Exception as exc:
-        raise ValueError(f"Ollama request failed: {exc}") from exc
-
-    duration_ms = (time.monotonic() - t0) * 1000
-    content = resp.get("message", {}).get("content", "").strip()
-    if not content:
-        raise ValueError("Ollama returned an empty response.")
-
-    logger.info("Agent chat: %d chars in %.0fms (model=%s)", len(content), duration_ms, LOCAL_MODEL)
-
+    result = complete_ollama_chat(messages, tier="everyday", temperature=0.7)
+    # Preserve the established direct-call and API response shape for chat.
     return {
-        "ok":         True,
-        "provider":   "ollama",
-        "model":      LOCAL_MODEL,
-        "message":    content,
-        "durationMs": round(duration_ms, 1),
+        "ok": result["ok"],
+        "provider": result["provider"],
+        "model": result["model"],
+        "message": result["message"],
+        "durationMs": result["durationMs"],
     }

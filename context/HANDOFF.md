@@ -13,10 +13,13 @@ deliberately **safe spine** (read-only / evaluate-only / manual). We are now bui
 the **privileged execution layer** (PRD MVP v4–v10) in phases.
 
 - **Repo:** `D:\Hasnain\Personal\dev\JARVIS` (Windows, git branch `main`)
-- **Done this session:** A0 (env doc), **A1 (proposal-apply spine) — complete & shipped**
-- **Blocked:** A2 needs **Ollama installed** (it is NOT installed on this machine)
-- **Next up:** A3 (gated agent tool execution — Ollama-independent, buildable now)
-- **Test baseline:** **534/534 backend pass**, `npm run build` clean (88 modules)
+- **Done:** A0 env docs, A1 proposal apply, **A2 dual-model AI assist**, and
+  **A3 authenticated approval-gated local execution**.
+- **Ollama:** installed (`0.32.7`); both configured Gemma 4 models are pulled and live-tested.
+- **B0 complete:** local OAuth authorized with Gmail readonly + Calendar readonly;
+  credentials and token are under gitignored `backend/data/google/`.
+- **Next up:** **B1 Gmail read intake**.
+- **Test baseline:** **654 backend tests pass**, `npm run build` clean (90 modules).
 
 ### How to run / verify
 ```bash
@@ -52,24 +55,13 @@ subsequent commands from there.
   now, approved writes later).
 - **Gmail send/delete/archive/label = PERMANENTLY disabled.**
 
-### Machine / model facts (from user)
+### Machine / model facts (verified 2026-08-10)
 - GPU: **Radeon RX 7900 GRE, 16 GB VRAM** (RDNA3 `gfx1100`, ROCm-supported by Ollama on Windows).
-- Recommended models (16 GB budget):
-  - **Default `BRAIN_UI_LOCAL_MODEL` → `gemma3:12b`** (~8 GB, fully on GPU, fast; ideal for
-    classify/summarize — the app's real workload).
-  - **Heavy (optional) → `gemma3:27b-it-qat`** (Google QAT 4-bit, best 27B-at-4-bit
-    quality; ~15–16 GB, expect partial CPU offload on 16 GB → slower).
-  - If a 27B that fully fits GPU is wanted: `hf.co/unsloth/gemma-3-27b-it-GGUF:Q3_K_M` (~13 GB).
-  - **Avoid Q2_K 27B** — 2-bit damages quality; usually ≤ a 12B Q4.
-- **OPEN QUESTION for user (unanswered):** do they want a **dual-model** setup
-  (`BRAIN_UI_LOCAL_MODEL` fast + a new `BRAIN_UI_LOCAL_MODEL_HEAVY`, chosen per task) or a
-  single model? Decide before/while building A2.
-
-### Ollama setup steps the user still must do (blocks A2)
-1. Install from https://ollama.com/download/windows (registers `ollama`, starts server on `:11434`).
-2. `ollama pull gemma3:12b` (and optionally `ollama pull gemma3:27b-it-qat`).
-3. Set `BRAIN_UI_LOCAL_MODEL=gemma3:12b` (see `backend/.env.example`; default is currently `llama3.2`).
-4. Confirm with `ollama list`.
+- CPU/RAM: Ryzen 7 9800X3D, 32 GB RAM.
+- **Everyday:** `gemma4:12b-it-qat` (7.2 GB; live JSON smoke test 9.9 s cold/warm-state dependent).
+- **Heavy:** `gemma4:26b-a4b-it-qat` (15 GB; live JSON smoke test 20.7 s; expect offload/context sensitivity).
+- Both use a bounded 16K Ollama context. Structured extraction disables thinking and uses JSON mode.
+- A single inference gate prevents streaming chat and assist/classification from competing for GPU memory.
 
 ---
 
@@ -147,7 +139,7 @@ utility classes `btn`, `btn-sm`, `btn-primary`, `btn-ghost`, `panel`, `mono`.
 
 ## 5. Remaining work (execute in this order)
 
-### A2 — Local-AI assist in manual flows  *(needs Ollama)*
+### ✅ A2 — Dual-model local-AI assist in manual flows
 Wire Ollama into the capture flows; **preview-before-save**, content stays untrusted.
 - Backend: add opt-in `POST /api/consolidation/drafts/{id}/assist`,
   `POST /api/research/drafts/{id}/assist`, `POST /api/email-intake/drafts/{id}/assist`.
@@ -162,7 +154,7 @@ Wire Ollama into the capture flows; **preview-before-save**, content stays untru
 - Tests: mock the Ollama call; assert untrusted prefix present, no vault write on assist,
   graceful fallback when Ollama down.
 
-### A3 — Agent tool execution (local, gated)  *(Ollama-independent — buildable now)*
+### ✅ A3 — Agent tool execution (local, authenticated and approval-gated)
 Turn evaluate-only agent tool requests into **user-approved execution** of low/medium-risk
 LOCAL tools.
 - Backend: expand `permission_gateway.py` `_EXECUTABLE_TOOLS` beyond the 3 read-only brain
