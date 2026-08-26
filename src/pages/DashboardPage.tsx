@@ -14,6 +14,8 @@ import { StatusCard } from '@/components/dashboard/StatusCard';
 import { SystemRow } from '@/components/dashboard/SystemRow';
 import { resolveModePolicy, modePolicySummary, MODE_TRUTHS } from '@/lib/agentModes';
 import { useRuntimeStatus, RUNTIME_TRUTHS, policyDashboardLine, readinessDashboardLine } from '@/lib/runtimeStatus';
+import { resolveQuickAction } from '@/lib/quickActions';
+import type { EntityKind } from '@/store/useAppStore';
 import { RuntimeStatusRows } from '@/components/runtime/RuntimeStatus';
 import { api } from '@/lib/api';
 import type {
@@ -766,11 +768,9 @@ function ActiveWorkPanel({
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BRAIN_ACTION_MAP: Record<string, string> = {
-  today:     'today',
-  weekly:    'weekly',
-  syncraw:   'sync-raw',
-  calexport: 'calendar-export',
+
+const ENTITY_ROUTE: Record<EntityKind, RouteId> = {
+  project: 'projects', course: 'courses', hackathon: 'hackathons', business: 'business',
 };
 
 export function DashboardPage() {
@@ -779,6 +779,7 @@ export function DashboardPage() {
   const setAgentMode    = useAppStore((s) => s.setAgentMode);
   const agentModes      = useAppStore((s) => s.agentModes);
   const navigate        = useAppStore((s) => s.navigate);
+  const setEntityCreateTarget = useAppStore((s) => s.setEntityCreateTarget);
   const showToast       = useAppStore((s) => s.showToast);
   const settings        = useAppStore((s) => s.settings);
   const backendStatus   = useAppStore((s) => s.backendStatus);
@@ -873,15 +874,18 @@ export function DashboardPage() {
 
   const meta = AGENT_STATES[agentState];
 
+  // Shared with the ⌘K palette via resolveQuickAction, so the two cannot drift.
   const runCommand = (id: string) => {
-    if (id === 'ask')         return navigate('agent');
-    if (id === 'research')    return navigate('research');
-    if (id === 'consolidate') return navigate('consolidate');
-    if (id === 'upload')      return navigate('inbox');
-    const brainCmd = BRAIN_ACTION_MAP[id];
-    if (brainCmd) { runBrainCommand(brainCmd); return; }
-    const a = QUICK_ACTIONS.find((x) => x.id === id);
-    if (a) showToast(a.cmd ? `${a.cmd} (not wired yet)` : `Opened ${a.label}`);
+    const resolved = resolveQuickAction(id);
+    switch (resolved.kind) {
+      case 'navigate':  navigate(resolved.route); return;
+      case 'brain':     runBrainCommand(resolved.command); return;
+      case 'entity':
+        navigate(ENTITY_ROUTE[resolved.entity]);
+        setEntityCreateTarget(resolved.entity);
+        return;
+      default:          showToast(`Unknown action: ${resolved.id}`);
+    }
   };
 
   const submitAsk = (e: React.FormEvent) => {
@@ -1336,7 +1340,7 @@ export function DashboardPage() {
               </div>
             ) : (
               <div style={{ fontSize: 11.5, color: 'var(--txt-2)', lineHeight: 1.45, marginTop: 'var(--s3)' }}>
-                Browser/computer-use is not wired yet. This mode enables nothing.
+                Selecting a mode here enables nothing on its own. Computer-use starts from its own page.
               </div>
             )}
 
@@ -1466,7 +1470,7 @@ export function DashboardPage() {
                 gap: 'var(--s2)',
               }}
             >
-              {QUICK_ACTIONS.slice(0, 8).map((q) => (
+              {QUICK_ACTIONS.map((q) => (
                 <button
                   key={q.id}
                   className="btn"

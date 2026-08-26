@@ -5,7 +5,7 @@ interface IconProps {
   className?: string;
 }
 
-const PATHS: Record<string, React.ReactNode> = {
+export const PATHS: Record<string, React.ReactNode> = {
   grid: (
     <>
       <rect x="3" y="3" width="7" height="7" rx="1" />

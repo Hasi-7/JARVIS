@@ -23,9 +23,9 @@ export const MODE_POLICY_FALLBACK: Record<string, AgentModePolicy> = {
   observe:      { id: 'observe',      label: 'Observe',      available: true,  canEvaluateToolRequests: false, canOfferReviewHandoff: false, notes: 'Chat only. Structured tool requests are blocked.' },
   draft:        { id: 'draft',        label: 'Draft',        available: true,  canEvaluateToolRequests: true,  canOfferReviewHandoff: false, notes: 'Tool requests may be evaluated, but nothing executes and no review handoff is offered.' },
   assist:       { id: 'assist',       label: 'Assist',       available: true,  canEvaluateToolRequests: true,  canOfferReviewHandoff: true,  notes: 'Safe-local requests may be reviewed in Tool Connections. Execution remains manual.' },
-  research:     { id: 'research',     label: 'Research',     available: true,  canEvaluateToolRequests: true,  canOfferReviewHandoff: false, notes: 'Structured tool requests are evaluated only. Browser/computer-use remains blocked.' },
+  research:     { id: 'research',     label: 'Research',     available: true,  canEvaluateToolRequests: true,  canOfferReviewHandoff: false, notes: 'Structured tool requests are evaluated only. Browsing runs from the Research page, inside the sandbox, through the approval queue.' },
   escalation:   { id: 'escalation',   label: 'Escalation',   available: true,  canEvaluateToolRequests: true,  canOfferReviewHandoff: false, notes: 'Handoff/escalation discussion. Tool requests are evaluated only.' },
-  computer_use: { id: 'computer_use', label: 'Computer-Use', available: false, canEvaluateToolRequests: false, canOfferReviewHandoff: false, notes: 'Not wired. Browser/computer-use remains disabled in this build.' },
+  computer_use: { id: 'computer_use', label: 'Computer-Use', available: false, canEvaluateToolRequests: false, canOfferReviewHandoff: false, notes: 'Not selectable from chat. Computer-use sessions start from the Browser / Computer Use page via the approval queue, and need their own kill switch.' },
 };
 
 // Resolve the policy for a frontend mode id, preferring backend-fetched data and
@@ -55,7 +55,7 @@ export function modePolicySummary(policy: AgentModePolicy): ModePolicySummary {
 
   let tooltip: string;
   if (!policy.available) {
-    tooltip = `${policy.label} unavailable — browser/computer-use is not wired yet.`;
+    tooltip = `${policy.label} is not selectable from chat; it is driven from its own page.`;
   } else if (policy.canEvaluateToolRequests) {
     tooltip = policy.canOfferReviewHandoff
       ? 'Evaluates tool requests. Safe-local review handoff is available. Chat does not execute tools.'

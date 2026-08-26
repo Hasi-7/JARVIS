@@ -563,9 +563,11 @@ export function ResearchPage() {
       <div style={{ padding: 'var(--s3) var(--s4)', background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 'var(--r2)', fontSize: 12, color: 'var(--txt-1)', display: 'flex', alignItems: 'flex-start', gap: 8, lineHeight: 1.5 }}>
         <Icon name="shield" size={14} style={{ color: 'var(--amber)', marginTop: 1, flexShrink: 0 }} />
         <span>
-          <strong>Manual capture only.</strong> Browser research automation, web search, and computer-use are
-          <strong> not wired</strong>. URLs you paste are never fetched. AI assist is opt-in and preview-only; nothing is
-          written to the vault until you explicitly choose <em>Save to vault</em>.
+          <strong>Drafts here are manual.</strong> URLs pasted into a draft are never fetched. Live browsing
+          happens only inside a <em>research session</em> below: every page runs in the OpenShell sandbox,
+          against that session's domain allowlist and time budget, and fails closed if the sandbox is
+          unhealthy. AI assist is opt-in and preview-only; nothing reaches the vault until you choose
+          <em>Save to vault</em>.
         </span>
       </div>
 

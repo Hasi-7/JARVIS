@@ -29,8 +29,8 @@ export function probeStatusTone(status: string): RuntimeTone {
 
 // Safety copy shown next to the probe control.
 export const PROBE_COPY = {
-  what: 'This checks whether a configured NemoClaw/OpenShell runtime is reachable. It does not start the runtime or enable browser/computer-use.',
-  stillDisabled: 'Browser and computer-use remain disabled until a separate runtime bridge is implemented and explicitly enabled.',
+  what: 'This checks whether a configured NemoClaw/OpenShell runtime is reachable. It does not start the runtime, and reachability alone enables nothing.',
+  stillDisabled: 'Browser and computer-use are each behind their own kill switch and the approval queue. A healthy runtime does not turn either on.',
 };
 
 // ── NemoClaw/OpenShell policy inspection display helpers ────────────────────────
@@ -163,9 +163,11 @@ export const BRIDGE_COPY = {
 };
 
 // Standing truths required by the PRD / spec wherever runtime status is shown.
+// These describe the GATING, not the build: the harnesses exist, and saying they
+// are "not built" was the stale claim this copy previously made.
 export const RUNTIME_TRUTHS = {
-  notWired: 'Privileged agent runtimes are not wired yet.',
-  browserBlocked: 'Browser and computer-use remain blocked until NemoClaw/OpenShell is available.',
+  notWired: 'Privileged runtimes are off unless explicitly configured and enabled.',
+  browserBlocked: 'Browsing runs only inside the OpenShell sandbox and fails closed when the guardrail is unhealthy; computer-use additionally needs its own kill switch.',
 };
 
 // Static fallback mirroring the backend default (no env configured) so a backend-down

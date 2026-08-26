@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import type { AgentStateKey, AgentMode, RouteId, CmdLogEntry } from '@/types';
 
+/** Entity kinds that have a "New …" quick action + creation modal. */
+export type EntityKind = 'project' | 'course' | 'hackathon' | 'business';
+
 // Deep-link handoff from the Proposal Queue to a source page (selection/highlight only).
 export type ProposalTargetSource = 'raw-inbox' | 'chat-consolidation' | 'research' | 'email-intake';
 export interface ProposalTarget {
@@ -63,6 +66,13 @@ interface AppState {
 
   // Count of files currently in the staging inbox
   stagedCount: number;
+  /** Live sidebar badge counts. Previously these were hardcoded numbers in NAV
+   *  that never changed, which made the sidebar assert stale work every session. */
+  calendarPendingCount: number;
+  escalationActiveCount: number;
+  /** Set by a "New <entity>" quick action; the target page consumes and clears it
+   *  so the modal opens exactly once rather than on every visit. */
+  entityCreateTarget: EntityKind | null;
   // Count of proposals with status proposed|edited (needs review)
   pendingProposalCount: number;
 
@@ -86,6 +96,8 @@ interface AppState {
 
   setStagedCount: (n: number) => void;
   setPendingProposalCount: (n: number) => void;
+  setEntityCreateTarget: (kind: EntityKind | null) => void;
+  consumeEntityCreateTarget: (kind: EntityKind) => boolean;
   addCmdEntry: (entry: CmdLogEntry) => void;
   loadStagedCount: () => Promise<void>;
 }
@@ -115,6 +127,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   cmdLog: [],
   stagedCount: 0,
   pendingProposalCount: 0,
+  calendarPendingCount: 0,
+  escalationActiveCount: 0,
+  entityCreateTarget: null,
 
   navigate: (route) => set({ route }),
   setAgentState: (agentState) => set({ agentState }),
@@ -240,22 +255,35 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setPendingProposalCount: (n) => set({ pendingProposalCount: n }),
 
+  setEntityCreateTarget: (kind) => set({ entityCreateTarget: kind }),
+
+  consumeEntityCreateTarget: (kind) => {
+    if (get().entityCreateTarget !== kind) return false;
+    set({ entityCreateTarget: null });
+    return true;
+  },
+
   addCmdEntry: (entry) => set((s) => ({ cmdLog: [entry, ...s.cmdLog].slice(0, 20) })),
 
   loadStagedCount: async () => {
-    try {
-      const [staged, proposals] = await Promise.all([
-        api.getStagedFiles(),
-        api.getIntakeProposals(),
-      ]);
-      set({
-        stagedCount: staged.files.length,
-        pendingProposalCount: proposals.proposals.filter(
-          (p) => p.status === 'proposed' || p.status === 'edited'
-        ).length,
-      });
-    } catch {
-      // Backend may be down — leave counts unchanged
+    // Each source is settled independently: one failing endpoint must not blank
+    // every badge, which would read as "no pending work" rather than "unknown".
+    const [staged, proposals, summary] = await Promise.allSettled([
+      api.getStagedFiles(),
+      api.getIntakeProposals(),
+      api.getDashboardSummary(),
+    ]);
+    const next: Partial<AppState> = {};
+    if (staged.status === 'fulfilled') next.stagedCount = staged.value.files.length;
+    if (proposals.status === 'fulfilled') {
+      next.pendingProposalCount = proposals.value.proposals.filter(
+        (p) => p.status === 'proposed' || p.status === 'edited'
+      ).length;
     }
+    if (summary.status === 'fulfilled') {
+      next.calendarPendingCount = summary.value.calendar.pending;
+      next.escalationActiveCount = summary.value.escalations.active;
+    }
+    if (Object.keys(next).length > 0) set(next);
   },
 }));

@@ -5,15 +5,15 @@ import { Sidebar } from './Sidebar';
 import { TopCommandBar } from './TopCommandBar';
 import { CommandPalette } from '@/components/ui/CommandPalette';
 import { Icon } from '@/components/ui/Icon';
-import { QUICK_ACTIONS } from '@/data/mock';
 import { ComputerUseBanner } from '@/components/ui/ComputerUseBanner';
+import { resolveQuickAction } from '@/lib/quickActions';
+import { resolveAgentState } from '@/lib/agentSphereState';
+import { api } from '@/lib/api';
+import { toBackendMode } from '@/lib/agentModes';
+import type { EntityKind } from '@/store/useAppStore';
 
-// brain subcommands that can be executed via backend (mirrors backend allowlist subset)
-const BRAIN_ACTION_MAP: Record<string, string> = {
-  today:     'today',
-  weekly:    'weekly',
-  syncraw:   'sync-raw',
-  calexport: 'calendar-export',
+const ENTITY_ROUTE: Record<EntityKind, RouteId> = {
+  project: 'projects', course: 'courses', hackathon: 'hackathons', business: 'business',
 };
 
 interface AppShellProps {
@@ -33,6 +33,10 @@ export function AppShell({ children, scrollable = true }: AppShellProps) {
   const runBrainCommand  = useAppStore((s) => s.runBrainCommand);
   const loadStagedCount  = useAppStore((s) => s.loadStagedCount);
   const loadAgentModes   = useAppStore((s) => s.loadAgentModes);
+  const setEntityCreateTarget = useAppStore((s) => s.setEntityCreateTarget);
+  const setAgentState    = useAppStore((s) => s.setAgentState);
+  const agentMode        = useAppStore((s) => s.agentMode);
+  const pendingProposals = useAppStore((s) => s.pendingProposalCount);
 
   // Check backend availability, load staged count, and load agent mode policy once on mount
   useEffect(() => {
@@ -40,6 +44,45 @@ export function AppShell({ children, scrollable = true }: AppShellProps) {
     loadStagedCount();
     loadAgentModes();
   }, [checkBackend, loadStagedCount, loadAgentModes]);
+
+  /**
+   * Drive the sphere from real system state.
+   *
+   * Deliberately does NOT touch the transient chat states (thinking/speaking/
+   * blocked), which AgentPage owns for the duration of a turn — overwriting
+   * those from a poll would make the sphere flicker mid-response. This only
+   * fills in the ambient states that nothing was setting at all.
+   */
+  useEffect(() => {
+    let alive = true;
+    const TRANSIENT = new Set(['thinking', 'speaking', 'blocked', 'listening']);
+
+    const sync = async () => {
+      const [cu, research] = await Promise.allSettled([
+        api.computerUseStatus(),
+        api.listResearchSessions(),
+      ]);
+      if (!alive) return;
+      // A chat turn in flight always wins; leave it alone.
+      if (TRANSIENT.has(useAppStore.getState().agentState)) return;
+
+      const computerUseActive = cu.status === 'fulfilled' && cu.value.active != null;
+      const activeResearch = research.status === 'fulfilled'
+        ? research.value.sessions.find((s) => s.status === 'active')
+        : undefined;
+
+      setAgentState(resolveAgentState({
+        computerUseActive,
+        researchActive: activeResearch != null,
+        pendingApprovals: pendingProposals,
+        mode: toBackendMode(agentMode.id),
+      }));
+    };
+
+    sync();
+    const timer = window.setInterval(sync, 10_000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [setAgentState, agentMode, pendingProposals]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -53,17 +96,22 @@ export function AppShell({ children, scrollable = true }: AppShellProps) {
   }, [paletteOpen, openPalette, closePalette]);
 
   const handleCommand = (id: string) => {
-    if (id === 'ask')         { navigate('agent');       return; }
-    if (id === 'research')    { navigate('research');    return; }
-    if (id === 'consolidate') { navigate('consolidate'); return; }
-    if (id === 'upload')      { navigate('inbox');       return; }
-    const brainCmd = BRAIN_ACTION_MAP[id];
-    if (brainCmd) {
-      runBrainCommand(brainCmd);
-      return;
+    const resolved = resolveQuickAction(id);
+    switch (resolved.kind) {
+      case 'navigate':
+        navigate(resolved.route);
+        return;
+      case 'brain':
+        runBrainCommand(resolved.command);
+        return;
+      case 'entity':
+        // The creation modals live on the entity pages; go there and open it.
+        navigate(ENTITY_ROUTE[resolved.entity]);
+        setEntityCreateTarget(resolved.entity);
+        return;
+      default:
+        showToast(`Unknown action: ${resolved.id}`);
     }
-    const action = QUICK_ACTIONS.find((a) => a.id === id);
-    if (action) showToast(action.cmd ? `${action.cmd} (not wired yet)` : `Opened ${action.label}`);
   };
 
   return (

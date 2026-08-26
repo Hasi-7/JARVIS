@@ -12,6 +12,30 @@ interface SidebarProps {
 
 export function Sidebar({ route, onNavigate }: SidebarProps) {
   const agentState = useAppStore((s) => s.agentState);
+  const stagedCount           = useAppStore((s) => s.stagedCount);
+  const pendingProposalCount  = useAppStore((s) => s.pendingProposalCount);
+  const calendarPendingCount  = useAppStore((s) => s.calendarPendingCount);
+  const escalationActiveCount = useAppStore((s) => s.escalationActiveCount);
+  const backendStatus         = useAppStore((s) => s.backendStatus);
+  const backendConfig         = useAppStore((s) => s.backendConfig);
+
+  // Live counts. Zero renders no badge at all, so an empty queue looks empty
+  // rather than showing a stale number.
+  const badges: Partial<Record<RouteId, number>> = {
+    inbox:      stagedCount,
+    proposals:  pendingProposalCount,
+    calendar:   calendarPendingCount,
+    escalation: escalationActiveCount,
+  };
+
+  // This footer used to read "Vault synced" with a green pulse unconditionally,
+  // including when the backend was down. It now reports what is actually true.
+  const vault: { tone: 'green' | 'amber' | 'red' | 'grey'; label: string } =
+    backendStatus === 'error'   ? { tone: 'red',   label: 'Backend offline' }
+    : backendStatus === 'unknown' ? { tone: 'grey',  label: 'Checking…' }
+    : backendConfig?.vaultPathExists === false ? { tone: 'amber', label: 'Vault path missing' }
+    : backendConfig?.vaultPathExists ? { tone: 'green', label: 'Vault connected' }
+    : { tone: 'grey', label: 'Vault unknown' };
 
   return (
     <aside
@@ -72,6 +96,7 @@ export function Sidebar({ route, onNavigate }: SidebarProps) {
             </div>
             {group.items.map((item) => {
               const active = route === item.id;
+              const badge = badges[item.id] ?? item.badge;
               return (
                 <button
                   key={item.id}
@@ -124,7 +149,7 @@ export function Sidebar({ route, onNavigate }: SidebarProps) {
                     <Icon name={item.glyph} size={16} />
                   </span>
                   <span style={{ flex: 1, textAlign: 'left' }}>{item.label}</span>
-                  {item.badge != null && (
+                  {badge != null && badge > 0 && (
                     <span
                       style={{
                         fontSize: 10.5,
@@ -140,7 +165,7 @@ export function Sidebar({ route, onNavigate }: SidebarProps) {
                         placeItems: 'center',
                       }}
                     >
-                      {item.badge}
+                      {badge}
                     </span>
                   )}
                 </button>
@@ -161,8 +186,8 @@ export function Sidebar({ route, onNavigate }: SidebarProps) {
           gap: 8,
         }}
       >
-        <StatusDot tone="green" pulse />
-        <span style={{ fontSize: 11, color: 'var(--txt-2)' }}>Vault synced</span>
+        <StatusDot tone={vault.tone} pulse={vault.tone === 'green'} />
+        <span style={{ fontSize: 11, color: 'var(--txt-2)' }}>{vault.label}</span>
         <span className="mono" style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--txt-3)' }}>
           v0.1
         </span>

@@ -540,9 +540,10 @@ export function ConsolidatePage() {
       <div style={{ padding: 'var(--s3) var(--s4)', background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 'var(--r2)', fontSize: 12, color: 'var(--txt-1)', display: 'flex', alignItems: 'flex-start', gap: 8, lineHeight: 1.5 }}>
         <Icon name="shield" size={14} style={{ color: 'var(--amber)', marginTop: 1, flexShrink: 0 }} />
         <span>
-          <strong>Manual paste/import only.</strong> Automatic capture from ChatGPT/Claude (browser automation) and
-          computer-use capture are <strong>not wired</strong>. Nothing is written to the vault until you explicitly
-          choose <em>Save to vault</em>. AI assist is opt-in and preview-only; transcript instructions are never followed.
+          <strong>Manual paste/import.</strong> Automatic capture from the ChatGPT/Claude apps would go through
+          the computer-use harness, which is off by default and starts from its own page. Nothing is written
+          to the vault until you explicitly choose <em>Save to vault</em>. AI assist is opt-in and
+          preview-only; transcript instructions are never followed.
         </span>
       </div>
 

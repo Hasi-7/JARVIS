@@ -2,7 +2,6 @@ import type {
   AgentStateInfo,
   AgentStateKey,
   AgentMode,
-  SystemStatus,
   QuickAction,
   Today,
   Approval,
@@ -42,26 +41,11 @@ export const AGENT_MODES: AgentMode[] = [
   { id: 'observe',    label: 'Observe',      desc: 'Chat only. Structured tool requests are blocked.' },
   { id: 'draft',      label: 'Draft',        desc: 'Tool requests may be evaluated. Nothing executes.' },
   { id: 'assist',     label: 'Assist',       desc: 'Safe-local requests reviewable in Tool Connections. Execution stays manual.' },
-  { id: 'research',   label: 'Research',     desc: 'Tool requests evaluated only. Browser/computer-use blocked.' },
+  { id: 'research',   label: 'Research',     desc: 'Tool requests evaluated only. Browsing runs from the Research page via the approval queue.' },
   { id: 'escalation', label: 'Escalation',   desc: 'Handoff discussion. Tool requests evaluated only.' },
-  { id: 'computer',   label: 'Computer Use', desc: 'Not wired. Browser/computer-use remains disabled.' },
+  { id: 'computer',   label: 'Computer Use', desc: 'Driven from its own page, not from chat. Needs its own kill switch.' },
   { id: 'locked',     label: 'Locked',       desc: 'All agent tools disabled. Manual UI works.' },
 ];
-
-// Planned PRD runtimes that are NOT implemented in this build. They must read
-// honestly as "Not wired" with neutral (grey/disabled) styling — never as
-// ready/connected. Real, wired statuses (Backend, Brain CLI, Vault, Local model)
-// are sourced from the backend in DashboardPage, not from this object.
-export const SYSTEM: SystemStatus = {
-  vault:    APP_CONFIG.vaultPath,
-  brainCmd: APP_CONFIG.brainCmd,
-  openclaw: { state: 'disabled', label: 'OpenClaw tool bridge', detail: 'Planned PRD runtime — not wired yet', statusLabel: 'Not wired' },
-  nemoclaw: { state: 'disabled', label: 'NemoClaw/OpenShell',   detail: 'Planned PRD runtime — not wired yet', statusLabel: 'Not wired' },
-  browser:  { state: 'disabled', label: 'Browser harness',      detail: 'Planned PRD runtime — not wired yet', statusLabel: 'Not wired' },
-  computer: { state: 'disabled', label: 'Computer use',         detail: 'Planned PRD runtime — not wired yet', statusLabel: 'Not wired' },
-  model:    { state: 'disabled', label: 'Local model',          detail: 'See real Local model status on Dashboard', statusLabel: 'n/a' },
-  mcp:      { state: 'disabled', label: 'MCP gateway',          detail: 'Planned PRD runtime — not wired yet', statusLabel: 'Not wired' },
-};
 
 export const QUICK_ACTIONS: QuickAction[] = [
   { id: 'ask',         label: 'Ask Agent',          glyph: 'spark',  group: 'Agent' },
@@ -72,9 +56,19 @@ export const QUICK_ACTIONS: QuickAction[] = [
   { id: 'syncraw',     label: 'Sync Raw',           glyph: 'sync',   group: 'Brain CLI', cmd: 'brain sync-raw' },
   { id: 'calexport',   label: 'Export Calendar',    glyph: 'cal',    group: 'Brain CLI', cmd: 'brain calendar-export' },
   { id: 'upload',      label: 'Upload Raw File',    glyph: 'upload', group: 'Intake' },
+  { id: 'calopen',     label: 'Open Calendar',      glyph: 'cal',    group: 'Brain CLI', cmd: 'brain calendar-open' },
+  { id: 'calcandidates', label: 'Calendar Candidates', glyph: 'check', group: 'Intake' },
   { id: 'newproj',     label: 'New Project',        glyph: 'plus',   group: 'Create', cmd: 'brain new-project' },
   { id: 'newhack',     label: 'New Hackathon',      glyph: 'plus',   group: 'Create', cmd: 'brain new-hackathon' },
   { id: 'newcourse',   label: 'New Course',         glyph: 'plus',   group: 'Create', cmd: 'brain new-course' },
+  { id: 'newbusiness', label: 'New Business Area',  glyph: 'chart',  group: 'Create' },
+  // PRD §16 "Check …" actions. They navigate to the page that reports real
+  // status rather than pretending to run a probe from here.
+  { id: 'checkopenclaw', label: 'Check OpenClaw',       glyph: 'sphere', group: 'Status' },
+  { id: 'checkbrowser',  label: 'Check Browser Harness', glyph: 'search', group: 'Status' },
+  { id: 'checkcomputer', label: 'Check Computer Use',    glyph: 'grid',   group: 'Status' },
+  { id: 'checkmcp',      label: 'Check MCP Connections', glyph: 'layers', group: 'Status' },
+  { id: 'checksafety',   label: 'Tool Safety + Logs',    glyph: 'shield', group: 'Status' },
 ];
 
 export const TODAY: Today = {
@@ -142,6 +136,8 @@ export const CMD_LOG: CmdLogEntry[] = [
   { cmd: 'brain doctor',   ok: true,  at: '09:15', out: 'all checks passed (12/12)' },
 ];
 
+// No `badge` values here: badges are live counts resolved in Sidebar from the
+// store. Hardcoding them made the sidebar report stale work every session.
 export const NAV: NavGroup[] = [
   {
     group: 'Operate',
@@ -154,11 +150,11 @@ export const NAV: NavGroup[] = [
   {
     group: 'Intake',
     items: [
-      { id: 'inbox',      label: 'Raw Inbox',       glyph: 'inbox', badge: 7 },
+      { id: 'inbox',      label: 'Raw Inbox',       glyph: 'inbox' },
       { id: 'proposals',  label: 'Proposal Queue',   glyph: 'check' },
       { id: 'consolidate',label: 'AI Consolidation', glyph: 'merge' },
       { id: 'email',      label: 'Email Intake',     glyph: 'inbox' },
-      { id: 'calendar',   label: 'Calendar',         glyph: 'cal',   badge: 3 },
+      { id: 'calendar',   label: 'Calendar',         glyph: 'cal'   },
       { id: 'tasks',      label: 'Tasks',            glyph: 'check' },
     ],
   },
@@ -176,7 +172,7 @@ export const NAV: NavGroup[] = [
   {
     group: 'Control',
     items: [
-      { id: 'escalation', label: 'Escalation Queue', glyph: 'arrow-up', badge: 3 },
+      { id: 'escalation', label: 'Escalation Queue', glyph: 'arrow-up' },
       { id: 'tools',      label: 'Tool Connections', glyph: 'layers'    },
       { id: 'safety',     label: 'Tool Safety',      glyph: 'shield'    },
       { id: 'settings',   label: 'Settings',         glyph: 'gear'      },

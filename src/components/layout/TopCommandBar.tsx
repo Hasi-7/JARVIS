@@ -1,17 +1,19 @@
 import type { RouteId } from '@/types';
-import { NAV, SYSTEM, AGENT_MODES } from '@/data/mock';
+import { NAV, AGENT_MODES } from '@/data/mock';
 import { useAppStore } from '@/store/useAppStore';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { ModeBadge } from '@/components/ui/ModeBadge';
 import { resolveModePolicy } from '@/lib/agentModes';
-import { STATE_TO_TONE } from '@/lib/utils';
+import { useRuntimeStatus, runtimeStatusTone, runtimeStatusLabel } from '@/lib/runtimeStatus';
 
-const STATUS_PILLS: Array<{ label: string; key: keyof typeof SYSTEM }> = [
-  { label: 'OpenClaw',  key: 'openclaw' },
-  { label: 'NemoClaw',  key: 'nemoclaw' },
-  { label: 'Browser',   key: 'browser'  },
-  { label: 'CompUse',   key: 'computer' },
+// These pills previously read from a hardcoded SYSTEM mock and permanently
+// showed "Not wired" regardless of what the backend reported.
+const STATUS_PILLS: Array<{ label: string; id: string }> = [
+  { label: 'OpenClaw',  id: 'openclaw'           },
+  { label: 'NemoClaw',  id: 'nemoclaw_openshell' },
+  { label: 'Browser',   id: 'browser_harness'    },
+  { label: 'CompUse',   id: 'computer_use'       },
 ];
 
 interface TopCommandBarProps {
@@ -23,6 +25,7 @@ export function TopCommandBar({ route }: TopCommandBarProps) {
   const setAgentMode = useAppStore((s) => s.setAgentMode);
   const agentModes   = useAppStore((s) => s.agentModes);
   const openPalette  = useAppStore((s) => s.openPalette);
+  const runtime      = useRuntimeStatus();
 
   const modePolicy = resolveModePolicy(agentMode.id, agentModes);
 
@@ -87,13 +90,14 @@ export function TopCommandBar({ route }: TopCommandBarProps) {
             marginRight: 4,
           }}
         >
-          {STATUS_PILLS.map(({ label, key }) => {
-            const svc = SYSTEM[key] as { state: 'ready' | 'idle' | 'partial' | 'disabled' | 'blocked' };
-            const tone = STATE_TO_TONE[svc.state];
+          {STATUS_PILLS.map(({ label, id }) => {
+            const item = runtime.items.find((i) => i.id === id);
+            const tone = item ? runtimeStatusTone(item) : 'grey';
+            const detail = item ? runtimeStatusLabel(item) : 'Unknown';
             return (
               <span
                 key={label}
-                title={`${label} · ${svc.state}`}
+                title={`${label} · ${detail}`}
                 style={{
                   display: 'flex',
                   alignItems: 'center',

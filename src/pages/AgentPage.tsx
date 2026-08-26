@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api, ApiError, streamAgentMessage, isBlockedByMode } from '@/lib/api';
-import type { ConversationSummary, AgentToolRequestResponse, AgentStructuredOutput, AgentModePolicy } from '@/lib/api';
+import type { ConversationSummary, AgentToolRequestResponse, AgentStructuredOutput, AgentModePolicy, ResearchSessionSummary } from '@/lib/api';
 import { resolveModePolicy } from '@/lib/agentModes';
 import { useRuntimeStatus } from '@/lib/runtimeStatus';
 import { RuntimeGuardrailNote } from '@/components/runtime/RuntimeStatus';
@@ -370,6 +370,81 @@ function AgentToolRequestsPanel({ convId, refreshSignal, modePolicy, canReview, 
 }
 
 // ── main component ────────────────────────────────────────────────────────────
+
+/**
+ * Live research sessions.
+ *
+ * This panel was a hardcoded "No active research run" string even though real,
+ * time-boxed sessions existed and were listable — the Research page has driven
+ * them all along.
+ */
+function ActiveResearchPanel() {
+  const navigate = useAppStore((s) => s.navigate);
+  const [sessions, setSessions] = useState<ResearchSessionSummary[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      api.listResearchSessions()
+        .then((res) => { if (alive) setSessions(res.sessions); })
+        .catch(() => { if (alive) setSessions([]); });
+    };
+    load();
+    // Sessions are time-boxed, so the remaining budget goes stale quickly.
+    const timer = window.setInterval(load, 15_000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, []);
+
+  const active = (sessions ?? []).filter((s) => s.status === 'active');
+  const recent = (sessions ?? []).filter((s) => s.status !== 'active').slice(0, 2);
+
+  return (
+    <div className="panel panel-pad">
+      <div className="eyebrow" style={{ marginBottom: 'var(--s3)' }}>Research run</div>
+
+      {sessions === null ? (
+        <div style={{ fontSize: 11.5, color: 'var(--txt-3)' }}>Loading…</div>
+      ) : active.length === 0 ? (
+        <>
+          <div style={{ fontSize: 11.5, color: 'var(--txt-3)', fontStyle: 'italic' }}>
+            No active research run
+          </div>
+          {recent.length > 0 && (
+            <div style={{ marginTop: 'var(--s3)', paddingTop: 'var(--s2)', borderTop: '1px solid var(--line-soft)' }}>
+              {recent.map((s) => (
+                <div key={s.id} style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {s.status} · {s.topic ?? 'untitled'}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        active.map((s) => (
+          <div key={s.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <StatusDot tone="live" pulse />
+              <span style={{ fontSize: 11.5, color: 'var(--txt-0)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {s.topic ?? 'Research'}
+              </span>
+            </div>
+            <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-2)' }}>
+              {Math.max(0, Math.round(s.remainingSeconds))}s left · {s.captureCount} capture{s.captureCount === 1 ? '' : 's'}
+              {s.errorCount > 0 && <span style={{ color: 'var(--red)' }}> · {s.errorCount} error{s.errorCount === 1 ? '' : 's'}</span>}
+            </div>
+            <button
+              className="btn btn-sm btn-ghost"
+              style={{ fontSize: 10.5, marginTop: 2 }}
+              onClick={() => navigate('research')}
+            >
+              Open Research
+            </button>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
 
 export function AgentPage() {
   const navigate         = useAppStore((s) => s.navigate);
@@ -1131,13 +1206,8 @@ export function AgentPage() {
         {/* runtime guardrail — read-only OpenClaw/NemoClaw readiness */}
         <RuntimeGuardrailNote items={runtime.items} />
 
-        {/* research run — stub */}
-        <div className="panel panel-pad">
-          <div className="eyebrow" style={{ marginBottom: 'var(--s3)' }}>Research run</div>
-          <div style={{ fontSize: 11.5, color: 'var(--txt-3)', fontStyle: 'italic' }}>
-            No active research run
-          </div>
-        </div>
+        {/* research run — real sessions, not a stub */}
+        <ActiveResearchPanel />
 
       </div>
     </div>
