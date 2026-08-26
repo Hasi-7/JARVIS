@@ -1182,3 +1182,181 @@ def test_approval_dispatch_never_uses_raw_subprocess_or_shell(monkeypatch):
     brain.assert_called_once_with("today")
     raw_run.assert_not_called()
     popen.assert_not_called()
+
+
+# ── approval-stack coupling guard (PRD §32) ───────────────────────────────────
+# Registering a tool for approval takes SIX coordinated edits. Nothing enforced
+# that, so calendar.create_event / browser.search / browser.read_page shipped in
+# _APPROVAL_REQUIRED_TOOLS and _dispatch but without an _ARG_MODELS entry — which
+# made them permanently unqueueable while LOOKING like a deliberate policy
+# refusal, because create_approval raised the same message for both causes.
+# These tests fail loudly if any of the six sites is missed again.
+
+_NO_REVIEW_FIELDS = frozenset({"brain.today", "brain.sync_raw"})
+
+
+def test_every_approval_required_tool_has_an_arg_model():
+    """_ARG_MODELS is what create_approval validates against; a missing entry
+    makes the tool unqueueable through the only path into the queue."""
+    assert set(pg._APPROVAL_REQUIRED_TOOLS) == set(ta._ARG_MODELS), (
+        "Approval-required tools and canonical arg models have diverged. "
+        f"Missing arg model: {sorted(set(pg._APPROVAL_REQUIRED_TOOLS) - set(ta._ARG_MODELS))}. "
+        f"Arg model with no policy: {sorted(set(ta._ARG_MODELS) - set(pg._APPROVAL_REQUIRED_TOOLS))}."
+    )
+
+
+@pytest.mark.parametrize("tool", sorted(pg._APPROVAL_REQUIRED_TOOLS))
+def test_every_approval_required_tool_has_a_dispatch_branch(tool):
+    import inspect
+    source = inspect.getsource(ta._dispatch)
+    assert f'"{tool}"' in source, f"{tool} has no _dispatch branch; execute would raise."
+
+
+@pytest.mark.parametrize("tool", sorted(pg._APPROVAL_REQUIRED_TOOLS))
+def test_every_approval_required_tool_summarizes_its_execution(tool):
+    """A None summary means the operator sees no outcome for an executed action."""
+    assert ta._execution_summary(tool, {}, True) is not None, (
+        f"{tool} has no _execution_summary branch."
+    )
+
+
+@pytest.mark.parametrize("tool", sorted(pg._APPROVAL_REQUIRED_TOOLS))
+def test_every_approval_required_tool_describes_its_arguments(tool):
+    """The generic fallback tells the operator nothing about what they approve."""
+    summary = ta._approval_args_summary(tool, {"title": "x"})
+    assert summary != "Approval-required arguments withheld", (
+        f"{tool} falls through to the opaque _approval_args_summary fallback."
+    )
+
+
+@pytest.mark.parametrize(
+    "tool", sorted(pg._APPROVAL_REQUIRED_TOOLS - _NO_REVIEW_FIELDS)
+)
+def test_every_argument_taking_tool_exposes_review_fields(tool):
+    """reviewFields is what the approval UI renders; empty means a blind approval."""
+    record = {"tool": tool, "canonicalArgs": {"title": "x", "url": "https://example.com",
+                                              "query": "q", "date": "2026-09-01"}}
+    assert ta._review_fields(record), f"{tool} exposes no review fields for approval."
+
+
+# ── the three previously-unqueueable tools, through the REAL path ─────────────
+# Every pre-existing test for these called tool_approvals._dispatch(...) directly,
+# which skips create_approval entirely — the exact reason the missing arg models
+# went unnoticed. These go through the only path the product actually uses:
+# create_request -> create_approval -> approve -> execute.
+
+
+def test_calendar_event_queues_approves_and_executes(monkeypatch):
+    """MVP v9's real external write, reachable end to end for the first time."""
+    _enable(monkeypatch)
+    request = _request(tool="calendar.create_event",
+                       args={"title": "Advisor meeting", "date": "2026-09-01", "time": "14:30"})
+    assert request["status"] == "pending_approval"
+    assert request["approvalId"]
+
+    tool_approval_approve(request["id"], ApproveToolApprovalRequest(approvedBy="owner"), _TOKEN)
+    with patch("app.gcal_write.create_event",
+               return_value={"eventId": "e12", "htmlLink": None, "summary": "Advisor meeting",
+                             "start": None, "end": None, "calendarId": "primary"}) as create:
+        executed = tool_approval_execute(
+            request["approvalId"], ExecuteToolApprovalRequest(), _TOKEN,
+        )
+    create.assert_called_once()
+    assert executed.status == "executed"
+    assert executed.result.resultType == "calendar_event_created"
+    assert executed.result.ok is True
+
+
+def test_browser_search_queues_and_executes(monkeypatch):
+    _enable(monkeypatch)
+    request = _request(tool="browser.search",
+                       args={"sessionId": "sess-1", "query": "landlock docker seccomp"})
+    tool_approval_approve(request["id"], ApproveToolApprovalRequest(), _TOKEN)
+    with patch("app.browser.search", return_value={"results": [], "query": "q"}) as search:
+        executed = tool_approval_execute(
+            request["approvalId"], ExecuteToolApprovalRequest(), _TOKEN,
+        )
+    search.assert_called_once_with("sess-1", "landlock docker seccomp", None)
+    assert executed.status == "executed"
+    assert executed.result.resultType == "sandboxed_search"
+
+
+def test_page_read_goes_through_open_page_so_the_allowlist_still_applies(monkeypatch):
+    """Regression guard: dispatching straight to fetch_page_in_sandbox skipped
+    validate_url, the session domain allowlist, and the SSRF checks."""
+    _enable(monkeypatch)
+    request = _request(tool="browser.read_page",
+                       args={"sessionId": "sess-1", "url": "https://example.com/a"})
+    tool_approval_approve(request["id"], ApproveToolApprovalRequest(), _TOKEN)
+    with patch("app.browser.open_page",
+               return_value={"url": "https://example.com/a", "title": "A", "timestamp": "t",
+                             "snippet": "s", "textChars": 1, "httpStatus": 200}) as open_page:
+        with patch("app.openshell_exec.fetch_page_in_sandbox") as raw_fetch:
+            executed = tool_approval_execute(
+                request["approvalId"], ExecuteToolApprovalRequest(), _TOKEN,
+            )
+    open_page.assert_called_once_with("sess-1", "https://example.com/a")
+    raw_fetch.assert_not_called()
+    assert executed.status == "executed"
+    assert executed.result.resultType == "sandboxed_page_read"
+
+
+def test_session_scoped_browser_tools_reject_a_missing_session():
+    """Without sessionId there is no allowlist to check the URL against, so the
+    request must not be queueable at all."""
+    for tool, args in (
+        ("browser.search", {"query": "q"}),
+        ("browser.read_page", {"url": "https://example.com"}),
+    ):
+        with pytest.raises(Exception) as exc:
+            ta.validate_canonical_args(tool, args)
+        assert "sessionId" in str(exc.value) or "Field required" in str(exc.value)
+
+
+def test_page_read_rejects_a_non_http_url():
+    with pytest.raises(Exception) as exc:
+        ta.validate_canonical_args("browser.read_page",
+                                   {"sessionId": "s", "url": "file:///etc/passwd"})
+    assert "http(s)" in str(exc.value)
+
+
+def test_missing_arg_model_is_distinguishable_from_a_policy_refusal():
+    """These two refusals once read identically, which is how the gap survived."""
+    with pytest.raises(ta.ApprovalError) as registration_gap:
+        ta.validate_canonical_args("some.unregistered_tool", {})
+    assert "tool-registration gap" in str(registration_gap.value)
+
+
+# The registration surface turned out to be EIGHT sites, not six: the API response
+# models are load-bearing too. _execution_summary emitted three resultTypes that
+# the response Literal did not list, so those executions would have 500'd at
+# serialization even after becoming queueable. These two guards close that.
+
+def test_every_execution_summary_result_type_is_serializable():
+    """resultType is a Literal on the response model; an unlisted value 500s."""
+    from app.models import ToolApprovalExecutionSummary
+    allowed = set(ToolApprovalExecutionSummary.model_fields["resultType"].annotation.__args__)
+    emitted = {
+        ta._execution_summary(tool, {}, True)["resultType"]
+        for tool in pg._APPROVAL_REQUIRED_TOOLS
+    }
+    assert emitted <= allowed, (
+        f"_execution_summary emits resultType(s) the response model rejects: "
+        f"{sorted(emitted - allowed)}"
+    )
+
+
+@pytest.mark.parametrize("tool", sorted(pg._APPROVAL_REQUIRED_TOOLS))
+def test_every_review_field_shape_is_serializable(tool):
+    """reviewFields is a closed Union of extra='forbid' models; a shape with no
+    member cannot be returned to the approval UI at all."""
+    from pydantic import TypeAdapter
+    from app.models import ToolApprovalResponse
+
+    sample = {"title": "x", "date": "2026-09-01", "time": "09:30", "duration": "30m",
+              "status": "todo", "area": "a", "priority": "high", "due": "2026-09-01",
+              "source": "agent", "reason": "r", "location": "l", "timeZone": "UTC",
+              "sessionId": "s", "query": "q", "limit": 5, "url": "https://example.com"}
+    fields = ta._review_fields({"tool": tool, "canonicalArgs": sample})
+    adapter = TypeAdapter(ToolApprovalResponse.model_fields["reviewFields"].annotation)
+    adapter.validate_python(fields)  # raises if no Union member accepts this shape

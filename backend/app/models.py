@@ -1243,7 +1243,14 @@ class AgentModeBlockedResponse(BaseModel):
 class ToolApprovalExecutionSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ok:         bool
-    resultType: Literal["brain_command", "task_created", "calendar_candidate_created"]
+    # Must stay in sync with tool_approvals._execution_summary. It emitted
+    # sandboxed_search / sandboxed_page_read / calendar_event_created long before
+    # this Literal listed them, so those executions would have failed at response
+    # serialization even once they became queueable.
+    resultType: Literal[
+        "brain_command", "task_created", "calendar_candidate_created",
+        "calendar_event_created", "sandboxed_search", "sandboxed_page_read",
+    ]
     message:    str = Field(max_length=300)
     path:       Optional[str] = Field(default=None, max_length=500)
     id:         Optional[str] = Field(default=None, max_length=100)
@@ -1274,6 +1281,32 @@ class ToolApprovalCalendarReviewFields(BaseModel):
     approved: Literal["No"] = "No"
 
 
+class ToolApprovalCalendarEventReviewFields(BaseModel):
+    """The ONLY external write. Distinct from the candidate model above: no
+    `source`/`approved`, and it carries location/timeZone, which shape a real event."""
+    model_config = ConfigDict(extra="forbid")
+    date:     str = Field(max_length=10)
+    time:     Optional[str] = Field(default=None, max_length=5)
+    duration: Optional[str] = Field(default=None, max_length=50)
+    title:    str = Field(max_length=300)
+    reason:   Optional[str] = Field(default=None, max_length=500)
+    location: Optional[str] = Field(default=None, max_length=500)
+    timeZone: Optional[str] = Field(default=None, max_length=60)
+
+
+class ToolApprovalBrowserSearchReviewFields(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sessionId: str = Field(max_length=64)
+    query:     str = Field(max_length=500)
+    limit:     Optional[int] = None
+
+
+class ToolApprovalBrowserPageReviewFields(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sessionId: str = Field(max_length=64)
+    url:       str = Field(max_length=2000)
+
+
 class ToolApprovalResponse(BaseModel):
     id:                     str
     requestId:              str
@@ -1284,9 +1317,16 @@ class ToolApprovalResponse(BaseModel):
     mode:                   str
     risk:                   str
     argsSummary:            str = Field(max_length=240)
+    # Each member sets extra="forbid", which is what keeps them mutually
+    # exclusive: _review_fields always emits every key for its tool, so the
+    # candidate ({source, approved}) and event ({location, timeZone}) shapes
+    # cannot be confused for one another.
     reviewFields:           Union[
         ToolApprovalTaskReviewFields,
         ToolApprovalCalendarReviewFields,
+        ToolApprovalCalendarEventReviewFields,
+        ToolApprovalBrowserSearchReviewFields,
+        ToolApprovalBrowserPageReviewFields,
         ToolApprovalBrainReviewFields,
     ]
     reason:                 Optional[str] = Field(default=None, max_length=300)

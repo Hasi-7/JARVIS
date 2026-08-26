@@ -300,19 +300,65 @@ def test_evaluate_requires_approval():
     assert result["executionEnabled"] is False
 
 
-def test_dispatcher_routes_to_the_sandbox(monkeypatch):
-    from app import tool_approvals
+def test_dispatcher_routes_through_open_page_into_the_sandbox(tmp_path, monkeypatch):
+    """The dispatcher must reach the sandbox VIA open_page, not around it.
+
+    It previously called fetch_page_in_sandbox directly with a bare url. That
+    function's docstring states its caller has already run validate_url — which
+    was false on this path, so the session's domain allowlist and the private-
+    address checks were skipped for every approval-gated page read.
+    """
+    from app import browser, tool_approvals
+
+    monkeypatch.setattr(browser, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(browser, "SESSIONS_FILE", tmp_path / "sessions" / "sessions.json")
+    monkeypatch.setattr(browser, "guardrail_healthy", lambda env=None: True)
 
     seen = {}
 
-    def fake_fetch(url, timeout):
+    def fake_fetch(url, timeout, *args, **kwargs):
         seen["url"] = url
-        return {"html": "ok", "status": 200}
+        return {"html": "<html><title>T</title><p>body</p></html>", "status": 200}
 
     monkeypatch.setattr(ox, "fetch_page_in_sandbox", fake_fetch)
-    result = tool_approvals._dispatch("browser.read_page", {"url": "https://example.com"})
-    assert seen["url"] == "https://example.com"
-    assert result["status"] == 200
+    monkeypatch.setattr(browser, "fetch_page_in_sandbox", fake_fetch, raising=False)
+
+    session = browser.start_session("Sandbox routing", ["example.com"])
+    result = tool_approvals._dispatch(
+        "browser.read_page", {"sessionId": session["id"], "url": "https://example.com/a"},
+    )
+
+    assert seen["url"] == "https://example.com/a"
+    assert result["ok"] is True          # execute() derives success from this key
+    assert result["url"] == "https://example.com/a"
+    assert result["httpStatus"] == 200
+
+
+def test_dispatcher_page_read_enforces_the_session_domain_allowlist(tmp_path, monkeypatch):
+    """The regression this routing change exists to prevent."""
+    from app import browser, tool_approvals
+
+    monkeypatch.setattr(browser, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(browser, "SESSIONS_FILE", tmp_path / "sessions" / "sessions.json")
+    monkeypatch.setattr(browser, "guardrail_healthy", lambda env=None: True)
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("Fetched a host outside the session allowlist.")
+
+    monkeypatch.setattr(ox, "fetch_page_in_sandbox", must_not_run)
+
+    session = browser.start_session("Allowlist", ["example.com"])
+    for blocked, expected in (
+        ("https://evil.test/x", "not in this session's allowed domains"),
+        ("http://127.0.0.1:8000/admin", "loopback, private, or reserved"),
+        ("https://user:pw@example.com/x", "credentials"),
+    ):
+        with pytest.raises(browser.BrowserError) as exc:
+            tool_approvals._dispatch(
+                "browser.read_page", {"sessionId": session["id"], "url": blocked},
+            )
+        # Assert the REASON, so this cannot start passing for an unrelated error.
+        assert expected in str(exc.value), f"{blocked} blocked for the wrong reason: {exc.value}"
 
 
 def test_execution_summary_reports_sandboxed_read():

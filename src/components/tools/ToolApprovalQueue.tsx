@@ -4,6 +4,8 @@ import { api, ApiError } from '@/lib/api';
 import type {
   ToolApproval, ToolApprovalReviewFields,
   ToolApprovalTaskReviewFields, ToolApprovalCalendarReviewFields,
+  ToolApprovalCalendarEventReviewFields,
+  ToolApprovalBrowserSearchReviewFields, ToolApprovalBrowserPageReviewFields,
 } from '@/lib/api';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
@@ -71,6 +73,25 @@ function reviewFieldEntries(tool: string, fields: ToolApprovalReviewFields): [st
       ['Title', calendar.title], ['Reason', calendar.reason], ['Source', calendar.source],
       ['Approved', calendar.approved],
     ];
+  }
+  if (tool === 'calendar.create_event') {
+    const event = fields as ToolApprovalCalendarEventReviewFields;
+    return [
+      ['Date', event.date], ['Time', event.time], ['Duration', event.duration],
+      ['Title', event.title], ['Reason', event.reason], ['Location', event.location],
+      ['Time zone', event.timeZone],
+    ];
+  }
+  if (tool === 'browser.search') {
+    const search = fields as ToolApprovalBrowserSearchReviewFields;
+    return [
+      ['Session', search.sessionId], ['Query', search.query],
+      ['Limit', search.limit == null ? null : String(search.limit)],
+    ];
+  }
+  if (tool === 'browser.read_page') {
+    const page = fields as ToolApprovalBrowserPageReviewFields;
+    return [['Session', page.sessionId], ['URL', page.url]];
   }
   return [];
 }

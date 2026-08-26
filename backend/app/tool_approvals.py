@@ -168,11 +168,119 @@ class _CalendarArgs(BaseModel):
         return self
 
 
+class _CalendarEventArgs(BaseModel):
+    """The ONLY external write. Mirrors gcal_write.build_event_body's allowlist.
+
+    `extra="forbid"` is the first of two rebuilds: nothing here reaches the
+    Calendar API directly, because build_event_body constructs the request body
+    from its own allowlist rather than forwarding this object.
+    """
+    model_config = ConfigDict(extra="forbid")
+    date: str = Field(max_length=10)
+    time: Optional[str] = Field(default=None, max_length=5)
+    duration: Optional[str] = Field(default=None, max_length=50)
+    title: str = Field(max_length=300)
+    reason: Optional[str] = Field(default=None, max_length=500)
+    location: Optional[str] = Field(default=None, max_length=500)
+    timeZone: Optional[str] = Field(default=None, max_length=60)
+
+    @field_validator("date", "time", "duration", "title", "reason", "location",
+                     "timeZone", mode="before")
+    @classmethod
+    def _clean(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("must be a string or null")
+        if "\n" in value or "\r" in value:
+            raise ValueError("must not contain newlines")
+        return value.strip()
+
+    @field_validator("date")
+    @classmethod
+    def _valid_date(cls, value):
+        return _validate_iso_date(value, "date")
+
+    @field_validator("time")
+    @classmethod
+    def _valid_time(cls, value):
+        if value is not None and not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+            raise ValueError("time must use HH:MM (24-hour) format")
+        return value
+
+    @field_validator("duration")
+    @classmethod
+    def _valid_duration(cls, value):
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 .:+-]{0,49}", value):
+            raise ValueError("duration contains unsupported characters")
+        return value
+
+    @model_validator(mode="after")
+    def _required_fields(self):
+        if not self.title:
+            raise ValueError("title is required and cannot be empty")
+        if not self.date:
+            raise ValueError("date is required and cannot be empty")
+        return self
+
+
+class _BrowserSearchArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sessionId: str = Field(max_length=64)
+    query: str = Field(max_length=500)
+    limit: Optional[int] = Field(default=None, ge=1, le=50)
+
+    @field_validator("sessionId", "query", mode="before")
+    @classmethod
+    def _clean(cls, value):
+        if not isinstance(value, str):
+            raise ValueError("must be a string")
+        if "\n" in value or "\r" in value:
+            raise ValueError("must not contain newlines")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _required_fields(self):
+        if not self.sessionId:
+            raise ValueError("sessionId is required — a search is always session-scoped")
+        if not self.query:
+            raise ValueError("query is required and cannot be empty")
+        return self
+
+
+class _BrowserReadPageArgs(BaseModel):
+    """Shape only. The real gate is browser.open_page, which checks the URL against
+    the SESSION's domain allowlist — which is why sessionId is required here."""
+    model_config = ConfigDict(extra="forbid")
+    sessionId: str = Field(max_length=64)
+    url: str = Field(max_length=2000)
+
+    @field_validator("sessionId", "url", mode="before")
+    @classmethod
+    def _clean(cls, value):
+        if not isinstance(value, str):
+            raise ValueError("must be a string")
+        if "\n" in value or "\r" in value:
+            raise ValueError("must not contain newlines")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _required_fields(self):
+        if not self.sessionId:
+            raise ValueError("sessionId is required — a page read is always session-scoped")
+        if not self.url.lower().startswith(("http://", "https://")):
+            raise ValueError("url must be an http(s) URL")
+        return self
+
+
 _ARG_MODELS = {
     "brain.today": _NoArgs,
     "brain.sync_raw": _NoArgs,
     "vault.create_task": _TaskArgs,
     "calendar.create_candidate": _CalendarArgs,
+    "calendar.create_event": _CalendarEventArgs,
+    "browser.search": _BrowserSearchArgs,
+    "browser.read_page": _BrowserReadPageArgs,
 }
 
 
@@ -243,13 +351,27 @@ def _approval_args_summary(tool: str, args: dict) -> str:
         return f"Task creation request ({len(present)} field(s) configured)"
     if tool == "calendar.create_candidate":
         return f"Calendar candidate request ({len(present)} field(s) configured)"
+    if tool == "calendar.create_event":
+        return f"REAL Google Calendar event creation ({len(present)} field(s) configured)"
+    if tool == "browser.search":
+        return f"Sandboxed search within one research session ({len(present)} field(s) configured)"
+    if tool == "browser.read_page":
+        return f"Sandboxed page read within one research session ({len(present)} field(s) configured)"
     return "Approval-required arguments withheld"
 
 
 def validate_canonical_args(tool: str, args: Optional[dict]) -> dict:
     model = _ARG_MODELS.get(tool)
     if model is None:
-        raise ApprovalError("Tool is not eligible for privileged approval execution.")
+        # Deliberately distinct from create_approval's policy refusal. These once
+        # read identically, which is how three approval-required tools shipped
+        # with no arg model: the resulting refusal was indistinguishable from a
+        # policy decision in the log, so it looked correct. A missing arg model is
+        # a registration bug, not a policy outcome.
+        raise ApprovalError(
+            f"'{tool}' has no canonical argument model registered, so it cannot be "
+            "queued for approval. This is a tool-registration gap, not a policy refusal."
+        )
     if args is None:
         args = {}
     if not isinstance(args, dict):
@@ -350,6 +472,31 @@ def _review_fields(record: dict) -> dict:
             "reason": args.get("reason"),
             "source": args.get("source"),
             "approved": "No",
+        }
+    if tool == "calendar.create_event":
+        # The operator is approving a REAL external write; show every field that
+        # shapes the event, so "approve" is never a blind click.
+        return {
+            "date": args.get("date"),
+            "time": args.get("time"),
+            "duration": args.get("duration"),
+            "title": args.get("title"),
+            "reason": args.get("reason"),
+            "location": args.get("location"),
+            "timeZone": args.get("timeZone"),
+        }
+    if tool == "browser.search":
+        return {
+            "sessionId": args.get("sessionId"),
+            "query": args.get("query"),
+            "limit": args.get("limit"),
+        }
+    if tool == "browser.read_page":
+        # The URL is the whole decision here — the session allowlist is re-checked
+        # at execute time by open_page, but the operator should see the target now.
+        return {
+            "sessionId": args.get("sessionId"),
+            "url": args.get("url"),
         }
     return {}
 
@@ -598,17 +745,28 @@ def _dispatch(tool: str, args: dict) -> dict:
         return create_calendar_candidate(cfg.vault_path, {**args, "approved": "No"})
     if tool == "browser.search":
         from app.browser import search as browser_search
-        return browser_search(args.get("sessionId", ""), args.get("query", ""),
-                              args.get("limit"))
+        # These three adapters signal failure by RAISING (BrowserError,
+        # CalendarWriteError), not by returning ok=False like the vault/brain
+        # adapters do. execute() derives success from result["ok"], so a bare
+        # return would have recorded every successful run as a failure. Reaching
+        # this line at all means the adapter did not raise.
+        return {"ok": True, **browser_search(args.get("sessionId", ""),
+                                             args.get("query", ""), args.get("limit"))}
     if tool == "browser.read_page":
-        # Runs curl INSIDE the OpenShell sandbox; never on the host.
-        from app.openshell_exec import fetch_page_in_sandbox
-        return fetch_page_in_sandbox(args.get("url", ""), args.get("timeoutSeconds") or 20)
+        # Goes through open_page, NOT straight to fetch_page_in_sandbox. That is
+        # deliberate: fetch_page_in_sandbox documents that its caller has already
+        # run validate_url, and dispatching to it directly made that false — the
+        # session's domain allowlist and the SSRF/private-address checks were
+        # skipped on this path. open_page re-checks the URL against the session
+        # allowlist, honours the session's status/budget/page cap, and stores the
+        # capture. Its default driver is still the sandboxed fetch.
+        from app.browser import open_page
+        return {"ok": True, **open_page(args.get("sessionId", ""), args.get("url", ""))}
     if tool == "calendar.create_event":
         # The ONLY external write in this app. Reached only after the full A3 flow:
         # Assist mode -> operator token -> kill switch -> approve -> execute.
         from app.gcal_write import create_event
-        return create_event(args)
+        return {"ok": True, **create_event(args)}
     raise ApprovalError("Tool has no approval dispatcher.")
 
 

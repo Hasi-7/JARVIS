@@ -1312,10 +1312,36 @@ export interface ToolApprovalCalendarReviewFields {
   approved: 'No';
 }
 
+// The ONLY external write. Distinct from the candidate shape above: no
+// source/approved, and it carries location/timeZone.
+export interface ToolApprovalCalendarEventReviewFields {
+  date:     string;
+  time:     string | null;
+  duration: string | null;
+  title:    string;
+  reason:   string | null;
+  location: string | null;
+  timeZone: string | null;
+}
+
+export interface ToolApprovalBrowserSearchReviewFields {
+  sessionId: string;
+  query:     string;
+  limit:     number | null;
+}
+
+export interface ToolApprovalBrowserPageReviewFields {
+  sessionId: string;
+  url:       string;
+}
+
 export type ToolApprovalReviewFields =
   | ToolApprovalBrainReviewFields
   | ToolApprovalTaskReviewFields
-  | ToolApprovalCalendarReviewFields;
+  | ToolApprovalCalendarReviewFields
+  | ToolApprovalCalendarEventReviewFields
+  | ToolApprovalBrowserSearchReviewFields
+  | ToolApprovalBrowserPageReviewFields;
 
 export interface ToolApproval {
   id:                 string;
