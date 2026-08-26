@@ -501,6 +501,17 @@ export function AgentPage() {
   const [contextInfo,  setContextInfo]  = useState<{ window: number; used: number } | null>(null);
 
   const isGenerating = streamingMsg !== null;
+  // PRD §17 "Stop current action". Held in a ref so aborting never re-renders
+  // mid-stream; cleared in the send handler's finally block.
+  const abortRef = useRef<AbortController | null>(null);
+
+  const stopGenerating = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
+  // A turn must not outlive the page: leaving with a stream open would keep the
+  // reader alive and land tokens in an unmounted component.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   // Accumulated streaming content — avoids closure-over-state issues
   const streamContentRef  = useRef('');
@@ -618,6 +629,9 @@ export function AgentPage() {
     setStreamingMsg('');
     setAgentState('thinking');
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     await streamAgentMessage(
       {
         message:        text,
@@ -691,7 +705,12 @@ export function AgentPage() {
           setTimeout(() => setAgentState('idle'), 2000);
         },
       },
+      controller.signal,
     );
+
+    // Only clear if this turn still owns the ref — a fast second send would
+    // otherwise wipe the newer controller and make its Stop button inert.
+    if (abortRef.current === controller) abortRef.current = null;
   }, [draft, isGenerating, agentMode, convId, backendConfig, setAgentState]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1046,12 +1065,21 @@ export function AgentPage() {
             {/* live streaming bubble */}
             {isGenerating && (
               <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 'var(--s4)' }}>
-                <div style={{ flexShrink: 0, marginTop: 2 }}>
+                <div style={{ flexShrink: 0, marginTop: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
                   <AgentSphere
                     state={streamingMsg === '' ? 'thinking' : 'speaking'}
                     size={28}
                     variant="minimal"
                   />
+                  {/* PRD §17 "Stop current action" */}
+                  <button
+                    className="btn btn-sm btn-ghost"
+                    onClick={stopGenerating}
+                    title="Stop generating. Text already received is kept."
+                    style={{ fontSize: 10, padding: '1px 6px' }}
+                  >
+                    Stop
+                  </button>
                 </div>
                 <div style={{ maxWidth: '76%' }}>
                   <div style={{

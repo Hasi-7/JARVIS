@@ -13,6 +13,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import type {
   GoogleCalendarStatusResponse,
   CalendarReconcileResponse,
+  GoogleCalendarEventsResponse,
   CalendarReconcileItem,
 } from '@/lib/api';
 
@@ -63,6 +64,8 @@ function GoogleCalendarReconcilePanel() {
   const [result, setResult] = useState<CalendarReconcileResponse | null>(null);
   const [busy, setBusy]     = useState(false);
   const [error, setError]   = useState<string | null>(null);
+  const [events, setEvents] = useState<GoogleCalendarEventsResponse | null>(null);
+  const [eventsBusy, setEventsBusy] = useState(false);
 
   useEffect(() => {
     api.googleCalendarStatus().then(setStatus).catch(() => setStatus(null));
@@ -80,6 +83,21 @@ function GoogleCalendarReconcilePanel() {
     }
   };
 
+  // PRD §24 "Google Calendar read". The endpoint and client both existed but
+  // nothing rendered them, so the real calendar was only ever visible through
+  // reconciliation against vault candidates.
+  const loadEvents = async () => {
+    setEventsBusy(true); setError(null);
+    try {
+      setEvents(await api.googleCalendarEvents());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not read calendar events.');
+      setEvents(null);
+    } finally {
+      setEventsBusy(false);
+    }
+  };
+
   const ready = status?.readsEnabled === true;
 
   return (
@@ -92,10 +110,16 @@ function GoogleCalendarReconcilePanel() {
         </span>
         <div style={{ flex: 1 }} />
         {ready && (
-          <button className="btn btn-sm btn-primary" onClick={run} disabled={busy}>
-            <Icon name="sync" size={13} style={{ animation: busy ? 'spin 1s linear infinite' : undefined }} />
-            Reconcile
-          </button>
+          <>
+            <button className="btn btn-sm btn-ghost" onClick={loadEvents} disabled={eventsBusy}>
+              <Icon name="cal" size={13} style={{ animation: eventsBusy ? 'spin 1s linear infinite' : undefined }} />
+              View real events
+            </button>
+            <button className="btn btn-sm btn-primary" onClick={run} disabled={busy}>
+              <Icon name="sync" size={13} style={{ animation: busy ? 'spin 1s linear infinite' : undefined }} />
+              Reconcile
+            </button>
+          </>
         )}
       </div>
 
@@ -112,6 +136,32 @@ function GoogleCalendarReconcilePanel() {
       {error && (
         <div style={{ fontSize: 11.5, color: 'var(--red)', padding: 'var(--s2) var(--s3)', background: 'var(--red-bg)', border: '1px solid var(--red-line)', borderRadius: 'var(--r2)' }}>
           {error}
+        </div>
+      )}
+
+      {events && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 'var(--s2)', borderTop: '1px solid var(--line-soft)' }}>
+          <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-2)' }}>
+            {events.count} event{events.count === 1 ? '' : 's'} on the real calendar
+            {events.timeMin && ` · from ${events.timeMin.slice(0, 10)}`}
+          </div>
+          {events.events.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: 'var(--txt-3)' }}>Nothing scheduled in this window.</div>
+          ) : events.events.map((ev) => (
+            <div key={ev.eventId} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 11.5 }}>
+              <span className="mono" style={{ color: 'var(--txt-3)', flexShrink: 0, minWidth: 118 }}>
+                {ev.allDay ? (ev.start ?? '').slice(0, 10) : (ev.start ?? '').slice(0, 16).replace('T', ' ')}
+              </span>
+              <span style={{ flex: 1, color: 'var(--txt-1)' }}>{ev.title}</span>
+              {ev.htmlLink && (
+                <a href={ev.htmlLink} target="_blank" rel="noreferrer"
+                   style={{ fontSize: 10.5, color: 'var(--live)' }}>open</a>
+              )}
+            </div>
+          ))}
+          {events.warnings.map((w, i) => (
+            <div key={i} style={{ fontSize: 10.5, color: 'var(--amber)' }}>{w}</div>
+          ))}
         </div>
       )}
 

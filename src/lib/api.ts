@@ -304,6 +304,8 @@ export interface StreamMeta {
 export interface StreamDone {
   ok: boolean;
   durationMs: number;
+  /** True when the turn was stopped by the user rather than finishing. */
+  aborted?: boolean;
 }
 
 export interface StreamError {
@@ -2013,6 +2015,68 @@ async function uploadForm<T>(path: string, form: FormData): Promise<T> {
 
 // ── API surface ───────────────────────────────────────────────────────────────
 
+
+// ── MVP v10 read-only integrations (GitHub / Drive / Quercus) + vault search ────
+// All read-only. Every payload below is UNTRUSTED external content: commit
+// messages, issue bodies, Drive documents and Canvas descriptions are rendered
+// as data and never treated as instructions.
+
+export interface GitHubStatusResponse { configured: boolean; readOnly: boolean; message: string; }
+
+export interface GitHubRepo {
+  fullName: string; description: string; private: boolean;
+  language: string | null; pushedAt: string | null; htmlUrl: string | null; openIssues: number;
+}
+export interface GitHubReposResponse { repos: GitHubRepo[]; logId: string | null; warnings: string[]; }
+
+export interface GitHubCommit {
+  sha: string; message: string; author: string | null; date: string | null; htmlUrl: string | null;
+}
+export interface GitHubCommitsResponse { repo: string; commits: GitHubCommit[]; logId: string | null; warnings: string[]; }
+
+export interface GitHubIssue {
+  number: number; title: string; state: string; isPullRequest: boolean;
+  updatedAt: string | null; htmlUrl: string | null;
+}
+export interface GitHubIssuesResponse { repo: string; issues: GitHubIssue[]; logId: string | null; warnings: string[]; }
+
+export interface DriveFile {
+  fileId: string; name: string; mimeType: string;
+  modifiedTime: string | null; webViewLink: string | null; readable: boolean;
+}
+export interface DriveFilesResponse { files: DriveFile[]; logId: string | null; warnings: string[]; }
+export interface DriveDocumentResponse {
+  fileId: string; name: string; mimeType: string; webViewLink: string | null;
+  text: string; truncated: boolean; logId: string | null; warnings: string[];
+}
+
+export interface QuercusStatusResponse { configured: boolean; host: string; readOnly: boolean; message: string; }
+export interface QuercusCourse { courseId: string; name: string; courseCode: string; term: string | null; }
+export interface QuercusCoursesResponse { courses: QuercusCourse[]; logId: string | null; warnings: string[]; }
+export interface QuercusAssignment {
+  assignmentId: string; courseId: string; name: string; dueAt: string | null;
+  pointsPossible: number | null; htmlUrl: string | null; description: string;
+}
+export interface QuercusAssignmentsResponse { courseId: string; assignments: QuercusAssignment[]; logId: string | null; warnings: string[]; }
+export interface QuercusAnnouncement {
+  announcementId: string; courseId: string; title: string;
+  postedAt: string | null; htmlUrl: string | null; message: string;
+}
+export interface QuercusAnnouncementsResponse { courseId: string; announcements: QuercusAnnouncement[]; logId: string | null; warnings: string[]; }
+
+export interface VaultSearchHit { path: string; heading: string; score: number; snippet: string; }
+export interface VaultSearchResponse {
+  query: string; results: VaultSearchHit[]; count: number;
+  degraded: boolean; mode: string; builtAt: string | null; warnings: string[];
+}
+export interface VaultIndexStatusResponse {
+  built: boolean; builtAt: string | null; chunks: number;
+  embedded: boolean; degraded: boolean; vaultPath: string | null;
+}
+export interface BuildVaultIndexResponse {
+  files: number; chunks: number; embedded: boolean; degraded: boolean; builtAt: string | null;
+}
+
 export const api = {
   // dashboard summary
   getDashboardSummary: () => get<DashboardSummary>('/api/dashboard/summary'),
@@ -2231,6 +2295,58 @@ export const api = {
       'POST', `/api/computer-use/sessions/${encodeURIComponent(id)}/type`,
       { text, confirmRisk }, { 'X-Brain-Approval-Token': token }),
 
+
+  // ── MVP v10 read-only integrations. GET only; no write path exists. ──────────
+  githubStatus: () => get<GitHubStatusResponse>('/api/github/status'),
+  githubRepos: (limit?: number) =>
+    get<GitHubReposResponse>(`/api/github/repos${limit != null ? `?limit=${limit}` : ''}`),
+  githubCommits: (repo: string, limit?: number) => {
+    const q = new URLSearchParams({ repo });
+    if (limit != null) q.set('limit', String(limit));
+    return get<GitHubCommitsResponse>(`/api/github/commits?${q}`);
+  },
+  githubIssues: (repo: string, state?: string, limit?: number) => {
+    const q = new URLSearchParams({ repo });
+    if (state) q.set('state', state);
+    if (limit != null) q.set('limit', String(limit));
+    return get<GitHubIssuesResponse>(`/api/github/issues?${q}`);
+  },
+
+  driveFiles: (search?: string, limit?: number) => {
+    const q = new URLSearchParams();
+    if (search) q.set('q', search);
+    if (limit != null) q.set('limit', String(limit));
+    const qs = q.toString();
+    return get<DriveFilesResponse>(`/api/drive/files${qs ? `?${qs}` : ''}`);
+  },
+  driveDocument: (fileId: string) =>
+    get<DriveDocumentResponse>(`/api/drive/files/${encodeURIComponent(fileId)}`),
+
+  quercusStatus: () => get<QuercusStatusResponse>('/api/quercus/status'),
+  quercusCourses: (limit?: number) =>
+    get<QuercusCoursesResponse>(`/api/quercus/courses${limit != null ? `?limit=${limit}` : ''}`),
+  quercusAssignments: (courseId: string, limit?: number) => {
+    const q = new URLSearchParams({ courseId });
+    if (limit != null) q.set('limit', String(limit));
+    return get<QuercusAssignmentsResponse>(`/api/quercus/assignments?${q}`);
+  },
+  quercusAnnouncements: (courseId: string, limit?: number) => {
+    const q = new URLSearchParams({ courseId });
+    if (limit != null) q.set('limit', String(limit));
+    return get<QuercusAnnouncementsResponse>(`/api/quercus/announcements?${q}`);
+  },
+
+  // Local vault search. Embeddings come from local Ollama, so no vault text
+  // leaves the machine; without the model it degrades to lexical and says so.
+  vaultSearch: (query: string, limit?: number) => {
+    const q = new URLSearchParams({ q: query });
+    if (limit != null) q.set('limit', String(limit));
+    return get<VaultSearchResponse>(`/api/vault/search?${q}`);
+  },
+  vaultSearchStatus: () => get<VaultIndexStatusResponse>('/api/vault/search/status'),
+  buildVaultSearchIndex: () =>
+    fetchWithBody<BuildVaultIndexResponse>('POST', '/api/vault/search/index', {}),
+
   // Vault graph (D3d). Read-only; derived from wikilinks.
   vaultGraph: (exportPath?: string) => {
     const q = exportPath ? `?exportPath=${encodeURIComponent(exportPath)}` : '';
@@ -2393,18 +2509,34 @@ export const api = {
  * EventSource is not used because it doesn't support POST — we parse SSE
  * manually from a ReadableStream fetch response.
  */
+/**
+ * `signal` implements PRD §17's "Stop current action". Until it existed there
+ * was no AbortController anywhere in the app, so a chat turn could not be
+ * stopped once it started — the only option was to wait it out.
+ *
+ * An abort is a user action, not a failure, so it is reported through onDone
+ * rather than onError: whatever tokens already arrived stay on screen.
+ */
 export async function streamAgentMessage(
   payload:  AgentChatRequest,
   handlers: StreamHandlers,
+  signal?:  AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) { handlers.onDone({ ok: false, durationMs: 0, aborted: true }); return; }
+
   let res: Response;
   try {
     res = await fetch(`${BASE}/api/agent/chat/stream`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(payload),
+      signal,
     });
   } catch (err) {
+    if (signal?.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
+      handlers.onDone({ ok: false, durationMs: 0, aborted: true });
+      return;
+    }
     handlers.onError({ message: err instanceof Error ? err.message : 'Network error.' });
     return;
   }
@@ -2458,7 +2590,13 @@ export async function streamAgentMessage(
       }
     }
   } catch (err) {
-    handlers.onError({ message: err instanceof Error ? err.message : 'Stream read error.' });
+    // Aborting mid-stream throws here too. Tokens already delivered stay on
+    // screen; stopping is a choice, not an error.
+    if (signal?.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
+      handlers.onDone({ ok: false, durationMs: 0, aborted: true });
+    } else {
+      handlers.onError({ message: err instanceof Error ? err.message : 'Stream read error.' });
+    }
   } finally {
     reader.releaseLock();
   }
