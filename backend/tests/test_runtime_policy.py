@@ -91,7 +91,9 @@ def test_valid_json_policy_summarized(tmp_policy):
     assert r["valid"] is True
     assert r["readable"] is True
     assert r["format"] == "json"
-    assert "Enforcement is not wired" in r["message"]
+    # This module inspects; OpenShell enforces. The message must not imply the
+    # policy is inert -- it is what openshell_exec checks before executing.
+    assert "never enforces it" in r["message"]
     s = r["summary"]
     assert s["declaredModes"] == ["observe", "draft", "assist"]
     assert s["networkPolicy"] == "restricted"
@@ -404,3 +406,62 @@ def test_inspection_still_enables_nothing(tmp_path):
     assert summary["computerUseAllowed"] is None
     assert summary["mcpAllowed"] is None
     assert summary["credentialAccess"] == "unknown"
+
+
+# ── the policy this repo actually ships ───────────────────────────────────────
+# MVP v4 browsing was broken twice, independently: openshell_exec refuses to run
+# under best_effort Landlock, AND no network_policies were declared, so curl had
+# no egress even once Landlock was fixed. These pin both halves.
+
+_SHIPPED_POLICY = Path(__file__).parent.parent / "policies" / "jarvis-deny-by-default.yaml"
+
+
+def test_shipped_policy_exists_and_parses():
+    assert _SHIPPED_POLICY.exists(), "the sandbox policy this repo ships is missing"
+    result = inspect_nemoclaw_policy({"NEMOCLAW_POLICY_PATH": str(_SHIPPED_POLICY)})
+    assert result["status"] == "loaded", result
+    assert result["errors"] == []
+    # An unrecognized key is a typo or a schema drift; either way we want to know.
+    assert result["summary"]["unknownKeys"] == []
+
+
+def test_shipped_policy_does_not_fail_open():
+    """best_effort applies what the host supports and otherwise only warns, so
+    isolation can silently not apply. hard_requirement aborts startup instead."""
+    result = inspect_nemoclaw_policy({"NEMOCLAW_POLICY_PATH": str(_SHIPPED_POLICY)})
+    assert not any("fails open" in w.lower() for w in result["warnings"]), result["warnings"]
+
+    from app.openshell_exec import assert_policy_enforces
+    verdict = assert_policy_enforces({"NEMOCLAW_POLICY_PATH": str(_SHIPPED_POLICY)})
+    assert verdict["enforced"] is True
+    assert verdict["overridden"] is False
+
+
+def test_shipped_policy_declares_egress_for_the_pinned_search_host():
+    """Without this, the sandbox denies all outbound traffic and browser.search
+    fails with a connection error rather than a policy one."""
+    import yaml
+    from app.browser import SEARCH_PROVIDER_HOST
+
+    data = yaml.safe_load(_SHIPPED_POLICY.read_text(encoding="utf-8"))
+    rules = data.get("network_policies") or {}
+    assert rules, "no network_policies declared: outbound access is denied"
+
+    hosts = {
+        str(endpoint.get("host", ""))
+        for rule in rules.values()
+        for endpoint in (rule.get("endpoints") or [])
+    }
+    assert SEARCH_PROVIDER_HOST in hosts, (
+        f"the pinned search provider {SEARCH_PROVIDER_HOST} has no egress rule; "
+        f"declared hosts: {sorted(hosts)}"
+    )
+
+
+def test_shipped_policy_permits_tls_only():
+    """Plaintext egress from the sandbox would leak page contents on the wire."""
+    import yaml
+    data = yaml.safe_load(_SHIPPED_POLICY.read_text(encoding="utf-8"))
+    for name, rule in (data.get("network_policies") or {}).items():
+        for endpoint in rule.get("endpoints") or []:
+            assert endpoint.get("port") == 443, f"{name} permits non-TLS port {endpoint.get('port')}"

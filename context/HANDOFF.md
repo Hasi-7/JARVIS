@@ -40,12 +40,20 @@ the **privileged execution layer** (PRD MVP v4–v10) in phases.
 > load-bearing guard is the foreground-window check: if focus moves off an
 > allowlisted window the action is refused, never retargeted.
 
-> **Before enabling real browsing:** the sandbox policy still uses
-> `landlock.compatibility: best_effort`, and `openshell_exec` REFUSES to execute
-> under it by design. Set `hard_requirement` and create a sandbox
-> (`NEMOCLAW_SANDBOX_ID`). If it then refuses to start, that is the correct
-> outcome — it means Docker's seccomp is blocking Landlock, which is exactly the
-> silent-failure this guard exists to prevent.
+> **Before enabling real browsing (updated 2026-08-26):** the shipped policy at
+> `backend/policies/jarvis-deny-by-default.yaml` now sets
+> `landlock.compatibility: hard_requirement` **and** declares `network_policies`.
+> Both were required: `openshell_exec` refuses to execute under `best_effort`, and
+> separately the policy declared no egress at all, so `curl` inside the sandbox
+> could not reach anything even once Landlock was fixed. The earlier note here
+> described only the first half.
+>
+> Remaining step is operational: create a sandbox (`NEMOCLAW_SANDBOX_ID`) under
+> this policy. If it refuses to START, that is the correct outcome — it means the
+> host cannot enforce Landlock (usually Docker's seccomp blocking the syscalls),
+> which is exactly the silent failure `hard_requirement` exists to expose. Do not
+> revert to `best_effort` to get past it; `test_shipped_policy_does_not_fail_open`
+> will fail if you do.
 
 > **OAuth publishing note:** the Google Cloud app is now **In production** (was
 > Testing, which expired refresh tokens after 7 days). It is *unverified*, so the

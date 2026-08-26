@@ -1,5 +1,20 @@
-# OpenShell v1 policy for the initial JARVIS sandbox.
-# Outbound network access is denied because no network_policies are declared.
+# OpenShell v1 policy for the JARVIS research sandbox.
+#
+# Two things had to change together for MVP v4 browsing to work at all, and
+# fixing either alone still yields nothing:
+#
+#   1. landlock.compatibility was `best_effort`, which applies whatever isolation
+#      the host supports and otherwise only WARNS. openshell_exec refuses to run
+#      under that by design (fail-closed), so no page fetch ever executed.
+#   2. No network_policies were declared, so outbound access was denied. Even with
+#      Landlock fixed, `curl` inside the sandbox had no egress and every fetch
+#      would have failed with a confusing connection error rather than a policy one.
+#
+# If the sandbox now refuses to START under hard_requirement, that is the correct
+# outcome, not a bug to work around: it means the host cannot actually enforce
+# Landlock (commonly Docker's seccomp filter blocking the landlock_* syscalls),
+# and browsing must stay off until the runtime is fixed. Do not "solve" it by
+# reverting to best_effort — that re-hides the failure this setting exposes.
 version: 1
 
 filesystem_policy:
@@ -18,4 +33,41 @@ filesystem_policy:
     - /dev/null
 
 landlock:
-  compatibility: best_effort
+  # hard_requirement ABORTS sandbox startup when Landlock cannot be enforced,
+  # instead of silently continuing with reduced isolation.
+  compatibility: hard_requirement
+
+# Outbound access is still deny-by-default: only the hosts named here are
+# reachable, and only over TLS on 443. This is the sandbox-level floor. Two
+# further checks sit above it in the backend, and a host must pass ALL of them:
+#   * browser.validate_url() — rejects non-http(s), embedded credentials, and
+#     loopback/private/reserved addresses;
+#   * the research SESSION's own allowedDomains list, which is per-session and
+#     narrower than this file.
+# Appearing here therefore grants a host nothing on its own.
+network_policies:
+  search_provider:
+    name: "Privacy-respecting search provider"
+    endpoints:
+      # The single fixed provider used by browser.search. Pinned as a constant in
+      # browser.py (SEARCH_PROVIDER_HOST) and never caller-supplied.
+      - host: "html.duckduckgo.com"
+        port: 443
+      # Result links are unwrapped from the provider's /l/?uddg= redirects, which
+      # can resolve through these hosts before reaching the real target.
+      - host: "duckduckgo.com"
+        port: 443
+      - host: "*.duckduckgo.com"
+        port: 443
+
+  # Research targets. This is intentionally the widest rule in the file, and it
+  # is the reason the per-session allowlist exists: without a session naming a
+  # host, nothing here is reachable from the application's point of view.
+  #
+  # Narrow this to specific hosts if you want the sandbox itself to be the
+  # binding constraint rather than the session.
+  research_targets:
+    name: "Pages opened inside an approved research session"
+    endpoints:
+      - host: "**"
+        port: 443

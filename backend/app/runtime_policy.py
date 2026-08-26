@@ -331,7 +331,8 @@ def inspect_nemoclaw_policy(env: Optional[dict] = None) -> dict:
     raw_path = str(env.get("NEMOCLAW_POLICY_PATH", "") or "").strip()
 
     inspection_note = (
-        "Policy file loaded for inspection only. Enforcement is not wired."
+        "Policy file read for inspection. This module never enforces it — "
+        "OpenShell does, when a sandbox runs under it."
     )
 
     # No configured path → not_configured. NO file read attempted.
