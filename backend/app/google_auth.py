@@ -210,4 +210,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # The scopes requested depend on BRAIN_UI_CALENDAR_WRITE_ENABLED and
+    # BRAIN_UI_DRIVE_INTAKE_ENABLED, so this CLI must read .env too — otherwise
+    # you consent to the wrong scope set and have to re-run it.
+    from app.env_file import load_env_file
+    load_env_file()
     raise SystemExit(main())

@@ -4,6 +4,13 @@ import time
 from pathlib import Path
 from typing import Optional
 
+# MUST come before any other `app.*` import: agent.LOCAL_MODEL, config._runtime
+# and friends resolve at import time, so loading .env after them would silently
+# not affect those values.
+from app.env_file import load_env_file
+
+load_env_file()
+
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
