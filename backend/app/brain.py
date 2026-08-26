@@ -16,17 +16,32 @@ TIMEOUT_SECONDS = 60
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _CMD_META_RE = re.compile(r"[&|<>^%!\"()]")
 
+# Argument schemas per command. Mirrors the real CLI's parser at
+# D:\Hasnain\Personal\dev\ai-command-tools\brain.py; values are validated
+# against control characters and shell metacharacters before use, and always
+# passed as separate argv elements (shell=False), never interpolated.
 _ARG_SCHEMAS: dict[str, tuple[str, ...]] = {
     "new-project": ("name",),
     "new-course": ("code", "name"),
     "new-hackathon": ("name",),
+    "project-closeout": ("name", "repo"),
+    "new-repo-scaffold": ("repo", "name"),
+    "archive-hackathon": ("name", "repo"),
 }
 
 _REQUIRED_ARGS: dict[str, tuple[str, ...]] = {
     "new-project": ("name",),
     "new-course": ("code",),
     "new-hackathon": ("name",),
+    "project-closeout": ("name",),
+    "new-repo-scaffold": ("repo",),
+    "archive-hackathon": ("name",),
 }
+
+
+def supports_args(command: str) -> bool:
+    """True when this command declares an argument schema."""
+    return command in _ARG_SCHEMAS
 
 
 def _brain_base_args(brain_path: Path) -> list[str]:
@@ -138,6 +153,21 @@ def _build_command_args(command: str, cleaned: dict[str, str | None]) -> list[st
         args = [cleaned["code"] or ""]
         if cleaned.get("name"):
             args += ["--title", cleaned["name"] or ""]
+        return args
+    if command == "project-closeout":
+        args = [cleaned["name"] or ""]
+        if cleaned.get("repo"):
+            args += ["--repo", cleaned["repo"] or ""]
+        return args
+    if command == "new-repo-scaffold":
+        args = [cleaned["repo"] or ""]
+        if cleaned.get("name"):
+            args += ["--title", cleaned["name"] or ""]
+        return args
+    if command == "archive-hackathon":
+        args = [cleaned["name"] or ""]
+        if cleaned.get("repo"):
+            args += ["--repo", cleaned["repo"] or ""]
         return args
 
     raise ValueError(f"Command '{command}' does not support API arguments.")

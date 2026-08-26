@@ -30,7 +30,13 @@ class ConfigUpdateRequest(BaseModel):
 # ── brain command runner ──────────────────────────────────────────────────────
 
 class BrainRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     command: str
+    # Optional, and only accepted for commands that declare an argument schema in
+    # brain.py. Values are validated for control characters and shell
+    # metacharacters, then passed as separate argv elements with shell=False.
+    args: Optional[Dict[str, Optional[str]]] = None
 
 
 class BrainRunResponse(BaseModel):
@@ -348,6 +354,22 @@ class VaultBusinessItem(VaultEntityMetadata):
     rawPath:      Optional[str] = None
     lastModified: Optional[str] = None
     preview:      Optional[str] = None
+
+
+class BusinessPipelineItem(BaseModel):
+    id:          str
+    name:        str
+    status:      str = "unknown"
+    description: str = ""
+    created:     str = ""
+
+
+class BusinessPipelineResponse(BaseModel):
+    path:         str
+    exists:       bool
+    parseMode:    str
+    items:        List[BusinessPipelineItem] = []
+    lastModified: Optional[str] = None
 
 
 class VaultBusinessResponse(BaseModel):

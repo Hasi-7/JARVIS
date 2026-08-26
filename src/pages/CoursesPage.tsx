@@ -1,215 +1,144 @@
+/**
+ * Courses — PRD §22.
+ *
+ * §22 asks for syllabus/lecture/assignment/past-exam intake, Quercus/Canvas
+ * reads, weak-concept tracking and study planning. Uploads route through the
+ * Raw Inbox (the one place with classification and approval), and Canvas
+ * assignments are pulled per course when a token is configured.
+ *
+ * The AI learning safeguard is a real constraint, not decoration: Canvas access
+ * is GET-only and assignment SUBMISSION has no code path in the backend at all.
+ */
 import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
-import type { EntityCreateResponse, VaultCourse } from '@/lib/api';
-import { createObsidianOpenUrl } from '@/lib/obsidian';
+import type { VaultCourse, QuercusAssignment, QuercusCourse } from '@/lib/api';
+import { EntityListPage } from '@/components/entities/EntityListPage';
+import type { EntityAction } from '@/components/entities/EntityCard';
 import { Icon } from '@/components/ui/Icon';
-import { StatusDot } from '@/components/ui/StatusDot';
-import { EmptyState } from '@/components/ui/EmptyState';
-import { EntityCreateModal } from '@/components/ui/EntityCreateModal';
-
-function fmtDate(iso: string | null): string {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' });
-  } catch { return iso; }
-}
-
-function truncate(text: string | null, n = 180): string {
-  if (!text) return '';
-  return text.length > n ? text.slice(0, n).trimEnd() + '…' : text;
-}
-
-function CourseCard({ course, vaultPath }: { course: VaultCourse; vaultPath: string | null }) {
-  const obsidianUrl =
-    vaultPath && course.wikiPath
-      ? createObsidianOpenUrl(vaultPath, course.wikiPath)
-      : null;
-
-  return (
-    <div className="panel panel-pad" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)', minHeight: 120 }}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--txt-0)', lineHeight: 1.3 }}>
-        {course.name}
-      </div>
-
-      {course.wikiPath && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-          <Icon name="doc" size={11} style={{ color: 'var(--live)', flexShrink: 0 }} />
-          <span className="mono" style={{ fontSize: 10, color: 'var(--live)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={course.wikiPath}>
-            {course.wikiPath}
-          </span>
-        </div>
-      )}
-      {course.rawPath && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-          <Icon name="folder" size={11} style={{ color: 'var(--violet)', flexShrink: 0 }} />
-          <span className="mono" style={{ fontSize: 10, color: 'var(--violet)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={course.rawPath}>
-            {course.rawPath}
-          </span>
-        </div>
-      )}
-
-      {course.preview && (
-        <div style={{ fontSize: 11, color: 'var(--txt-2)', lineHeight: 1.5, flex: 1 }}>
-          {truncate(course.preview)}
-        </div>
-      )}
-
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto', paddingTop: 'var(--s2)' }}>
-        <span style={{ fontSize: 10, color: 'var(--txt-3)' }}>{fmtDate(course.lastModified)}</span>
-
-        {obsidianUrl ? (
-          <a
-            href={obsidianUrl}
-            className="btn btn-sm btn-ghost"
-            style={{ fontSize: 10.5, padding: '2px 7px', textDecoration: 'none' }}
-            title="Open this note in Obsidian"
-          >
-            Open note
-          </a>
-        ) : course.rawPath && !course.wikiPath ? (
-          <button className="btn btn-sm btn-ghost" disabled style={{ fontSize: 10.5, padding: '2px 7px', opacity: 0.35 }} title="No wiki note — raw folder only">
-            Raw folder
-          </button>
-        ) : null}
-      </div>
-    </div>
-  );
-}
 
 export function CoursesPage() {
-  const backendConfig = useAppStore((s) => s.backendConfig);
-  const [courses,  setCourses]  = useState<VaultCourse[] | null>(null);
-  const [loading,  setLoading]  = useState(false);
-  const [error,    setError]    = useState<string | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createLoading, setCreateLoading] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [createResult, setCreateResult] = useState<EntityCreateResponse | null>(null);
+  const navigate = useAppStore((s) => s.navigate);
+  const showToast = useAppStore((s) => s.showToast);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.getVaultCourses();
-      setCourses(res.courses);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load courses.');
-      setCourses([]);
-    } finally {
-      setLoading(false);
-    }
+  const [quercusReady, setQuercusReady] = useState(false);
+  const [canvasCourses, setCanvasCourses] = useState<QuercusCourse[]>([]);
+  const [assignments, setAssignments] = useState<Record<string, QuercusAssignment[]>>({});
+
+  const load = useCallback(async () => (await api.getVaultCourses()).courses, []);
+
+  useEffect(() => {
+    api.quercusStatus()
+      .then((s) => {
+        setQuercusReady(s.configured);
+        if (s.configured) {
+          api.quercusCourses(50)
+            .then((r) => setCanvasCourses(r.courses))
+            .catch(() => setCanvasCourses([]));
+        }
+      })
+      .catch(() => setQuercusReady(false));
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  /** Match a vault course note to a Canvas course by code, then by name. */
+  const matchCanvas = useCallback((course: VaultCourse): QuercusCourse | undefined => {
+    const key = course.name.toLowerCase();
+    return canvasCourses.find((c) => c.courseCode && key.includes(c.courseCode.toLowerCase()))
+        ?? canvasCourses.find((c) => c.name && c.name.toLowerCase().includes(key));
+  }, [canvasCourses]);
 
-  const vaultPath = backendConfig?.vaultPath ?? null;
-
-  async function handleCreate(values: Record<string, string>) {
-    setCreateLoading(true);
-    setCreateError(null);
-    setCreateResult(null);
-    try {
-      const result = await api.createCourse({
-        code: values.code.trim(),
-        name: values.name.trim() || null,
-      });
-      setCreateResult(result);
-      if (result.ok) load();
-      else setCreateError(result.stderr || 'Course creation failed.');
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : 'Course creation failed.');
-    } finally {
-      setCreateLoading(false);
+  const loadAssignments = useCallback(async (course: VaultCourse) => {
+    const canvas = matchCanvas(course);
+    if (!canvas) {
+      showToast(`No Canvas course matches "${course.name}".`);
+      return;
     }
-  }
+    try {
+      const res = await api.quercusAssignments(canvas.courseId, 8);
+      setAssignments((a) => ({ ...a, [course.id]: res.assignments }));
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not read assignments.');
+    }
+  }, [matchCanvas, showToast]);
+
+  const actionsFor = useCallback((course: VaultCourse): EntityAction[] => {
+    const actions: EntityAction[] = [
+      { label: 'Upload syllabus', title: 'Route a syllabus through the Raw Inbox', onClick: () => navigate('inbox') },
+      { label: 'Upload lecture', title: 'Route lecture notes through the Raw Inbox', onClick: () => navigate('inbox') },
+      { label: 'Upload assignment', title: 'Route an assignment through the Raw Inbox', onClick: () => navigate('inbox') },
+      { label: 'Quercus email', title: 'Import Canvas notifications', onClick: () => navigate('email') },
+      { label: 'Study plan', title: 'Schedule study blocks as calendar candidates', onClick: () => navigate('calendar') },
+    ];
+    if (quercusReady && matchCanvas(course)) {
+      actions.unshift({
+        label: 'Assignments',
+        title: 'Read upcoming Canvas assignments (read-only)',
+        onClick: () => loadAssignments(course),
+      });
+    }
+    return actions;
+  }, [navigate, quercusReady, matchCanvas, loadAssignments]);
 
   return (
-    <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
-
-      {/* header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 'var(--s3)' }}>
-        <div>
-          <div style={{ fontSize: 18, fontWeight: 700 }}>Courses</div>
-          <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 3 }}>
-            wiki/courses/ · raw/courses/ — {vaultPath ?? '—'}
+    <EntityListPage<VaultCourse>
+      title="Courses"
+      kind="course"
+      pathHint="wiki/courses/ · raw/courses/"
+      icon="book"
+      newLabel="New Course"
+      emptyTitle="No courses found"
+      emptyDesc="No .md files in wiki/courses/ and no folders in raw/courses/. Create a course or route course files from the Raw Inbox."
+      safetyNote={
+        <>
+          Canvas/Quercus access is <strong>read-only</strong>: GET requests only, host pinned,
+          redirects disabled. Assignment submission has no code path and never will. AI help here
+          is for concepts, hints, similar examples and practice — not for producing graded work you
+          have not attempted.
+        </>
+      }
+      load={load}
+      actionsFor={actionsFor}
+      create={{
+        note: 'Creates the course using `brain new-course <code>`.',
+        fields: [
+          { key: 'code', label: 'Course code', placeholder: 'ESC203', required: true },
+          { key: 'name', label: 'Course title', placeholder: 'Optional course title' },
+        ],
+        submit: (values) => api.createCourse({
+          code: values.code.trim(),
+          name: values.name?.trim() || undefined,
+        }),
+      }}
+      renderExtra={(course) => {
+        const rows = assignments[course.id];
+        if (!rows) return null;
+        return (
+          <div className="panel panel-pad" style={{ padding: 'var(--s3)' }}>
+            <div className="eyebrow" style={{ marginBottom: 4 }}>
+              Canvas assignments · untrusted content
+            </div>
+            {rows.length === 0 ? (
+              <div style={{ fontSize: 10.5, color: 'var(--txt-3)' }}>Nothing upcoming.</div>
+            ) : rows.map((a) => (
+              <div key={a.assignmentId} style={{ display: 'flex', gap: 6, fontSize: 10.5, color: 'var(--txt-2)' }}>
+                <span className="mono" style={{ color: 'var(--txt-3)', flexShrink: 0, minWidth: 74 }}>
+                  {a.dueAt ? a.dueAt.slice(0, 10) : 'no due date'}
+                </span>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {a.name}
+                </span>
+                {a.htmlUrl && (
+                  <a href={a.htmlUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--live)' }}>open</a>
+                )}
+              </div>
+            ))}
+            <div style={{ fontSize: 9.5, color: 'var(--txt-3)', marginTop: 5, display: 'flex', gap: 4, alignItems: 'center' }}>
+              <Icon name="shield" size={10} />
+              Read-only. Submitting from this app is not possible.
+            </div>
           </div>
-        </div>
-        <div style={{ display: 'flex', gap: 'var(--s2)', alignItems: 'center' }}>
-          <button className="btn btn-sm btn-primary" onClick={() => { setCreateOpen(true); setCreateError(null); setCreateResult(null); }}>
-            <Icon name="plus" size={13} />
-            New Course
-          </button>
-          <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
-            <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
-            Refresh
-          </button>
-        </div>
-      </div>
-
-      {/* error */}
-      {error && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 'var(--s3) var(--s4)', borderRadius: 'var(--r2)', background: 'var(--red-bg)', border: '1px solid var(--red-line)', fontSize: 12 }}>
-          <StatusDot tone="red" />
-          <span style={{ flex: 1 }}>{error}</span>
-          <button className="btn btn-sm btn-ghost" onClick={load}>Retry</button>
-          <button className="btn btn-sm btn-ghost" onClick={() => setError(null)}>Dismiss</button>
-        </div>
-      )}
-
-      {/* loading */}
-      {loading && courses === null && (
-        <div style={{ textAlign: 'center', padding: 'var(--s8)', color: 'var(--txt-3)', fontSize: 12 }}>
-          Loading vault…
-        </div>
-      )}
-
-      {/* empty */}
-      {!loading && courses !== null && courses.length === 0 && (
-        <EmptyState
-          icon="book"
-          title="No courses found"
-          desc="No .md files in wiki/courses/ and no folders in raw/courses/. Create a course or route course files from the Raw Inbox."
-          action={<button className="btn btn-sm btn-primary" onClick={() => setCreateOpen(true)}>New Course</button>}
-        />
-      )}
-
-      {/* cards */}
-      {courses !== null && courses.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 'var(--s4)' }}>
-          {courses.map((c) => <CourseCard key={c.id} course={c} vaultPath={vaultPath} />)}
-        </div>
-      )}
-
-      {courses !== null && courses.length > 0 && (
-        <div style={{ fontSize: 11, color: 'var(--txt-3)' }}>
-          {courses.length} course{courses.length === 1 ? '' : 's'} found
-        </div>
-      )}
-
-      {/* footer */}
-      <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
-        <Icon name="shield" size={12} />
-        New Course runs the safe brain command for this entity type. "Open note" links open Obsidian.
-      </div>
-
-      {createOpen && (
-        <EntityCreateModal
-          title="New Course"
-          safetyNote="Creates the course using `brain new-course <code>` with an optional title."
-          fields={[
-            { key: 'code', label: 'Course code', placeholder: 'ESC203', required: true },
-            { key: 'name', label: 'Course title', placeholder: 'Optional course title' },
-          ]}
-          loading={createLoading}
-          error={createError}
-          result={createResult}
-          submitLabel="Create course"
-          onSubmit={handleCreate}
-          onCancel={() => { if (!createLoading) setCreateOpen(false); }}
-        />
-      )}
-
-    </div>
+        );
+      }}
+    />
   );
 }

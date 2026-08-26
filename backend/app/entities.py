@@ -153,3 +153,73 @@ def create_business_area(vault_path: str, name: str, description: Optional[str])
             "rawPath": f"raw/business/{slug}/",
         },
     }
+
+
+# ── business pipeline reader (PRD §23) ───────────────────────────────────────
+# ops/business-pipeline.md was append-only: create_business_area wrote rows and
+# nothing ever read them back, so business entities carried no status and the
+# Business page had nothing to show.
+
+_PIPELINE_ROW_RE = re.compile(r"^\s*\|.+\|\s*$")
+_PIPELINE_SEP_RE = re.compile(r"^\s*\|[-| :]+\|\s*$")
+
+ALLOWED_BUSINESS_STATUSES: frozenset = frozenset({
+    "active", "paused", "exploring", "archived",
+})
+
+
+def get_business_pipeline(vault_path: str) -> dict:
+    """Read ops/business-pipeline.md. Read-only; never raises for a bad row."""
+    root = Path(vault_path)
+    path = _safe_subpath(root, _PIPELINE_REL)
+    if path is None:
+        return {"path": _PIPELINE_REL, "exists": False, "parseMode": "missing",
+                "items": [], "lastModified": None}
+    if not path.is_file():
+        return {"path": _PIPELINE_REL, "exists": False, "parseMode": "missing",
+                "items": [], "lastModified": None}
+
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception as exc:
+        logger.warning("Could not read business pipeline: %s", exc)
+        return {"path": _PIPELINE_REL, "exists": True, "parseMode": "unreadable",
+                "items": [], "lastModified": None}
+
+    header_at = None
+    for i in range(len(lines) - 1):
+        if _PIPELINE_ROW_RE.match(lines[i]) and _PIPELINE_SEP_RE.match(lines[i + 1]):
+            header_at = i
+            break
+    if header_at is None:
+        return {"path": _PIPELINE_REL, "exists": True, "parseMode": "preview-only",
+                "items": [], "lastModified": _last_modified(path)}
+
+    cols = [c.strip().lower() for c in lines[header_at].strip().strip("|").split("|")]
+    items = []
+    for line in lines[header_at + 2:]:
+        if not _PIPELINE_ROW_RE.match(line):
+            break
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        cells += [""] * (len(cols) - len(cells))
+        row = dict(zip(cols, cells))
+        name = row.get("name", "")
+        if not name:
+            continue
+        items.append({
+            "id":          _slug(name),
+            "name":        name,
+            "status":      row.get("status", "") or "unknown",
+            "description": row.get("description", ""),
+            "created":     row.get("created", ""),
+        })
+
+    return {"path": _PIPELINE_REL, "exists": True, "parseMode": "markdown-table",
+            "items": items, "lastModified": _last_modified(path)}
+
+
+def _last_modified(path: Path):
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+    except Exception:
+        return None

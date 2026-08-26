@@ -1,186 +1,135 @@
+/**
+ * Business — PRD §23.
+ *
+ * §23 names ops/business-pipeline.md as first-class storage. It was append-only:
+ * create_business_area wrote rows and nothing ever read them back, so business
+ * entities carried no status and the pipeline was invisible. It is now read and
+ * rendered alongside the area cards.
+ */
 import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { api } from '@/lib/api';
-import type { EntityCreateResponse, VaultBusinessItem } from '@/lib/api';
-import { createObsidianOpenUrl } from '@/lib/obsidian';
-import { Icon } from '@/components/ui/Icon';
+import type { VaultBusinessItem, BusinessPipelineResponse } from '@/lib/api';
+import { EntityListPage } from '@/components/entities/EntityListPage';
+import type { EntityAction } from '@/components/entities/EntityCard';
+import { PanelHeader } from '@/components/ui/PanelHeader';
 import { StatusDot } from '@/components/ui/StatusDot';
-import { EmptyState } from '@/components/ui/EmptyState';
-import { EntityCreateModal } from '@/components/ui/EntityCreateModal';
 
-function fmtDate(iso: string | null): string {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' });
-  } catch { return iso; }
+/** §23 source types. Legal and finance need review before routing. */
+const REVIEW_REQUIRED = new Set(['legal', 'finance']);
+
+const SOURCE_TYPES = [
+  'ideas', 'market-research', 'customer-discovery', 'pitches', 'finance',
+  'legal', 'sales', 'content', 'notes', 'screenshots', 'emails',
+  'browser-research', 'chat-sessions',
+];
+
+function statusTone(status: string): 'live' | 'green' | 'amber' | 'grey' {
+  switch (status.toLowerCase()) {
+    case 'active':    return 'live';
+    case 'shipped':   return 'green';
+    case 'exploring':
+    case 'paused':    return 'amber';
+    default:          return 'grey';
+  }
 }
 
-function truncate(text: string | null, n = 160): string {
-  if (!text) return '';
-  return text.length > n ? text.slice(0, n).trimEnd() + '…' : text;
-}
+function PipelinePanel() {
+  const [pipeline, setPipeline] = useState<BusinessPipelineResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-export function BusinessPage() {
-  const backendConfig = useAppStore((s) => s.backendConfig);
-  const [entities, setEntities] = useState<VaultBusinessItem[] | null>(null);
-  const [loading,  setLoading]  = useState(false);
-  const [error,    setError]    = useState<string | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createLoading, setCreateLoading] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [createResult, setCreateResult] = useState<EntityCreateResponse | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.getVaultBusiness();
-      setEntities(res.entities);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load business entities.');
-      setEntities([]);
-    } finally {
-      setLoading(false);
-    }
+  useEffect(() => {
+    api.getBusinessPipeline()
+      .then(setPipeline)
+      .catch((err) => setError(err instanceof Error ? err.message : 'Could not read the pipeline.'));
   }, []);
 
-  useEffect(() => { load(); }, [load]);
-
-  const vaultPath = backendConfig?.vaultPath ?? null;
-
-  async function handleCreate(values: Record<string, string>) {
-    setCreateLoading(true);
-    setCreateError(null);
-    setCreateResult(null);
-    try {
-      const result = await api.createBusinessArea({
-        name: values.name.trim(),
-        description: values.description.trim() || null,
-      });
-      setCreateResult(result);
-      if (result.ok) load();
-      else setCreateError(result.stderr || 'Business area creation failed.');
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : 'Business area creation failed.');
-    } finally {
-      setCreateLoading(false);
-    }
-  }
+  if (error) return null;
 
   return (
-    <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
-
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 'var(--s3)' }}>
-        <div>
-          <div style={{ fontSize: 18, fontWeight: 700 }}>Business</div>
-          <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 3 }}>
-            wiki/business/ · raw/business/ — {vaultPath ?? '—'}
-          </div>
+    <div className="panel panel-pad">
+      <PanelHeader
+        icon="chart"
+        title="Business pipeline"
+        sub={pipeline?.path ?? 'ops/business-pipeline.md'}
+      />
+      {pipeline === null ? (
+        <div style={{ fontSize: 11.5, color: 'var(--txt-3)' }}>Loading…</div>
+      ) : !pipeline.exists ? (
+        <div style={{ fontSize: 11.5, color: 'var(--txt-2)', lineHeight: 1.5 }}>
+          No pipeline file yet. It is created the first time you add a business area.
         </div>
-        <div style={{ display: 'flex', gap: 'var(--s2)', alignItems: 'center' }}>
-          <button className="btn btn-sm btn-primary" onClick={() => { setCreateOpen(true); setCreateError(null); setCreateResult(null); }}>
-            <Icon name="plus" size={13} />
-            New Business Area
-          </button>
-          <button className="btn btn-sm btn-ghost" onClick={load} disabled={loading}>
-            <Icon name="sync" size={13} style={{ animation: loading ? 'spin 1s linear infinite' : undefined }} />
-            Refresh
-          </button>
+      ) : pipeline.parseMode !== 'markdown-table' ? (
+        <div style={{ fontSize: 11.5, color: 'var(--amber)', lineHeight: 1.5 }}>
+          The pipeline file exists but has no readable table ({pipeline.parseMode}). Open it in
+          Obsidian to check its formatting — nothing has been changed.
         </div>
-      </div>
-
-      {error && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 'var(--s3) var(--s4)', borderRadius: 'var(--r2)', background: 'var(--red-bg)', border: '1px solid var(--red-line)', fontSize: 12 }}>
-          <StatusDot tone="red" />
-          <span style={{ flex: 1 }}>{error}</span>
-          <button className="btn btn-sm btn-ghost" onClick={load}>Retry</button>
-          <button className="btn btn-sm btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+      ) : pipeline.items.length === 0 ? (
+        <div style={{ fontSize: 11.5, color: 'var(--txt-3)' }}>Table is empty.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {pipeline.items.map((item) => (
+            <div key={item.id} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 11.5 }}>
+              <StatusDot tone={statusTone(item.status)} />
+              <span style={{ color: 'var(--txt-0)', fontWeight: 600, minWidth: 130 }}>{item.name}</span>
+              <span style={{ color: 'var(--txt-2)', minWidth: 74 }}>{item.status}</span>
+              <span style={{ flex: 1, color: 'var(--txt-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {item.description}
+              </span>
+              <span className="mono" style={{ fontSize: 10, color: 'var(--txt-3)' }}>{item.created}</span>
+            </div>
+          ))}
         </div>
-      )}
-
-      {loading && entities === null && (
-        <div style={{ textAlign: 'center', padding: 'var(--s8)', color: 'var(--txt-3)', fontSize: 12 }}>Loading vault…</div>
-      )}
-
-      {!loading && entities !== null && entities.length === 0 && (
-        <EmptyState
-          icon="chart"
-          title="No business entities found"
-          desc="No .md files in wiki/business/ and no folders in raw/business/. Create a business area or route files from the Raw Inbox."
-          action={<button className="btn btn-sm btn-primary" onClick={() => setCreateOpen(true)}>New Business Area</button>}
-        />
-      )}
-
-      {entities !== null && entities.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 'var(--s4)' }}>
-          {entities.map((e) => {
-            const obsidianUrl =
-              vaultPath && e.wikiPath
-                ? createObsidianOpenUrl(vaultPath, e.wikiPath)
-                : null;
-
-            return (
-              <div key={e.id} className="panel panel-pad" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
-                <div style={{ fontSize: 14, fontWeight: 600 }}>{e.name}</div>
-                {e.wikiPath && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                    <Icon name="doc" size={11} style={{ color: 'var(--live)', flexShrink: 0 }} />
-                    <span className="mono" style={{ fontSize: 10, color: 'var(--live)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.wikiPath}</span>
-                  </div>
-                )}
-                {e.rawPath && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                    <Icon name="folder" size={11} style={{ color: 'var(--violet)', flexShrink: 0 }} />
-                    <span className="mono" style={{ fontSize: 10, color: 'var(--violet)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.rawPath}</span>
-                  </div>
-                )}
-                {e.preview && <div style={{ fontSize: 11, color: 'var(--txt-2)', lineHeight: 1.5 }}>{truncate(e.preview)}</div>}
-
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto', paddingTop: 'var(--s2)' }}>
-                  <span style={{ fontSize: 10, color: 'var(--txt-3)' }}>{fmtDate(e.lastModified)}</span>
-
-                  {obsidianUrl ? (
-                    <a
-                      href={obsidianUrl}
-                      className="btn btn-sm btn-ghost"
-                      style={{ fontSize: 10.5, padding: '2px 7px', textDecoration: 'none' }}
-                      title="Open this note in Obsidian"
-                    >
-                      Open note
-                    </a>
-                  ) : e.rawPath && !e.wikiPath ? (
-                    <button className="btn btn-sm btn-ghost" disabled style={{ fontSize: 10.5, padding: '2px 7px', opacity: 0.35 }} title="No wiki note — raw folder only">
-                      Raw folder
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <div style={{ fontSize: 11, color: 'var(--txt-3)', display: 'flex', alignItems: 'center', gap: 6 }}>
-        <Icon name="shield" size={12} />
-        New Business Area scaffolds a wiki note and raw folder. No brain command is used — no files are overwritten.
-      </div>
-
-      {createOpen && (
-        <EntityCreateModal
-          title="New Business Area"
-          safetyNote="Scaffolds a wiki note and raw folder using a safe local scaffold. No brain command is used. No files are overwritten."
-          fields={[
-            { key: 'name', label: 'Name', placeholder: 'Business area name', required: true },
-            { key: 'description', label: 'Description', placeholder: 'Optional summary', multiline: true },
-          ]}
-          loading={createLoading}
-          error={createError}
-          result={createResult}
-          submitLabel="Create business area"
-          onSubmit={handleCreate}
-          onCancel={() => { if (!createLoading) setCreateOpen(false); }}
-        />
       )}
     </div>
   );
 }
+
+export function BusinessPage() {
+  const navigate = useAppStore((s) => s.navigate);
+
+  const load = useCallback(async () => (await api.getVaultBusiness()).entities, []);
+
+  const actionsFor = useCallback((): EntityAction[] => [
+    { label: 'Upload source', title: 'Route business material through the Raw Inbox', onClick: () => navigate('inbox') },
+    { label: 'Research', title: 'Time-boxed market or customer research', onClick: () => navigate('research') },
+    { label: 'Consolidate', title: 'Bring AI chat work into the vault', onClick: () => navigate('consolidate') },
+    { label: 'Email intake', title: 'Import business leads and receipts', onClick: () => navigate('email') },
+  ], [navigate]);
+
+  return (
+    <EntityListPage<VaultBusinessItem>
+      title="Business"
+      kind="business"
+      pathHint="wiki/business/ · raw/business/ · ops/business-pipeline.md"
+      icon="chart"
+      newLabel="New Business Area"
+      emptyTitle="No business areas found"
+      emptyDesc="No .md files in wiki/business/ and no folders in raw/business/. Create an area or route business files from the Raw Inbox."
+      safetyNote={
+        <>
+          Business files are never forced into project, hackathon or course categories.{' '}
+          <strong>Legal and finance sources require review before routing</strong> (§23) — they are
+          never batch-approved. Source types: <span className="mono">{SOURCE_TYPES.join(', ')}</span>.
+        </>
+      }
+      load={load}
+      actionsFor={actionsFor}
+      create={{
+        note: 'Creates wiki/business/<name>.md, raw/business/<name>/, and appends a row to ops/business-pipeline.md.',
+        fields: [
+          { key: 'name', label: 'Name', placeholder: 'Business area name', required: true },
+          { key: 'description', label: 'Description', placeholder: 'Optional summary', multiline: true },
+        ],
+        submit: (values) => api.createBusinessArea({
+          name: values.name.trim(),
+          description: values.description?.trim() || undefined,
+        }),
+      }}
+    >
+      <PipelinePanel />
+    </EntityListPage>
+  );
+}
+
+export { REVIEW_REQUIRED };

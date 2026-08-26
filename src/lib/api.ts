@@ -339,12 +339,34 @@ export interface VaultSummary {
   folders: VaultFolders;
 }
 
-export interface VaultProject {
+export interface VaultEntityMetadata {
+  domain:    string | null;
+  status:    string | null;
+  repoPath:  string | null;
+  githubUrl: string | null;
+  demoUrl:   string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  /** Set when this note's YAML could not be parsed. Degrades one card only. */
+  frontmatterError: string | null;
+  /** Opaque mtime+size token; send it back as the write precondition. */
+  version:   string | null;
+}
+
+export interface BusinessPipelineItem {
+  id: string; name: string; status: string; description: string; created: string;
+}
+
+export interface BusinessPipelineResponse {
+  path: string; exists: boolean; parseMode: string;
+  items: BusinessPipelineItem[]; lastModified: string | null;
+}
+
+export interface VaultProject extends VaultEntityMetadata {
   id: string;
   name: string;
   wikiPath: string | null;
   rawPath: string | null;
-  status: string;
   lastModified: string | null;
   preview: string | null;
 }
@@ -353,7 +375,7 @@ export interface VaultProjectsResponse {
   projects: VaultProject[];
 }
 
-export interface VaultCourse {
+export interface VaultCourse extends VaultEntityMetadata {
   id: string;
   name: string;
   wikiPath: string | null;
@@ -366,7 +388,7 @@ export interface VaultCoursesResponse {
   courses: VaultCourse[];
 }
 
-export interface VaultHackathon {
+export interface VaultHackathon extends VaultEntityMetadata {
   id: string;
   name: string;
   wikiPath: string | null;
@@ -379,7 +401,7 @@ export interface VaultHackathonsResponse {
   hackathons: VaultHackathon[];
 }
 
-export interface VaultBusinessItem {
+export interface VaultBusinessItem extends VaultEntityMetadata {
   id: string;
   name: string;
   wikiPath: string | null;
@@ -2347,6 +2369,8 @@ export const api = {
   buildVaultSearchIndex: () =>
     fetchWithBody<BuildVaultIndexResponse>('POST', '/api/vault/search/index', {}),
 
+  getBusinessPipeline: () => get<BusinessPipelineResponse>('/api/vault/business-pipeline'),
+
   // Vault graph (D3d). Read-only; derived from wikilinks.
   vaultGraph: (exportPath?: string) => {
     const q = exportPath ? `?exportPath=${encodeURIComponent(exportPath)}` : '';
@@ -2374,7 +2398,10 @@ export const api = {
 
   // brain commands
   commands:     ()                    => get<string[]>('/api/brain/commands'),
-  runBrain:     (command: string)     => fetchWithBody<BrainRunResult>('POST', '/api/brain/run', { command }),
+  // `args` is accepted only for commands with a declared schema (project-closeout,
+  // new-repo-scaffold, archive-hackathon); the backend validates and refuses others.
+  runBrain: (command: string, args?: Record<string, string>) =>
+    fetchWithBody<BrainRunResult>('POST', '/api/brain/run', args ? { command, args } : { command }),
 
   // entity creation
   createProject: (payload: CreateProjectRequest) =>

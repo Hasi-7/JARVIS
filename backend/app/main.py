@@ -330,6 +330,7 @@ from app.models import (
     VaultHackathonsResponse,
     VaultHackathonItem,
     VaultBusinessResponse,
+    BusinessPipelineResponse,
     VaultBusinessItem,
     VaultOpsFileResponse,
     VaultTask,
@@ -1341,6 +1342,19 @@ def brain_run(req: BrainRunRequest) -> BrainRunResponse:
             status_code=400,
             detail=f"Command '{req.command}' requires the entity-specific creation endpoint.",
         )
+    if req.args:
+        # Scaffold/closeout commands take a name. run_brain_command_args validates
+        # against the per-command schema and refuses anything not declared there.
+        from app.brain import supports_args
+        if not supports_args(req.command):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Command '{req.command}' does not accept arguments.",
+            )
+        try:
+            return run_brain_command_args(req.command, req.args)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     return run_brain_command(req.command)
 
 
@@ -1626,6 +1640,14 @@ def vault_business() -> VaultBusinessResponse:
     cfg   = get_config()
     items = get_business(cfg.vault_path)
     return VaultBusinessResponse(entities=[VaultBusinessItem(**i) for i in items])
+
+
+@app.get("/api/vault/business-pipeline", response_model=BusinessPipelineResponse)
+def vault_business_pipeline() -> BusinessPipelineResponse:
+    """Read ops/business-pipeline.md (PRD §23). Read-only."""
+    from app.entities import get_business_pipeline
+    cfg = get_config()
+    return BusinessPipelineResponse(**get_business_pipeline(cfg.vault_path))
 
 
 @app.get("/api/vault/tasks", response_model=VaultTasksResponse)

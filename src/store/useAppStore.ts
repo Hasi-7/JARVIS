@@ -92,7 +92,7 @@ interface AppState {
   setAgentConvTarget: (id: string | null) => void;
   setProposalTarget: (t: ProposalTarget | null) => void;
   setToolReviewTarget: (t: ToolReviewTarget | null) => void;
-  runBrainCommand: (cmd: string) => Promise<void>;
+  runBrainCommand: (cmd: string, args?: Record<string, string>) => Promise<void>;
 
   setStagedCount: (n: number) => void;
   setPendingProposalCount: (n: number) => void;
@@ -229,11 +229,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setToolReviewTarget: (toolReviewTarget) => set({ toolReviewTarget }),
 
-  runBrainCommand: async (cmd: string) => {
+  runBrainCommand: async (cmd: string, args?: Record<string, string>) => {
     const at = nowHHMM();
     get().showToast(`Running brain ${cmd}…`);
     try {
-      const result = await api.runBrain(cmd);
+      const result = await api.runBrain(cmd, args);
       const rawOut = result.stdout.trim() || result.stderr.trim() || (result.ok ? 'Done.' : 'Failed.');
       const out = rawOut.split('\n').find((l) => l.trim()) ?? rawOut;
       const entry: CmdLogEntry = { cmd: `brain ${cmd}`, ok: result.ok, at, out };

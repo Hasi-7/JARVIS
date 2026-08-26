@@ -208,3 +208,44 @@ def test_the_write_is_atomic(note, monkeypatch):
     with pytest.raises(OSError):
         _update(root, status="active")
     assert path.read_text(encoding="utf-8") == original
+
+
+# ── PRD §34.1 brain allowlist ─────────────────────────────────────────────────
+
+def test_allowlist_covers_every_command_the_prd_names():
+    """§34.1 lists these as allowed; five were missing, which is what blocked
+    §20's closeout/scaffold actions and §21's archive."""
+    from app.security import ALLOWED_COMMANDS
+    for command in (
+        "status", "today", "weekly", "raw-status", "sync-raw",
+        "calendar-export", "calendar-open", "new-project", "project-closeout",
+        "new-repo-scaffold", "new-hackathon", "archive-hackathon", "new-course",
+        "vault-path", "backup", "lint",
+    ):
+        assert command in ALLOWED_COMMANDS, f"PRD §34.1 names {command!r} but it is not allowed"
+
+
+def test_allowlist_contains_no_command_the_cli_lacks():
+    """An allowlist entry for a nonexistent command fails confusingly at runtime
+    and overstates what this app can do. Pinned against the real CLI's parser."""
+    from app.security import ALLOWED_COMMANDS
+    real_cli_commands = {
+        "add-resume-row", "add-task", "archive-hackathon", "backup",
+        "calendar-export", "calendar-open", "closeout", "doctor",
+        "graphify-setup", "ingest", "lint", "mark-ingested", "new-course",
+        "new-hackathon", "new-project", "new-repo-scaffold", "open",
+        "project-closeout", "raw-status", "schedule-candidates", "setup-future",
+        "status", "sync-raw", "today", "vault-path", "weekly",
+    }
+    unknown = ALLOWED_COMMANDS - real_cli_commands
+    assert unknown == set(), f"allowlisted but not implemented by the CLI: {sorted(unknown)}"
+
+
+def test_commands_taking_a_name_declare_an_arg_schema():
+    from app.brain import _ARG_SCHEMAS, _REQUIRED_ARGS, supports_args
+    for command in ("project-closeout", "new-repo-scaffold", "archive-hackathon"):
+        assert supports_args(command), command
+        assert command in _ARG_SCHEMAS and command in _REQUIRED_ARGS, command
+    # Commands that take no arguments must not silently accept them.
+    for command in ("status", "today", "backup", "lint"):
+        assert not supports_args(command), command
