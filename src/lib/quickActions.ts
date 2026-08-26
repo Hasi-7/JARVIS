@@ -28,8 +28,8 @@ export const NAV_ACTION_MAP: Record<string, RouteId> = {
   upload:       'inbox',
   calcandidates:'calendar',
   checkopenclaw:'tools',
-  checkbrowser: 'tools',
-  checkcomputer:'tools',
+  checkbrowser: 'computeruse',
+  checkcomputer:'computeruse',
   checkmcp:     'tools',
   checksafety:  'safety',
 };

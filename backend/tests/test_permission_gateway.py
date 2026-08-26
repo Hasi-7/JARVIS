@@ -85,8 +85,18 @@ def test_privileged_tools_not_wired_or_disabled():
     by_tool = {p["tool"]: p for p in list_policies()}
     for t in ("obsidian.search", "gmail.search", "gmail.read", "gmail.draft", "calendar.read"):
         assert by_tool[t]["status"] == "not_wired", t
-    for t in ("gmail.send", "computer.click", "computer.type"):
-        assert by_tool[t]["status"] == "disabled", t
+    # Sending email has no code path at all and stays disabled.
+    assert by_tool["gmail.send"]["status"] == "disabled"
+    # MVP v7 routed computer-use through the gateway. It is now `available` in the
+    # policy sense — reachable through the approval queue — while remaining behind
+    # its own kill switch, a scoped session, and the foreground-window check.
+    # It must NEVER be immediately executable.
+    for t in ("computer.start_session", "computer.click", "computer.type", "computer.screenshot"):
+        assert by_tool[t]["requiresApproval"] is True, t
+        assert by_tool[t]["executionEnabled"] is False, t
+    assert by_tool["computer.start_session"]["riskLevel"] == "high"
+    assert by_tool["computer.click"]["riskLevel"] == "high"
+    assert by_tool["computer.type"]["riskLevel"] == "high"
     # C1b made the browser reads reachable, but ONLY inside the sandbox and ONLY
     # through the approval queue — never immediately executable.
     for t in ("browser.read_page", "browser.search"):
@@ -122,12 +132,24 @@ def test_endpoint_evaluate_gmail_search():
 
 # ── evaluate: disabled dangerous ────────────────────────────────────────────────
 
-@pytest.mark.parametrize("tool", ["gmail.send", "computer.type", "computer.click"])
+@pytest.mark.parametrize("tool", ["gmail.send"])
 def test_evaluate_known_dangerous_disabled(tool):
     r = evaluate_tool_request(tool, {})
     assert r["decision"] == "disabled"
     assert r["allowed"] is False
     assert r["executionEnabled"] is False
+
+
+@pytest.mark.parametrize("tool", [
+    "computer.start_session", "computer.click", "computer.type", "computer.screenshot",
+])
+def test_computer_use_is_approval_gated_never_directly_executable(tool):
+    """Computer-use drives the real desktop, so the gateway must never hand it
+    an immediate green light — approval is the only route."""
+    r = evaluate_tool_request(tool, {})
+    assert r["decision"] == "requires_approval", tool
+    assert r["allowed"] is False, tool
+    assert r["executionEnabled"] is False, tool
 
 
 @pytest.mark.parametrize("tool", ["shell.run", "filesystem.delete", "browser.submit_form", "gmail.delete", "gmail.archive", "gmail.modify_labels"])

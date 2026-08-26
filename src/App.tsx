@@ -16,6 +16,7 @@ import { BusinessPage }    from '@/pages/BusinessPage';
 import { ResumePage }      from '@/pages/ResumePage';
 import { BackfillPage }    from '@/pages/BackfillPage';
 import { EscalationPage }  from '@/pages/EscalationPage';
+import { ComputerUsePage } from '@/pages/ComputerUsePage';
 import { ToolConnectionsPage } from '@/pages/ToolConnectionsPage';
 import { SafetyPage }      from '@/pages/SafetyPage';
 import { SettingsPage }    from '@/pages/SettingsPage';
@@ -38,6 +39,7 @@ function Screen() {
     case 'business':    return <BusinessPage />;
     case 'resume':      return <ResumePage />;
     case 'backfill':    return <BackfillPage />;
+    case 'computeruse': return <ComputerUsePage />;
     case 'escalation':  return <EscalationPage />;
     case 'tools':       return <ToolConnectionsPage />;
     case 'safety':      return <SafetyPage />;

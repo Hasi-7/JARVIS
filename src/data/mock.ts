@@ -145,6 +145,7 @@ export const NAV: NavGroup[] = [
       { id: 'dashboard', label: 'Dashboard',  glyph: 'grid'   },
       { id: 'agent',     label: 'Local Agent', glyph: 'sphere' },
       { id: 'research',  label: 'Research',   glyph: 'search' },
+      { id: 'computeruse', label: 'Browser / Computer Use', glyph: 'grid' },
     ],
   },
   {

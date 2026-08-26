@@ -3531,19 +3531,31 @@ def computer_use_status() -> ComputerUseStatusResponse:
     )
 
 
-@app.post("/api/computer-use/sessions", response_model=ComputerUseSessionResponse)
+@app.post("/api/computer-use/sessions", response_model=None)
 def computer_use_start(
     req: StartComputerUseSessionRequest,
     x_brain_approval_token: Optional[str] = Header(default=None, alias="X-Brain-Approval-Token"),
-) -> ComputerUseSessionResponse:
+):
+    """Refused. Starting a session goes through the Permission Gateway.
+
+    This endpoint used to call start_session directly, which meant the single
+    most privileged capability in the app was the one thing that bypassed the
+    stack PRD §32 defines (agent → runtime → gateway → tool). It also meant the
+    Assist-mode requirement documented in .env.example was never enforced: the
+    operator token was the only check.
+
+    The route is kept, rather than deleted, so an older client gets an
+    explanation instead of a 404 it would have to guess at.
+    """
     _authorize_computer_use(x_brain_approval_token)
-    try:
-        session = cu_start_session(req.task, req.allowedWindows, req.budgetSeconds)
-    except Exception as exc:
-        raise _computer_use_http_error(exc)
-    return ComputerUseSessionResponse(
-        session=ComputerUseSessionSummary(**cu_session_summary(session)),
-        warnings=[_COMPUTER_USE_WARNING],
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Direct session start is no longer available. Request the "
+            "'computer.start_session' tool in Assist mode via POST /api/agent/tool-request, "
+            "then approve and execute it through /api/tool-approvals. The approval queue is "
+            "what enforces Assist mode and records the session scope in the audit log."
+        ),
     )
 
 

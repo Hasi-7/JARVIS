@@ -1250,6 +1250,7 @@ class ToolApprovalExecutionSummary(BaseModel):
     resultType: Literal[
         "brain_command", "task_created", "calendar_candidate_created",
         "calendar_event_created", "sandboxed_search", "sandboxed_page_read",
+        "computer_session_started",
     ]
     message:    str = Field(max_length=300)
     path:       Optional[str] = Field(default=None, max_length=500)
@@ -1307,6 +1308,14 @@ class ToolApprovalBrowserPageReviewFields(BaseModel):
     url:       str = Field(max_length=2000)
 
 
+class ToolApprovalComputerSessionReviewFields(BaseModel):
+    """What the operator is authorising: real input, on these windows, for this long."""
+    model_config = ConfigDict(extra="forbid")
+    task:           str = Field(max_length=300)
+    allowedWindows: List[str] = Field(max_length=20)
+    budgetSeconds:  Optional[int] = None
+
+
 class ToolApprovalResponse(BaseModel):
     id:                     str
     requestId:              str
@@ -1327,6 +1336,7 @@ class ToolApprovalResponse(BaseModel):
         ToolApprovalCalendarEventReviewFields,
         ToolApprovalBrowserSearchReviewFields,
         ToolApprovalBrowserPageReviewFields,
+        ToolApprovalComputerSessionReviewFields,
         ToolApprovalBrainReviewFields,
     ]
     reason:                 Optional[str] = Field(default=None, max_length=300)

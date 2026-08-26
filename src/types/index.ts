@@ -26,7 +26,7 @@ export type RouteId =
   | 'dashboard' | 'agent' | 'research'
   | 'inbox' | 'consolidate' | 'email' | 'calendar' | 'tasks' | 'proposals'
   | 'projects' | 'hackathons' | 'courses' | 'business' | 'resume' | 'backfill'
-  | 'escalation' | 'tools' | 'safety' | 'settings';
+  | 'computeruse' | 'escalation' | 'tools' | 'safety' | 'settings';
 
 export interface NavItem {
   id: RouteId;

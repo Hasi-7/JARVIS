@@ -2197,12 +2197,25 @@ export const api = {
   stopComputerUseSession: (id: string) =>
     fetchWithBody<ComputerUseSessionResponse>(
       'POST', `/api/computer-use/sessions/${encodeURIComponent(id)}/stop`, {}),
-  startComputerUseSession: (
+  /**
+   * Request a computer-use session. This does NOT start one.
+   *
+   * Direct start was removed: it let the most privileged capability in the app
+   * skip the gateway, and meant the documented Assist-mode requirement was never
+   * enforced. The session is now queued as a `computer.start_session` approval,
+   * which the operator must then approve and execute.
+   */
+  requestComputerUseSession: (
     payload: { task: string; allowedWindows: string[]; budgetSeconds?: number },
     token: string,
   ) =>
-    fetchWithBody<ComputerUseSessionResponse>(
-      'POST', '/api/computer-use/sessions', payload, { 'X-Brain-Approval-Token': token }),
+    fetchWithBody<CreateAgentToolRequestResult>('POST', '/api/agent/tool-request', {
+      tool: 'computer.start_session',
+      args: payload,
+      mode: 'assist',
+      reason: payload.task,
+      requestedBy: 'computer-use-ui',
+    }, { 'X-Brain-Approval-Token': token }),
   observeComputerUse: (id: string, token: string) =>
     fetchWithBody<ComputerUseObserveResponse>(
       'POST', `/api/computer-use/sessions/${encodeURIComponent(id)}/observe`, {},

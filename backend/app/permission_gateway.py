@@ -96,9 +96,15 @@ _POLICIES: List[dict] = [
     {"tool": "browser.search",    "category": "browser", "riskLevel": "medium", "status": "available", "requiresApproval": True, "notes": "Queries ONE fixed privacy-respecting provider from INSIDE the OpenShell sandbox, through the Assist-mode approval queue. Results are untrusted and are only openable if their host is in the session allowlist."},
     {"tool": "browser.read_page", "category": "browser", "riskLevel": "medium", "status": "available", "requiresApproval": True, "notes": "Reads one page from INSIDE the OpenShell sandbox, through the Assist-mode approval queue. Refuses if the sandbox policy fails open (best_effort Landlock). Page content is untrusted."},
 
-    # Computer use
-    {"tool": "computer.click", "category": "computer", "riskLevel": "high", "status": "disabled", "requiresApproval": True, "notes": "Computer-use is disabled until NemoClaw/OpenShell runtime safety is wired."},
-    {"tool": "computer.type",  "category": "computer", "riskLevel": "high", "status": "disabled", "requiresApproval": True, "notes": "Computer-use is disabled until NemoClaw/OpenShell runtime safety is wired."},
+    # Computer use (MVP v7). FULL DESKTOP CONTROL — there is no sandbox boundary
+    # around host input, so the session itself is the unit of approval: starting
+    # one goes through the Assist-mode approval queue, and the individual actions
+    # then run under that approval, each re-checked against the session's window
+    # allowlist and re-classified for the PRD §13.4 risky categories.
+    {"tool": "computer.start_session", "category": "computer", "riskLevel": "high", "status": "available", "requiresApproval": True, "notes": "Opens a scoped computer-use session (task + window allowlist + wall-clock budget) through the Assist-mode approval queue. Starting a session performs no input by itself. Requires the BRAIN_UI_COMPUTER_USE_ENABLED kill switch."},
+    {"tool": "computer.click", "category": "computer", "riskLevel": "high", "status": "available", "requiresApproval": True, "notes": "Clicks on the real desktop, only inside an approved session and only while the foreground window matches that session's allowlist. If focus moved, the action is REFUSED rather than retargeted. Every action and refusal is logged."},
+    {"tool": "computer.type",  "category": "computer", "riskLevel": "high", "status": "available", "requiresApproval": True, "notes": "Types on the real desktop, only inside an approved session. Typing into a credential/login surface is refused outright and cannot be confirmed away. Typed CONTENT is never logged, only its length."},
+    {"tool": "computer.screenshot", "category": "computer", "riskLevel": "medium", "status": "available", "requiresApproval": True, "notes": "Captures the approved window inside an active session. Screenshots are downscaled and stored backend-local only; they never reach the vault."},
 
     # Brain CLI — low-risk, read-only status commands are executable through the
     # gateway (via the existing safe brain wrapper). Everything else stays off.
@@ -111,6 +117,7 @@ _POLICIES: List[dict] = [
     # External read-only integrations (D3)
     {"tool": "github.read", "category": "external", "riskLevel": "low", "status": "available", "requiresApproval": False, "notes": "Read-only GitHub repo/commit/issue reads via a local token. GET only; no write, merge, or comment path exists. Content is untrusted."},
     {"tool": "drive.read",  "category": "external", "riskLevel": "medium", "status": "available", "requiresApproval": False, "notes": "Read-only Google Drive listing and text export (drive.readonly). No create/update/delete/share path exists. Document content is untrusted."},
+    {"tool": "quercus.read", "category": "external", "riskLevel": "low", "status": "available", "requiresApproval": False, "notes": "Read-only Canvas/Quercus courses, assignments and announcements via a local token. GET only, host pinned, redirects disabled; assignment SUBMISSION is deliberately out of scope. Descriptions are untrusted."},
 
     # Filesystem / vault
     {"tool": "filesystem.read_vault",  "category": "filesystem", "riskLevel": "low",    "status": "available", "requiresApproval": False, "notes": "Read-only vault access, implemented elsewhere. Permission Gateway v0 does not execute it."},
@@ -146,6 +153,10 @@ _APPROVAL_REQUIRED_TOOLS = frozenset({
     # are privileged.
     "browser.read_page",
     "browser.search",
+    # MVP v7: the SESSION is what gets approved. Individual clicks/keystrokes run
+    # under that approval rather than queueing one approval per click, which
+    # would make the harness useless for the repetitive UI work §13.1 describes.
+    "computer.start_session",
 })
 
 
@@ -668,6 +679,63 @@ def log_approval_transition(record: dict, transition: str) -> dict:
         "Approval transition logged: id=%s approval=%s transition=%s",
         entry["id"], entry["approvalId"], transition,
     )
+    return entry
+
+
+def log_computer_use_action(
+    *,
+    action: str,
+    session_id: str,
+    window: str,
+    ok: bool,
+    refused_reason: Optional[str] = None,
+    detail: Optional[str] = None,
+    approval_id: Optional[str] = None,
+) -> dict:
+    """Append one audit entry for a computer-use action, including refusals.
+
+    Computer-use previously wrote only to the Python logger, so the one capability
+    that can click and type on the real desktop was the one capability absent from
+    the audit trail — leaving PRD acceptance criterion #19 open for exactly the
+    riskiest surface.
+
+    REFUSALS matter more than successes here: a refusal means the agent tried to
+    act on a window it was not scoped to, or on a credential surface, and that is
+    the signal an operator most needs to see afterwards.
+
+    `detail` must already be safe to store. Callers never pass typed CONTENT —
+    computer_use.py passes only its length.
+    """
+    entry = {
+        "id":                   str(uuid.uuid4()),
+        "timestamp":            datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds"),
+        "source":               "computer_use_action",
+        "tool":                 f"computer.{action}",
+        "requestedBy":          "computer-use-session",
+        "reason":               _truncate_plain(detail, _MAX_REASON_LEN),
+        "decision":             "executed" if ok else "denied",
+        "riskLevel":            "high",
+        "allowed":              ok,
+        "requiresApproval":     True,
+        "executionEnabled":     False,
+        # Window titles come from the OS and can contain anything, so they are
+        # truncated and flattened like any other untrusted value.
+        "sanitizedArgsSummary": _truncate_plain(f"window: {window}", _MAX_REASON_LEN) or "",
+        "policyNotes":          (
+            f"Refused: {refused_reason}." if refused_reason
+            else "Ran inside an approved computer-use session."
+        ),
+        "result":               "success" if ok else "failure",
+        "exitCode":             None,
+        "stdoutPreview":        None,
+        "stderrPreview":        None,
+        "durationMs":           None,
+        "approvalId":           approval_id,
+        "requestId":            _truncate_plain(session_id, _MAX_REQUESTED_BY_LEN),
+        "approvedBy":           None,
+        "approvedAt":           None,
+    }
+    _append_log_entry(entry)
     return entry
 
 

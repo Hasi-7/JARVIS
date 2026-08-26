@@ -1356,7 +1356,9 @@ def test_every_review_field_shape_is_serializable(tool):
     sample = {"title": "x", "date": "2026-09-01", "time": "09:30", "duration": "30m",
               "status": "todo", "area": "a", "priority": "high", "due": "2026-09-01",
               "source": "agent", "reason": "r", "location": "l", "timeZone": "UTC",
-              "sessionId": "s", "query": "q", "limit": 5, "url": "https://example.com"}
+              "sessionId": "s", "query": "q", "limit": 5, "url": "https://example.com",
+              "task": "Tidy the download folder", "allowedWindows": ["Explorer"],
+              "budgetSeconds": 120}
     fields = ta._review_fields({"tool": tool, "canonicalArgs": sample})
     adapter = TypeAdapter(ToolApprovalResponse.model_fields["reviewFields"].annotation)
     adapter.validate_python(fields)  # raises if no Union member accepts this shape

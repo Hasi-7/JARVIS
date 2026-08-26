@@ -4,6 +4,7 @@ Every action driver is injected. Nothing here moves a real mouse, types on a rea
 keyboard, or captures a real screen.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -480,14 +481,76 @@ def test_start_rejects_a_wrong_token(token):
     assert exc.value.status_code in (401, 403)
 
 
-def test_start_succeeds_with_the_token(token):
+def test_direct_start_is_refused_and_points_at_the_approval_queue(token):
+    """Session start must go through the gateway, not around it.
+
+    A valid operator token used to be enough to open a desktop-control session,
+    which meant the most privileged capability was the one that skipped the
+    stack PRD §32 defines — and the documented Assist-mode requirement was
+    never actually checked anywhere.
+    """
+    from fastapi import HTTPException
     import app.main as m
     from app.models import StartComputerUseSessionRequest
 
     req = StartComputerUseSessionRequest(task="tidy notes", allowedWindows=["Obsidian"])
-    res = m.computer_use_start(req, x_brain_approval_token=token)
-    assert res.session.status == cu.STATUS_ACTIVE
-    assert any("real desktop" in w for w in res.warnings)
+    with pytest.raises(HTTPException) as exc:
+        m.computer_use_start(req, x_brain_approval_token=token)
+    assert exc.value.status_code == 410
+    assert "computer.start_session" in exc.value.detail
+    # And nothing was started as a side effect of the refusal.
+    assert cu.active_session() is None
+
+
+def test_start_session_through_the_approval_queue(token, monkeypatch):
+    """The supported path: Assist-mode request -> approve -> execute."""
+    from app import permission_gateway as pg
+    from app.agent_tool_requests import create_request
+    from app.main import tool_approval_approve, tool_approval_execute
+    from app.models import ApproveToolApprovalRequest, ExecuteToolApprovalRequest
+
+    monkeypatch.setenv(pg.PRIVILEGED_EXECUTION_ENV, "true")
+    request = create_request(
+        tool="computer.start_session",
+        args={"task": "tidy notes", "allowedWindows": ["Obsidian"], "budgetSeconds": 120},
+        reason="Repetitive UI tidy-up", requested_by="local-agent",
+        conversation_id="conv-1", mode="assist",
+    )
+    assert request["status"] == "pending_approval"
+
+    tool_approval_approve(request["id"], ApproveToolApprovalRequest(approvedBy="owner"), token)
+    executed = tool_approval_execute(request["approvalId"], ExecuteToolApprovalRequest(), token)
+    assert executed.status == "executed"
+    assert executed.result.resultType == "computer_session_started"
+
+    live = cu.active_session()
+    assert live is not None
+    assert live["task"] == "tidy notes"
+    assert live["allowedWindows"] == ["Obsidian"]
+
+
+def test_a_session_cannot_be_queued_outside_assist_mode(token, monkeypatch):
+    """This is where the Assist-mode guard actually lives now."""
+    from app.agent_tool_requests import create_request
+
+    for mode in ("locked", "observe", "draft", "research", "escalation"):
+        record = create_request(
+            tool="computer.start_session",
+            args={"task": "t", "allowedWindows": ["X"]},
+            reason="r", requested_by="local-agent", conversation_id="c", mode=mode,
+        )
+        assert record["status"] == "evaluated_only", mode
+        assert record["approvalId"] is None, mode
+    assert cu.active_session() is None
+
+
+def test_an_empty_window_allowlist_is_refused_before_it_reaches_the_queue():
+    """An unscoped session would let the agent act on whatever is focused."""
+    from app import tool_approvals as ta
+
+    with pytest.raises(Exception) as exc:
+        ta.validate_canonical_args("computer.start_session", {"task": "t", "allowedWindows": []})
+    assert "allowed window" in str(exc.value).lower() or "at least" in str(exc.value).lower()
 
 
 def test_click_requires_the_token(token):
@@ -566,10 +629,10 @@ def test_disabled_maps_to_503(token, monkeypatch):
     from app.models import StartComputerUseSessionRequest
 
     monkeypatch.delenv(cu.ENABLED_ENV, raising=False)
+    # Start is gateway-only now, so the kill switch is exercised on an action.
     with pytest.raises(HTTPException) as exc:
-        m.computer_use_start(
-            StartComputerUseSessionRequest(task="t", allowedWindows=["X"]),
-            x_brain_approval_token=token,
+        m.computer_use_observe(
+            "no-such-session", x_brain_approval_token=token,
         )
     assert exc.value.status_code == 503
 
@@ -615,3 +678,73 @@ def test_inventory_never_claims_a_sandbox_protects_desktop_control(monkeypatch):
     monkeypatch.setattr(tools, "_computer_use_ready", lambda: True)
     entry = {t["id"]: t for t in tools.list_tool_connections()}["computer-use"]
     assert not any("NemoClaw" in r or "OpenShell" in r for r in entry["requires"])
+
+
+# ── audit trail (PRD §13.3, §32, acceptance criterion #19) ────────────────────
+# Computer-use actions previously reached only a backend session file and a
+# Python log line, so the one capability that can click and type on the real
+# desktop was the one absent from the audit log.
+
+def _gateway_logs(monkeypatch, tmp_path):
+    from app import permission_gateway as pg
+    monkeypatch.setattr(pg, "TOOL_LOGS_DIR", tmp_path / "tool-logs")
+    monkeypatch.setattr(pg, "EVALUATIONS_FILE", tmp_path / "tool-logs" / "evaluations.json")
+    return pg
+
+
+def test_a_click_reaches_the_gateway_audit_log(tmp_path, monkeypatch):
+    pg = _gateway_logs(monkeypatch, tmp_path)
+    session = _session()
+    cu.click(session["id"], 10, 20, foreground_fn=_fg(), click_fn=lambda x, y: None)
+
+    entries = [e for e in pg.list_logs(limit=50) if e["source"] == "computer_use_action"]
+    assert len(entries) == 1
+    assert entries[0]["tool"] == "computer.click"
+    assert entries[0]["result"] == "success"
+    assert entries[0]["riskLevel"] == "high"
+    assert session["id"] in entries[0]["requestId"]
+
+
+def test_a_refusal_reaches_the_audit_log(tmp_path, monkeypatch):
+    """The most audit-relevant event: the agent tried to act out of scope."""
+    pg = _gateway_logs(monkeypatch, tmp_path)
+    session = _session()
+    with pytest.raises(cu.WindowNotAllowed):
+        cu.click(session["id"], 10, 20, foreground_fn=_fg("Online Banking - Chrome"),
+                 click_fn=lambda x, y: None)
+
+    entries = [e for e in pg.list_logs(limit=50) if e["source"] == "computer_use_action"]
+    assert len(entries) == 1
+    assert entries[0]["result"] == "failure"
+    assert entries[0]["allowed"] is False
+    assert "window_not_allowed" in entries[0]["policyNotes"]
+
+
+def test_typed_content_never_reaches_the_audit_log(tmp_path, monkeypatch):
+    pg = _gateway_logs(monkeypatch, tmp_path)
+    session = _session(allowed_windows=["Notepad"])
+    secret = "hunter2-do-not-log-me"
+    cu.type_text(session["id"], secret, foreground_fn=_fg("Notepad"),
+                 type_fn=lambda text: None)
+
+    blob = json.dumps(pg.list_logs(limit=50))
+    assert secret not in blob
+    entries = [e for e in pg.list_logs(limit=50) if e["source"] == "computer_use_action"]
+    assert len(entries) == 1
+    assert entries[0]["tool"] == "computer.type"
+
+
+def test_audit_failure_never_breaks_the_action(monkeypatch):
+    """A broken audit write must not turn a completed click into an error."""
+    from app import permission_gateway as pg
+
+    def boom(**kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(pg, "log_computer_use_action", boom)
+    session = _session()
+    clicks = []
+    result = cu.click(session["id"], 5, 5, foreground_fn=_fg(),
+                      click_fn=lambda x, y: clicks.append((x, y)))
+    assert result["x"] == 5
+    assert clicks == [(5, 5)]

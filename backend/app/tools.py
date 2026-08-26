@@ -239,6 +239,24 @@ _TOOL_SYSTEMS: List[dict] = [
         "notes": "Google Drive is not connected. No file reads or writes are made.",
     },
     {
+        "id": "quercus",
+        "name": "Canvas / Quercus",
+        "category": "external",
+        "status": "not_configured",
+        "enabled": False,
+        "riskLevel": "low",
+        "capabilities": ["read_courses", "read_assignments", "read_announcements"],
+        "allowedNow": [],
+        "blockedNow": ["read", "submit", "upload", "enroll", "grade"],
+        "requires": ["BRAIN_UI_QUERCUS_TOKEN"],
+        "lastCheckedAt": None,
+        "lastError": None,
+        "notes": (
+            "Read-only Canvas REST access. GET only, host pinned, redirects disabled. "
+            "Assignment SUBMISSION is deliberately out of scope and has no code path."
+        ),
+    },
+    {
         "id": "graphify",
         "name": "Graphify",
         "category": "developer",
@@ -259,6 +277,15 @@ _TOOL_SYSTEMS: List[dict] = [
 ]
 
 
+def _quercus_ready() -> bool:
+    """True only when a Canvas token is actually present. Never reads the token."""
+    try:
+        from app.quercus import quercus_configured
+        return bool(quercus_configured())
+    except Exception:
+        return False
+
+
 def list_tool_connections() -> List[dict]:
     """
     Return the read-only tool-connection inventory.
@@ -273,7 +300,26 @@ def list_tool_connections() -> List[dict]:
     items = [dict(item) for item in _TOOL_SYSTEMS]
     ready = _gmail_reads_ready()
     cu_ready = _computer_use_ready()
+    quercus_ready = _quercus_ready()
     for item in items:
+        if item["id"] == "quercus":
+            item["status"] = "available" if quercus_ready else "not_configured"
+            item["enabled"] = quercus_ready
+            item["allowedNow"] = (
+                ["read_courses", "read_assignments", "read_announcements"]
+                if quercus_ready else []
+            )
+            item["blockedNow"] = (
+                ["submit", "upload", "enroll", "grade"] if quercus_ready
+                else ["read", "submit", "upload", "enroll", "grade"]
+            )
+            item["notes"] = (
+                "Read-only Canvas REST access, GET only. Assignment SUBMISSION has no "
+                "code path and never will. Course content is untrusted."
+                if quercus_ready else
+                "Canvas/Quercus token is not configured. Set BRAIN_UI_QUERCUS_TOKEN to enable reads."
+            )
+            continue
         if item["id"] == "computer-use":
             # MVP v7 is implemented, but it stays `disabled` until the operator
             # turns the kill switch on — reporting otherwise would overstate it.

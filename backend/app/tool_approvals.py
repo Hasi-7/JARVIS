@@ -273,6 +273,53 @@ class _BrowserReadPageArgs(BaseModel):
         return self
 
 
+class _ComputerSessionArgs(BaseModel):
+    """A scoped computer-use session (PRD §13.3).
+
+    The window allowlist is required and must be non-empty: an empty allowlist
+    would let the session act on whatever happens to be focused, which is the
+    exact failure the foreground check exists to prevent. computer_use.start_session
+    enforces this again at dispatch — this is the earlier of the two checks, so
+    the operator never sees an unscoped session in the approval queue at all.
+    """
+    model_config = ConfigDict(extra="forbid")
+    task: str = Field(max_length=300)
+    allowedWindows: list[str] = Field(min_length=1, max_length=20)
+    budgetSeconds: Optional[int] = Field(default=None, ge=10, le=3600)
+
+    @field_validator("task", mode="before")
+    @classmethod
+    def _clean_task(cls, value):
+        if not isinstance(value, str):
+            raise ValueError("must be a string")
+        return " ".join(value.split())
+
+    @field_validator("allowedWindows", mode="before")
+    @classmethod
+    def _clean_windows(cls, value):
+        if not isinstance(value, list):
+            raise ValueError("allowedWindows must be a list of window title fragments")
+        cleaned = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("each allowed window must be a string")
+            item = " ".join(item.split())
+            if item:
+                cleaned.append(item[:200])
+        return cleaned
+
+    @model_validator(mode="after")
+    def _required_fields(self):
+        if not self.task:
+            raise ValueError("a scoped task description is required")
+        if not self.allowedWindows:
+            raise ValueError(
+                "at least one allowed window is required; an empty allowlist "
+                "would permit acting on any window"
+            )
+        return self
+
+
 _ARG_MODELS = {
     "brain.today": _NoArgs,
     "brain.sync_raw": _NoArgs,
@@ -281,6 +328,7 @@ _ARG_MODELS = {
     "calendar.create_event": _CalendarEventArgs,
     "browser.search": _BrowserSearchArgs,
     "browser.read_page": _BrowserReadPageArgs,
+    "computer.start_session": _ComputerSessionArgs,
 }
 
 
@@ -357,6 +405,9 @@ def _approval_args_summary(tool: str, args: dict) -> str:
         return f"Sandboxed search within one research session ({len(present)} field(s) configured)"
     if tool == "browser.read_page":
         return f"Sandboxed page read within one research session ({len(present)} field(s) configured)"
+    if tool == "computer.start_session":
+        windows = len(args.get("allowedWindows") or [])
+        return f"DESKTOP CONTROL session scoped to {windows} allowed window(s)"
     return "Approval-required arguments withheld"
 
 
@@ -497,6 +548,14 @@ def _review_fields(record: dict) -> dict:
         return {
             "sessionId": args.get("sessionId"),
             "url": args.get("url"),
+        }
+    if tool == "computer.start_session":
+        # Scope is the entire decision: the operator is authorising real input on
+        # these windows for this long. Show all of it verbatim.
+        return {
+            "task": args.get("task"),
+            "allowedWindows": list(args.get("allowedWindows") or []),
+            "budgetSeconds": args.get("budgetSeconds"),
         }
     return {}
 
@@ -762,6 +821,15 @@ def _dispatch(tool: str, args: dict) -> dict:
         # capture. Its default driver is still the sandboxed fetch.
         from app.browser import open_page
         return {"ok": True, **open_page(args.get("sessionId", ""), args.get("url", ""))}
+    if tool == "computer.start_session":
+        # Starting a session performs NO input. It records the scope that every
+        # later click/keystroke is checked against, and the kill switch is
+        # re-checked inside start_session itself.
+        from app.computer_use import start_session
+        session = start_session(
+            args["task"], args["allowedWindows"], args.get("budgetSeconds"),
+        )
+        return {"ok": True, "sessionId": session["id"], "session": session}
     if tool == "calendar.create_event":
         # The ONLY external write in this app. Reached only after the full A3 flow:
         # Assist mode -> operator token -> kill switch -> approve -> execute.
@@ -803,6 +871,15 @@ def _execution_summary(tool: str, result: Optional[dict], ok: bool) -> Optional[
             "resultType": "sandboxed_page_read",
             "message": ("Page read inside the sandbox." if ok
                         else "Sandboxed page read failed."),
+            "path": None,
+            "id": None,
+        }
+    if tool == "computer.start_session":
+        return {
+            "ok": ok,
+            "resultType": "computer_session_started",
+            "message": ("Computer-use session opened; it can now act on the allowed windows."
+                        if ok else "Computer-use session could not be opened."),
             "path": None,
             "id": None,
         }

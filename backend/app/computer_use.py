@@ -233,10 +233,38 @@ def _refresh_status(session: dict, now_fn: Callable[[], float]) -> dict:
     return session
 
 
+def _mirror_to_gateway(session_id: str, action: str, detail: dict) -> None:
+    """Mirror one action into the Permission Gateway audit log.
+
+    Without this, computer-use actions existed only in a backend session file and
+    a Python log line — so the single capability that can click and type on the
+    real desktop was the one missing from the audit trail the rest of the app
+    keeps (PRD §32, acceptance criterion #19). Going through the gateway also
+    gets the append-only ops/tool-logs/ vault mirror for free.
+
+    Never allowed to break the action it records: a failed audit write must not
+    turn a completed click into an error, and must not stop the session.
+    """
+    try:
+        from app.permission_gateway import log_computer_use_action
+        log_computer_use_action(
+            action=action,
+            session_id=session_id,
+            window=str(detail.get("window") or ""),
+            ok=bool(detail.get("ok")),
+            refused_reason=detail.get("refused"),
+            # `detail` carries typed-text LENGTH, never the text itself.
+            detail=detail.get("note"),
+        )
+    except Exception as exc:  # pragma: no cover - audit must never be fatal
+        logger.warning("Computer-use audit mirror failed (non-fatal): %s", exc)
+
+
 def _record(session: dict, action: str, detail: dict) -> None:
     session.setdefault("actions", []).append({
         "at": _now(), "action": action, **detail,
     })
+    _mirror_to_gateway(str(session.get("id") or ""), action, detail)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

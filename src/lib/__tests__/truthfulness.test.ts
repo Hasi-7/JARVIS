@@ -98,6 +98,9 @@ describe('navigation', () => {
     for (const required of [
       'dashboard', 'agent', 'inbox', 'research', 'projects', 'hackathons', 'courses',
       'business', 'calendar', 'tasks', 'resume', 'backfill', 'consolidate', 'tools', 'settings',
+      // PRD §15 item 5. Computer-use had four working endpoints and no section
+      // at all, so a session could not be scoped or started from the app.
+      'computeruse',
     ]) {
       expect(ids.has(required as never), `nav is missing PRD section "${required}"`).toBe(true);
     }
