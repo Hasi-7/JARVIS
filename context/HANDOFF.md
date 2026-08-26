@@ -32,13 +32,25 @@ the **privileged execution layer** (PRD MVP v4–v10) in phases.
 - **C1b + D3d complete (2026-08-24).** Every planned phase is implemented.
 - **All PRD gap items closed (2026-08-24).** Every MVP tier v1-v10 is now
   implemented, including v7 computer-use (full desktop, per the user's choice).
-- **Test baseline:** **1331 backend tests pass**, `npm run build` clean (94 modules).
+- **All PRD gap items from the 2026-08-25 audit closed (2026-08-26)** across
+  phases 0–7. See `docs/PRD-Gap-Report-2026-08-25.md` for what was found and
+  `context/current-task.md` for what changed.
+- **Test baseline:** **1504 backend tests pass**, 24 frontend (Vitest, logic
+  only), `npm run build` clean (100 modules).
 
 > **Computer-use is OFF by default and should stay off unless in active use.**
 > It can click and type on the real desktop. Enable with
 > `BRAIN_UI_COMPUTER_USE_ENABLED=true` plus `BRAIN_UI_APPROVAL_TOKEN`. The
 > load-bearing guard is the foreground-window check: if focus moves off an
 > allowlisted window the action is refused, never retargeted.
+>
+> **Changed 2026-08-26:** a session can no longer be started directly.
+> `POST /api/computer-use/sessions` returns 410; request the
+> `computer.start_session` tool in Assist mode and approve + execute it through
+> the queue. That queue is what enforces Assist mode — before this, the
+> Assist-mode guard advertised here and in `.env.example` existed only in a
+> docstring and was never checked. Every action and refusal now lands in the
+> gateway audit log and the `ops/tool-logs/` vault mirror.
 
 > **Before enabling real browsing (updated 2026-08-26):** the shipped policy at
 > `backend/policies/jarvis-deny-by-default.yaml` now sets

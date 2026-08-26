@@ -2,6 +2,77 @@
 
 ## Current State
 
+**PRD completion plan applied in full, phases 0–7 (2026-08-26). 1504 backend
+tests pass (was 1331); 24 frontend tests (was none); `npm run build` clean.**
+
+The previous entry below claimed "every MVP tier v1–v10 is now implemented".
+That was true at the *module* level and false at the product level. A full audit
+(`docs/PRD-Gap-Report-2026-08-25.md`) found four classes of problem, all now
+closed. The corrections worth carrying forward:
+
+**Three approval-gated tools could never be queued.** `calendar.create_event`,
+`browser.search` and `browser.read_page` were in `_APPROVAL_REQUIRED_TOOLS` with
+`_dispatch` branches but no `_ARG_MODELS` entry, so `create_approval` refused
+them — and it raised the *same string* as a genuine policy refusal, so the
+failure looked correct in the log. Registering a tool turns out to touch **eight**
+sites, two of them response models (`resultType` is a Literal; `reviewFields` is
+a closed Union). Existing tests only ever called `_dispatch` directly, which is
+why none of this surfaced. A guard test now enforces all eight mechanically; it
+fired six times while adding `computer.start_session`, exactly as intended.
+
+**Computer-use bypassed the safety stack it was documented to use.** It ran
+outside the gateway, wrote nothing to the audit log, and the "Assist mode" guard
+named in `.env.example` and in the entry below existed **only in a docstring** —
+`_authorize_computer_use` checked the operator token and nothing else. Session
+start is now a `computer.start_session` approval; because `create_approval`
+already requires ASSIST, routing through the queue *is* the mode enforcement.
+Every action and refusal now reaches the gateway log and the `ops/tool-logs/`
+vault mirror (verified against a real temp vault). Per-action guards are
+unchanged. `POST /api/computer-use/sessions` returns 410 pointing at the queue.
+
+**An SSRF hole opened up by making browsing reachable.** `_dispatch` called
+`fetch_page_in_sandbox(args["url"])` directly, while that function's docstring
+states its caller has already run `validate_url` — false on that path, so the
+session allowlist and private-address checks were skipped. It now dispatches
+through `browser.open_page`, the same path the Research UI uses. This is why
+`sessionId` is required: a page read must be session-scoped for an allowlist to
+exist at all.
+
+**Browsing was broken twice, independently.** `landlock: best_effort` (which
+`openshell_exec` refuses by design) *and* no `network_policies`, so curl had no
+egress either way. HANDOFF documented only the first half. Both fixed;
+`test_shipped_policy_does_not_fail_open` prevents a revert.
+
+**The app made false safety claims.** `SafetyPage` was fully static and told the
+user there was "no email integration at all", the agent "has no tools", and tool
+logging was "planned but not implemented" — all shipped long before. Now driven
+from real endpoints, with a test that fails if any of those phrases returns.
+
+**Entity metadata now lives in note frontmatter** (`app/frontmatter.py`), not a
+backend database. The load-bearing guard is an mtime+size precondition, not the
+write lock: these notes are open in Obsidian, which autosaves, and
+`@serialized_vault_write` only serializes *our* writers. Without it the failure
+is silent — read note, user types a paragraph, write back stale content, gone.
+`_preview` strips frontmatter, shipped in the same change as the first write
+because **no note in the vault had frontmatter** (0 of 19), so every card would
+otherwise have started rendering YAML.
+
+**Still deliberately not built** (see the plan's "What I am NOT building"):
+§35.4 `changes[]` diffs, §31's remaining `NEMOCLAW_*` config keys, a §29 repo
+picker, a classification *rules engine*, raw-file hashing, and the full six-way
+table-parser de-fork (one strangler migration only).
+
+**Known operational gap:** the sandbox still needs a `NEMOCLAW_SANDBOX_ID`
+created under the fixed policy before live browsing works. If it refuses to
+start, that is the correct fail-closed outcome — do not revert to `best_effort`.
+
+---
+
+## Previous entry (2026-08-24) — kept for history
+
+> Note: the Assist-mode claim in guard #1 below was **not** enforced in code
+> until Phase 2 (2026-08-26). It is now.
+
 **All five PRD gap items complete (2026-08-24). 1331 backend tests pass; build
 clean (94 modules). Every MVP tier v1–v10 is now implemented.**
 
