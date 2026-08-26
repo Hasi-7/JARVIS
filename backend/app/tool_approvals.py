@@ -320,6 +320,42 @@ class _ComputerSessionArgs(BaseModel):
         return self
 
 
+class _EntityUpdateArgs(BaseModel):
+    """One wiki note's frontmatter. Body text is never in scope."""
+    model_config = ConfigDict(extra="forbid")
+    entityType: Literal["project", "course", "hackathon", "business"]
+    wikiPath:   str = Field(max_length=400)
+    status:     Optional[str] = Field(default=None, max_length=40)
+    domain:     Optional[str] = Field(default=None, max_length=40)
+    repoPath:   Optional[str] = Field(default=None, max_length=400)
+    githubUrl:  Optional[str] = Field(default=None, max_length=500)
+    demoUrl:    Optional[str] = Field(default=None, max_length=500)
+    # Opaque mtime+size token from the read. Optional at this layer so an older
+    # client still validates, but vault.update_entity_metadata refuses the write
+    # when it is supplied and stale.
+    expectedVersion: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("wikiPath", "status", "domain", "repoPath", "githubUrl",
+                     "demoUrl", "expectedVersion", mode="before")
+    @classmethod
+    def _clean(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("must be a string or null")
+        if "\n" in value or "\r" in value:
+            raise ValueError("must not contain newlines")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _something_to_do(self):
+        if not self.wikiPath.endswith(".md"):
+            raise ValueError("wikiPath must point at a Markdown note")
+        if not any([self.status, self.domain, self.repoPath, self.githubUrl, self.demoUrl]):
+            raise ValueError("at least one field to update is required")
+        return self
+
+
 _ARG_MODELS = {
     "brain.today": _NoArgs,
     "brain.sync_raw": _NoArgs,
@@ -329,6 +365,7 @@ _ARG_MODELS = {
     "browser.search": _BrowserSearchArgs,
     "browser.read_page": _BrowserReadPageArgs,
     "computer.start_session": _ComputerSessionArgs,
+    "vault.update_entity": _EntityUpdateArgs,
 }
 
 
@@ -408,6 +445,10 @@ def _approval_args_summary(tool: str, args: dict) -> str:
     if tool == "computer.start_session":
         windows = len(args.get("allowedWindows") or [])
         return f"DESKTOP CONTROL session scoped to {windows} allowed window(s)"
+    if tool == "vault.update_entity":
+        fields = [k for k in ("status", "domain", "repoPath", "githubUrl", "demoUrl")
+                  if args.get(k)]
+        return f"Frontmatter edit on one wiki note ({len(fields)} field(s))"
     return "Approval-required arguments withheld"
 
 
@@ -548,6 +589,16 @@ def _review_fields(record: dict) -> dict:
         return {
             "sessionId": args.get("sessionId"),
             "url": args.get("url"),
+        }
+    if tool == "vault.update_entity":
+        return {
+            "entityType": args.get("entityType"),
+            "wikiPath":   args.get("wikiPath"),
+            "status":     args.get("status"),
+            "domain":     args.get("domain"),
+            "repoPath":   args.get("repoPath"),
+            "githubUrl":  args.get("githubUrl"),
+            "demoUrl":    args.get("demoUrl"),
         }
     if tool == "computer.start_session":
         # Scope is the entire decision: the operator is authorising real input on
@@ -821,6 +872,19 @@ def _dispatch(tool: str, args: dict) -> dict:
         # capture. Its default driver is still the sandboxed fetch.
         from app.browser import open_page
         return {"ok": True, **open_page(args.get("sessionId", ""), args.get("url", ""))}
+    if tool == "vault.update_entity":
+        from app.vault import update_entity_metadata
+        return update_entity_metadata(
+            vault_path=cfg.vault_path,
+            entity_type=args["entityType"],
+            wiki_path=args["wikiPath"],
+            updates={
+                "status": args.get("status"), "domain": args.get("domain"),
+                "repo_path": args.get("repoPath"), "github_url": args.get("githubUrl"),
+                "demo_url": args.get("demoUrl"),
+            },
+            expected_version=args.get("expectedVersion"),
+        )
     if tool == "computer.start_session":
         # Starting a session performs NO input. It records the scope that every
         # later click/keystroke is checked against, and the kill switch is
@@ -872,6 +936,14 @@ def _execution_summary(tool: str, result: Optional[dict], ok: bool) -> Optional[
             "message": ("Page read inside the sandbox." if ok
                         else "Sandboxed page read failed."),
             "path": None,
+            "id": None,
+        }
+    if tool == "vault.update_entity":
+        return {
+            "ok": ok,
+            "resultType": "entity_metadata_updated",
+            "message": ("Note frontmatter updated." if ok else "Frontmatter update failed."),
+            "path": _safe_result_path(result.get("path")),
             "id": None,
         }
     if tool == "computer.start_session":

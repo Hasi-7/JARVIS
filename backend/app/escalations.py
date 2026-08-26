@@ -30,6 +30,7 @@ import string
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
+from app.vault_paths import safe_subpath
 
 logger = logging.getLogger(__name__)
 
@@ -99,16 +100,8 @@ def _preview(path: Path, max_chars: int = _PREVIEW_CHARS) -> Optional[str]:
         return None
 
 
-def _safe_subpath(vault_root: Path, *parts: str) -> Optional[Path]:
-    try:
-        resolved_root  = vault_root.resolve()
-        resolved_child = vault_root.joinpath(*parts).resolve()
-        if resolved_child.is_relative_to(resolved_root):
-            return resolved_child
-    except Exception:
-        pass
-    logger.warning("Path traversal rejected: %s / %s", vault_root, parts)
-    return None
+# Shared with the other vault-writing modules; see app/vault_paths.py.
+_safe_subpath = safe_subpath
 
 
 def _norm_esc_col(name: str) -> str:

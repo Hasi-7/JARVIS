@@ -280,7 +280,28 @@ class VaultSummaryResponse(BaseModel):
     folders:   VaultFolders
 
 
-class VaultProjectItem(BaseModel):
+class VaultEntityMetadata(BaseModel):
+    """PRD §35.1 Work Item fields, read from the note's YAML frontmatter.
+
+    All optional: a note without frontmatter — which is every note in the vault
+    today — yields None for each, and the entity pages render as they did before.
+    `frontmatterError` reports a note whose YAML could not be parsed, so one bad
+    note degrades one card instead of failing the whole endpoint.
+    """
+    domain:    Optional[str] = None
+    status:    Optional[str] = None
+    repoPath:  Optional[str] = None
+    githubUrl: Optional[str] = None
+    demoUrl:   Optional[str] = None
+    createdAt: Optional[str] = None
+    updatedAt: Optional[str] = None
+    frontmatterError: Optional[str] = None
+    # Opaque mtime+size token used as a write precondition. Obsidian autosaves,
+    # so a write must prove it read the version it is replacing.
+    version:   Optional[str] = None
+
+
+class VaultProjectItem(VaultEntityMetadata):
     id:           str
     name:         str
     wikiPath:     Optional[str] = None
@@ -294,7 +315,7 @@ class VaultProjectsResponse(BaseModel):
     projects: List[VaultProjectItem]
 
 
-class VaultCourseItem(BaseModel):
+class VaultCourseItem(VaultEntityMetadata):
     id:           str
     name:         str
     wikiPath:     Optional[str] = None
@@ -307,7 +328,7 @@ class VaultCoursesResponse(BaseModel):
     courses: List[VaultCourseItem]
 
 
-class VaultHackathonItem(BaseModel):
+class VaultHackathonItem(VaultEntityMetadata):
     id:           str
     name:         str
     wikiPath:     Optional[str] = None
@@ -320,7 +341,7 @@ class VaultHackathonsResponse(BaseModel):
     hackathons: List[VaultHackathonItem]
 
 
-class VaultBusinessItem(BaseModel):
+class VaultBusinessItem(VaultEntityMetadata):
     id:           str
     name:         str
     wikiPath:     Optional[str] = None
@@ -1250,7 +1271,7 @@ class ToolApprovalExecutionSummary(BaseModel):
     resultType: Literal[
         "brain_command", "task_created", "calendar_candidate_created",
         "calendar_event_created", "sandboxed_search", "sandboxed_page_read",
-        "computer_session_started",
+        "computer_session_started", "entity_metadata_updated",
     ]
     message:    str = Field(max_length=300)
     path:       Optional[str] = Field(default=None, max_length=500)
@@ -1308,6 +1329,17 @@ class ToolApprovalBrowserPageReviewFields(BaseModel):
     url:       str = Field(max_length=2000)
 
 
+class ToolApprovalEntityUpdateReviewFields(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    entityType: str
+    wikiPath:   str = Field(max_length=400)
+    status:     Optional[str] = None
+    domain:     Optional[str] = None
+    repoPath:   Optional[str] = None
+    githubUrl:  Optional[str] = None
+    demoUrl:    Optional[str] = None
+
+
 class ToolApprovalComputerSessionReviewFields(BaseModel):
     """What the operator is authorising: real input, on these windows, for this long."""
     model_config = ConfigDict(extra="forbid")
@@ -1337,6 +1369,7 @@ class ToolApprovalResponse(BaseModel):
         ToolApprovalBrowserSearchReviewFields,
         ToolApprovalBrowserPageReviewFields,
         ToolApprovalComputerSessionReviewFields,
+        ToolApprovalEntityUpdateReviewFields,
         ToolApprovalBrainReviewFields,
     ]
     reason:                 Optional[str] = Field(default=None, max_length=300)

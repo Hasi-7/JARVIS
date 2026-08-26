@@ -6,6 +6,7 @@ import string
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from app.vault_paths import safe_subpath, sanitize_cell
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +26,8 @@ class BusinessAreaPartialFailure(Exception):
         self.data = data
 
 
-def _safe_subpath(vault_root: Path, *parts: str) -> Optional[Path]:
-    try:
-        resolved_root = vault_root.resolve()
-        resolved_child = vault_root.joinpath(*parts).resolve()
-        if resolved_child.is_relative_to(resolved_root):
-            return resolved_child
-    except Exception:
-        pass
-    logger.warning("Path traversal rejected: %s / %s", vault_root, parts)
-    return None
+# Shared with the other vault-writing modules; see app/vault_paths.py.
+_safe_subpath = safe_subpath
 
 
 def _validate_text(value: Optional[str], field: str, *, required: bool = False) -> str:
@@ -54,7 +47,14 @@ def _slug(name: str) -> str:
 
 
 def _table_cell(value: str) -> str:
-    return value.replace("|", "/").strip()
+    """Shared with vault.py — see app/vault_paths.sanitize_cell.
+
+    This module's own version replaced `|` with `/` and stripped whitespace, but
+    never removed newlines, so a business-area name containing one injected an
+    extra row into ops/business-pipeline.md. It also diverged from vault.py's
+    substitution for the same threat.
+    """
+    return sanitize_cell(value)
 
 
 def _backup_pipeline(path: Path) -> Path:

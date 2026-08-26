@@ -124,6 +124,7 @@ _POLICIES: List[dict] = [
     {"tool": "filesystem.write_vault", "category": "filesystem", "riskLevel": "medium", "status": "available", "requiresApproval": True,  "notes": "Real vault writes use backup-before-write elsewhere. Permission Gateway v0 does not execute it."},
     {"tool": "vault.create_task",       "category": "filesystem", "riskLevel": "medium", "status": "available", "requiresApproval": True,  "notes": "Creates one task through the existing validated, backup-before-write vault adapter. Assist approval required."},
     {"tool": "calendar.create_candidate", "category": "calendar", "riskLevel": "medium", "status": "available", "requiresApproval": True, "notes": "Creates one vault calendar candidate only; never writes Google Calendar. Assist approval required."},
+    {"tool": "vault.update_entity", "category": "filesystem", "riskLevel": "medium", "status": "available", "requiresApproval": True, "notes": "Edits the YAML frontmatter of ONE wiki note (status/domain/repo/links). Never touches body text. Backup-before-write, atomic replace, and a mtime precondition that refuses if the note changed in Obsidian since it was read."},
 ]
 
 _POLICY_BY_TOOL: Dict[str, dict] = {p["tool"]: p for p in _POLICIES}
@@ -157,6 +158,8 @@ _APPROVAL_REQUIRED_TOOLS = frozenset({
     # under that approval rather than queueing one approval per click, which
     # would make the harness useless for the repetitive UI work §13.1 describes.
     "computer.start_session",
+    # Writes into wiki notes the user also edits in Obsidian.
+    "vault.update_entity",
 })
 
 

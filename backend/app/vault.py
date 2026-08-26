@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.write_lock import serialized_vault_write
+from app.vault_paths import precondition_token, safe_subpath, write_text_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -75,37 +76,62 @@ def _last_modified_iso(path: Path) -> Optional[str]:
         return None
 
 
-def _preview(path: Path, max_chars: int = _PREVIEW_CHARS) -> Optional[str]:
-    """Read first max_chars characters. Handles encoding errors. Returns None on failure."""
+def _read_note(path: Path) -> Optional[str]:
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-        return text[:max_chars]
+        return path.read_text(encoding="utf-8", errors="replace")
     except Exception as exc:
-        logger.debug("Could not preview %s: %s", path, exc)
+        logger.debug("Could not read %s: %s", path, exc)
         return None
+
+
+def _preview(path: Path, max_chars: int = _PREVIEW_CHARS) -> Optional[str]:
+    """First max_chars characters of the note BODY, excluding frontmatter.
+
+    Previously returned the raw head of the file. The moment a note gains a
+    frontmatter block, that would render YAML as the card's preview text on every
+    entity page — so stripping it has to land with the first write, not after.
+    """
+    text = _read_note(path)
+    if text is None:
+        return None
+    return _note_body(text)[:max_chars]
+
+
+def _note_body(text: str) -> str:
+    from app.frontmatter import read_frontmatter
+    return read_frontmatter(text).body.lstrip("\n")
+
+
+def _note_metadata(text: str) -> dict:
+    """Entity metadata from a note's frontmatter (PRD §35.1 Work Item).
+
+    Every field is optional. A note without frontmatter — which is every note in
+    the vault today — yields all-None and renders exactly as it did before.
+    """
+    from app.frontmatter import read_frontmatter, get_str
+
+    fm = read_frontmatter(text)
+    domain = get_str(fm, "domain")
+    status = get_str(fm, "status")
+    return {
+        "domain":    domain.lower() if domain else None,
+        "status":    status.lower() if status else None,
+        "repoPath":  get_str(fm, "repo_path", "repo"),
+        "githubUrl": get_str(fm, "github_url", "github"),
+        "demoUrl":   get_str(fm, "demo_url", "demo"),
+        "createdAt": get_str(fm, "created_at", "created"),
+        "updatedAt": get_str(fm, "updated_at", "updated"),
+        "frontmatterError": fm.error,
+    }
 
 
 def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "item"
 
 
-def _safe_subpath(vault_root: Path, *parts: str) -> Optional[Path]:
-    """
-    Resolve vault_root / parts and verify the result stays inside vault_root.
-    Returns None if traversal is detected or resolution fails.
-    """
-    try:
-        resolved_root  = vault_root.resolve()
-        resolved_child = vault_root.joinpath(*parts).resolve()
-        if resolved_child.is_relative_to(resolved_root):
-            return resolved_child
-    except Exception:
-        pass
-    logger.warning("Path traversal rejected: %s / %s", vault_root, parts)
-    return None
+# Shared with the other vault-writing modules; see app/vault_paths.py.
+_safe_subpath = safe_subpath
 
-
-# ── scanner helpers ───────────────────────────────────────────────────────────
 
 def _scan_wiki(vault_root: Path, subpath: str) -> dict:
     """
@@ -122,11 +148,15 @@ def _scan_wiki(vault_root: Path, subpath: str) -> dict:
                 stem = p.stem
                 key  = stem.lower()
                 rel  = p.relative_to(vault_root).as_posix()
+                text = _read_note(p)
                 items[key] = {
                     "display_name":  stem,
                     "path":          rel,
                     "last_modified": _last_modified_iso(p),
-                    "preview":       _preview(p),
+                    # Read once, derive both — these notes can be large.
+                    "preview":       _note_body(text)[:_PREVIEW_CHARS] if text is not None else None,
+                    "metadata":      _note_metadata(text) if text is not None else {},
+                    "version":       precondition_token(p),
                 }
     except Exception as exc:
         logger.warning("Could not scan wiki folder %s: %s", folder, exc)
@@ -181,6 +211,9 @@ def _merge(wiki_items: dict, raw_items: dict) -> list:
             seen_ids[base_id] = 1
             item_id = base_id
 
+        # Additive: every metadata field defaults to None, so a note without
+        # frontmatter produces exactly the shape this returned before.
+        meta = (wiki or {}).get("metadata") or {}
         result.append({
             "id":           item_id,
             "name":         display_name,
@@ -188,6 +221,15 @@ def _merge(wiki_items: dict, raw_items: dict) -> list:
             "rawPath":      raw["path"]           if raw  else None,
             "lastModified": wiki["last_modified"] if wiki else (raw["last_modified"] if raw else None),
             "preview":      wiki["preview"]       if wiki else None,
+            "domain":       meta.get("domain"),
+            "status":       meta.get("status"),
+            "repoPath":     meta.get("repoPath"),
+            "githubUrl":    meta.get("githubUrl"),
+            "demoUrl":      meta.get("demoUrl"),
+            "createdAt":    meta.get("createdAt"),
+            "updatedAt":    meta.get("updatedAt"),
+            "frontmatterError": meta.get("frontmatterError"),
+            "version":      (wiki or {}).get("version"),
         })
 
     return result
@@ -219,7 +261,14 @@ def get_projects(vault_path: str) -> list:
     raw  = _scan_raw(root,  "raw/projects")
     items = _merge(wiki, raw)
     for item in items:
-        item["status"] = "unknown"
+        # "unknown" was hardcoded here; it now comes from the note's frontmatter
+        # and falls back only when the note does not declare one.
+        item.setdefault("status", None)
+        if not item.get("status"):
+            item["status"] = "unknown"
+        item.setdefault("domain", "project")
+        if not item.get("domain"):
+            item["domain"] = "project"
     return items
 
 
@@ -485,6 +534,156 @@ def _backup_task_file(task_path: Path) -> Path:
     shutil.copy2(task_path, bak_path)
     logger.info("Task backup created: %s", bak_path)
     return bak_path
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Entity frontmatter writes (PRD §35.1 Work Item)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_ENTITY_BACKUP_DIR = Path(__file__).parent.parent / "data" / "backups" / "entities"
+
+ALLOWED_ENTITY_STATUSES: frozenset = frozenset({
+    "active", "paused", "blocked", "shipped", "archived", "unknown",
+})
+# Deliberately the same vocabulary as ALLOWED_BACKFILL_TYPES rather than a
+# parallel enum. Spelled out here because that set is defined further down the
+# file; test_entity_domains_match_backfill_types keeps the two in lockstep.
+ALLOWED_ENTITY_DOMAINS: frozenset = frozenset({
+    "project", "repo", "hackathon", "course", "business", "other",
+})
+
+_ENTITY_WIKI_FOLDERS = {
+    "project":   "wiki/projects",
+    "course":    "wiki/courses",
+    "hackathon": "wiki/projects/hackathons",
+    "business":  "wiki/business",
+}
+
+_EDITABLE_ENTITY_FIELDS = ("status", "domain", "repo_path", "github_url", "demo_url")
+
+
+class EntityVersionConflict(RuntimeError):
+    """The note changed on disk between the read and the write."""
+
+
+def _backup_entity_note(note_path: Path) -> Path:
+    _ENTITY_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    bak = _ENTITY_BACKUP_DIR / f"{note_path.stem}_{ts}_{suffix}.md"
+    if bak.exists():
+        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        bak = _ENTITY_BACKUP_DIR / f"{note_path.stem}_{ts}_{suffix}.md"
+    shutil.copy2(note_path, bak)
+    logger.info("Entity note backup created: %s", bak)
+    return bak
+
+
+@serialized_vault_write
+def update_entity_metadata(
+    vault_path: str,
+    entity_type: str,
+    wiki_path: str,
+    updates: dict,
+    expected_version: Optional[str] = None,
+) -> dict:
+    """Update a wiki note's frontmatter. Body text is never touched.
+
+    `expected_version` is the load-bearing guard, not the lock.
+
+    These notes live in the user's Obsidian vault and Obsidian AUTOSAVES. Every
+    other writer in this app targets ops/*.md tables the user rarely edits
+    mid-session; wiki notes are the opposite. Without a precondition the failure
+    is silent and total: the UI reads the note, the user types a paragraph in
+    Obsidian, the UI writes back stale content, and the paragraph is gone. The
+    backup would hold their good text, but nobody would know to look.
+
+    @serialized_vault_write only serializes OUR writers against each other —
+    Obsidian does not take that lock — so the mtime check is what actually
+    catches an external edit.
+    """
+    root = Path(vault_path)
+    if not root.is_dir():
+        raise ValueError(f"Vault path is not a directory: {vault_path}")
+
+    entity_type = (entity_type or "").strip().lower()
+    if entity_type not in _ENTITY_WIKI_FOLDERS:
+        raise ValueError(
+            f"Unknown entity type {entity_type!r}. "
+            f"Allowed: {sorted(_ENTITY_WIKI_FOLDERS)}"
+        )
+
+    rel = (wiki_path or "").strip().replace("\\", "/")
+    if not rel.endswith(".md"):
+        raise ValueError("wikiPath must point at a Markdown note.")
+    expected_prefix = _ENTITY_WIKI_FOLDERS[entity_type]
+    if not rel.startswith(f"{expected_prefix}/"):
+        raise ValueError(
+            f"A {entity_type} note must live under {expected_prefix}/ (got {rel!r})."
+        )
+
+    note_path = _safe_subpath(root, rel)
+    if note_path is None:
+        raise ValueError("Rejected path outside the vault.")
+    if not note_path.is_file():
+        raise ValueError(f"Note not found: {rel}")
+
+    clean: dict = {}
+    for field in _EDITABLE_ENTITY_FIELDS:
+        if field not in updates:
+            continue
+        value = updates[field]
+        if value is None or (isinstance(value, str) and not value.strip()):
+            clean[field] = None
+            continue
+        value = " ".join(str(value).split())
+        if field == "status" and value.lower() not in ALLOWED_ENTITY_STATUSES:
+            raise ValueError(
+                f"Invalid status {value!r}. Allowed: {sorted(ALLOWED_ENTITY_STATUSES)}"
+            )
+        if field == "domain" and value.lower() not in ALLOWED_ENTITY_DOMAINS:
+            raise ValueError(
+                f"Invalid domain {value!r}. Allowed: {sorted(ALLOWED_ENTITY_DOMAINS)}"
+            )
+        if field in ("github_url", "demo_url") and not value.lower().startswith(("http://", "https://")):
+            raise ValueError(f"{field} must be an http(s) URL.")
+        clean[field] = value.lower() if field in ("status", "domain") else value
+
+    if not clean:
+        raise ValueError("No editable fields supplied.")
+
+    current_version = precondition_token(note_path)
+    if expected_version is not None and current_version != expected_version:
+        raise EntityVersionConflict(
+            "This note changed on disk since it was read — most likely edited in "
+            "Obsidian. Reload the entity and re-apply the change so nothing is lost."
+        )
+
+    original = _read_note(note_path)
+    if original is None:
+        raise ValueError(f"Could not read note: {rel}")
+
+    from app.frontmatter import write_frontmatter
+    updated = write_frontmatter(original, clean)
+    if updated == original:
+        return {
+            "ok": True, "path": rel, "changed": False,
+            "version": current_version,
+            "updatedAt": _last_modified_iso(note_path),
+        }
+
+    _backup_entity_note(note_path)
+    write_text_atomic(note_path, updated)
+
+    logger.info("Entity metadata updated: %s (%s)", rel, ", ".join(sorted(clean)))
+    return {
+        "ok": True,
+        "path": rel,
+        "changed": True,
+        "fields": sorted(clean),
+        "version": precondition_token(note_path),
+        "updatedAt": _last_modified_iso(note_path),
+    }
 
 
 @serialized_vault_write

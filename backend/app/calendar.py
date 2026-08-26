@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.write_lock import serialized_vault_write
+from app.vault_paths import safe_subpath
 
 logger = logging.getLogger(__name__)
 
@@ -74,17 +75,8 @@ def _norm_col(name: str) -> str:
     return _COL_ALIASES.get(name.strip().lower(), name.strip().lower())
 
 
-def _safe_subpath(vault_root: Path, *parts: str) -> Optional[Path]:
-    """Resolve and verify the result stays inside vault_root. Returns None on traversal."""
-    try:
-        resolved_root  = vault_root.resolve()
-        resolved_child = vault_root.joinpath(*parts).resolve()
-        if resolved_child.is_relative_to(resolved_root):
-            return resolved_child
-    except Exception:
-        pass
-    logger.warning("Path traversal rejected: %s / %s", vault_root, parts)
-    return None
+# Shared with the other vault-writing modules; see app/vault_paths.py.
+_safe_subpath = safe_subpath
 
 
 def _last_modified_iso(path: Path) -> Optional[str]:
