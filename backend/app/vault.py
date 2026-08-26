@@ -47,7 +47,11 @@ _OPS_ALLOWED: frozenset = frozenset({"resume-pipeline", "backfill", "tasks"})
 _TASK_CANDIDATES = ("ops/task-db.md", "ops/tasks.md")
 
 # Allowed statuses for the status-update and create endpoints.
-ALLOWED_TASK_STATUSES: frozenset = frozenset({"todo", "in progress", "blocked", "done"})
+# "archived" closes PRD §25's "Archive completed tasks": a done task can be moved
+# out of the working view without deleting the row.
+ALLOWED_TASK_STATUSES: frozenset = frozenset({
+    "todo", "in progress", "blocked", "done", "archived",
+})
 
 # Allowed priorities for task creation.
 ALLOWED_TASK_PRIORITIES: frozenset = frozenset({"low", "medium", "high"})
@@ -579,6 +583,70 @@ def _backup_entity_note(note_path: Path) -> Path:
     return bak
 
 
+# ── schema documents (PRD §19) ───────────────────────────────────────────────
+
+_SCHEMA_SOURCE_DIR = Path(__file__).parent.parent / "schema"
+
+# Canonical copies live in the repo so they stay version-controlled next to the
+# code that applies them. Installing copies into the vault, never the reverse.
+_INSTALLABLE_SCHEMA_DOCS = {
+    "classification-rules": "classification-rules.md",
+}
+
+
+def schema_doc_status(vault_path: str, name: str) -> dict:
+    """Whether a schema document is installed in the vault. Read-only."""
+    if name not in _INSTALLABLE_SCHEMA_DOCS:
+        raise ValueError(f"Unknown schema document {name!r}.")
+    filename = _INSTALLABLE_SCHEMA_DOCS[name]
+    target = _safe_subpath(Path(vault_path), "schema", filename)
+    source = _SCHEMA_SOURCE_DIR / filename
+    return {
+        "name": name,
+        "path": f"schema/{filename}",
+        "installed": bool(target and target.is_file()),
+        "sourceAvailable": source.is_file(),
+        "lastModified": _last_modified_iso(target) if target and target.is_file() else None,
+    }
+
+
+@serialized_vault_write
+def install_schema_doc(vault_path: str, name: str, overwrite: bool = False) -> dict:
+    """Copy a schema document into the vault.
+
+    Refuses to overwrite by default: the user may have edited their copy, and
+    silently replacing it would discard their notes. Overwriting is an explicit
+    choice, and it backs the existing file up first.
+    """
+    if name not in _INSTALLABLE_SCHEMA_DOCS:
+        raise ValueError(f"Unknown schema document {name!r}.")
+    filename = _INSTALLABLE_SCHEMA_DOCS[name]
+    source = _SCHEMA_SOURCE_DIR / filename
+    if not source.is_file():
+        raise ValueError(f"Schema source is missing from the app: {filename}")
+
+    root = Path(vault_path)
+    if not root.is_dir():
+        raise ValueError(f"Vault path is not a directory: {vault_path}")
+
+    schema_dir = _safe_subpath(root, "schema")
+    target = _safe_subpath(root, "schema", filename)
+    if schema_dir is None or target is None:
+        raise ValueError("Rejected path outside the vault.")
+
+    if target.is_file() and not overwrite:
+        return {"ok": True, "installed": False, "path": f"schema/{filename}",
+                "reason": "Already present; not overwritten."}
+
+    schema_dir.mkdir(parents=True, exist_ok=True)
+    if target.is_file():
+        _backup_entity_note(target)
+
+    write_text_atomic(target, source.read_text(encoding="utf-8"))
+    logger.info("Schema document installed: schema/%s", filename)
+    return {"ok": True, "installed": True, "path": f"schema/{filename}"}
+
+
 @serialized_vault_write
 def update_entity_metadata(
     vault_path: str,
@@ -902,8 +970,13 @@ _BACKFILL_PRIMARY    = "ops/backfill.md"
 _BACKFILL_BACKUP_DIR = Path(__file__).parent.parent / "data" / "backups" / "backfill"
 _PARSE_CHARS_BF      = 50_000
 
+# PRD §27 names: Not started / Needs inspection / Queued / In progress /
+# Archived / Skipped / Escalated. These are the lowercase working equivalents.
+# "escalated" was missing despite a live escalation queue, so an item handed to
+# Claude Code or OpenCode had no state to sit in.
 ALLOWED_BACKFILL_STATUSES: frozenset = frozenset({
-    "new", "triaged", "in-progress", "done", "skipped"
+    "new", "triaged", "queued", "in-progress", "done", "archived",
+    "skipped", "escalated",
 })
 ALLOWED_BACKFILL_TYPES: frozenset = frozenset({
     "project", "repo", "hackathon", "course", "business", "other"

@@ -14,6 +14,8 @@ class HealthResponse(BaseModel):
 class ConfigResponse(BaseModel):
     vaultPath: str
     brainCmd: str
+    # PRD §8.4/§43 reference path. Displayed only; no code path reads inside it.
+    oldRepoPath: str = ""
     backendReady: bool
     brainCmdExists: bool
     vaultPathExists: bool
@@ -662,6 +664,32 @@ class EscalationResponse(BaseModel):
     preview:      Optional[str] = None
     parseMode:    str            # "markdown-table" | "preview-only" | "missing"
     items:        List[EscalationItem]
+
+
+class HandoffPackageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    itemId:         Optional[str] = None
+    task:           Optional[str] = None
+    target:         Optional[str] = None
+    taskType:       Optional[str] = None
+    repoPath:       Optional[str] = None
+    contextFiles:   List[str] = []
+    vaultContext:   List[str] = []
+    expectedOutput: Optional[str] = None
+
+
+class HandoffPackageResponse(BaseModel):
+    """PRD §29's handoff package. Text only — nothing is launched."""
+    taskType:            str
+    recommendedAgent:    Optional[str] = None
+    repoPath:            Optional[str] = None
+    contextFiles:        List[str] = []
+    vaultContext:        List[str] = []
+    reasonForEscalation: str
+    expectedOutput:      str
+    approvalRequired:    bool = True
+    prompt:              str
 
 
 class CreateEscalationItemRequest(BaseModel):

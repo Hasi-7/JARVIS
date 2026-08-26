@@ -418,6 +418,8 @@ from app.models import (
     SaveEmailIntakeDraftResponse,
     EscalationItem,
     EscalationResponse,
+    HandoffPackageRequest,
+    HandoffPackageResponse,
     UpdateEscalationItemRequest,
     UpdateEscalationItemResponse,
     UpdateEscalationStatusRequest,
@@ -457,6 +459,7 @@ def _config_response(cfg=None) -> ConfigResponse:
     return ConfigResponse(
         vaultPath=cfg.vault_path,
         brainCmd=cfg.brain_cmd,
+        oldRepoPath=cfg.old_repo_path,
         backendReady=True,
         brainCmdExists=Path(cfg.brain_cmd).exists(),
         vaultPathExists=Path(cfg.vault_path).exists(),
@@ -2350,6 +2353,59 @@ def vault_escalations_create_file() -> EscalationResponse:
         preview=data["preview"],
         parseMode=data["parseMode"],
         items=[EscalationItem(**it) for it in data["items"]],
+    )
+
+
+@app.post("/api/escalations/handoff", response_model=HandoffPackageResponse)
+def escalation_handoff(req: HandoffPackageRequest) -> HandoffPackageResponse:
+    """Generate a §29 handoff package. Generates TEXT; launches nothing."""
+    from app.handoff import build_handoff_package
+
+    task = (req.task or "").strip()
+    target = req.target
+    reason = None
+    notes = None
+    source = None
+    priority = None
+    repo_path = req.repoPath
+    vault_context = list(req.vaultContext)
+
+    if req.itemId:
+        cfg = get_config()
+        try:
+            existing = get_escalations(cfg.vault_path)
+        except Exception:
+            existing = {"items": []}
+        match = next((i for i in existing.get("items", []) if i.get("id") == req.itemId), None)
+        if match is None:
+            raise HTTPException(status_code=404, detail=f"Escalation '{req.itemId}' not found.")
+        task = task or match.get("task") or ""
+        target = target or match.get("target")
+        notes = match.get("notes")
+        source = match.get("source")
+        priority = match.get("priority")
+        repo_path = repo_path or match.get("path")
+
+    try:
+        package = build_handoff_package(
+            task=task, target=target, reason=reason, repo_path=repo_path,
+            notes=notes, source=source, priority=priority,
+            context_files=req.contextFiles, vault_context=vault_context,
+            task_type=req.taskType, expected_output=req.expectedOutput,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return HandoffPackageResponse(
+        taskType=package["task_type"],
+        recommendedAgent=package["recommended_agent"],
+        repoPath=package["repo_path"],
+        contextFiles=package["context_files"],
+        vaultContext=package["vault_context"],
+        reasonForEscalation=package["reason_for_escalation"],
+        expectedOutput=package["expected_output"],
+        approvalRequired=package["approval_required"],
+        prompt=package["prompt"],
     )
 
 

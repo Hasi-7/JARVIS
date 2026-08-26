@@ -775,12 +775,27 @@ export function EscalationPage() {
   };
 
   // ── copy prompt ───────────────────────────────────────────────────────────
+  // The package is built by the backend (PRD §29) so its fields are testable and
+  // can pull real context. The local template stays as an offline fallback —
+  // losing the ability to hand work off because the backend is down would be a
+  // worse failure than a slightly thinner prompt.
   const handleCopyPrompt = async (item: EscalationItem) => {
-    const prompt = generateHandoffPrompt(item);
+    let prompt: string;
+    try {
+      const pkg = await api.buildHandoffPackage({
+        itemId: item.id,
+        task: item.task,
+        target: item.target ?? undefined,
+        repoPath: item.path ?? undefined,
+      });
+      prompt = pkg.prompt;
+    } catch {
+      prompt = generateHandoffPrompt(item);
+    }
     try {
       await navigator.clipboard.writeText(prompt);
       setCopiedId(item.id);
-      showToast('Handoff prompt copied to clipboard.');
+      showToast('Handoff prompt copied. Run it yourself — this app never launches it.');
       setTimeout(() => setCopiedId(null), 2500);
     } catch {
       showToast('Could not copy — check browser permissions.');

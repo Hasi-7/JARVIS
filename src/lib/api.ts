@@ -353,6 +353,29 @@ export interface VaultEntityMetadata {
   version:   string | null;
 }
 
+export interface HandoffPackageRequest {
+  itemId?: string;
+  task?: string;
+  target?: string;
+  taskType?: string;
+  repoPath?: string;
+  contextFiles?: string[];
+  vaultContext?: string[];
+  expectedOutput?: string;
+}
+
+export interface HandoffPackageResponse {
+  taskType: string;
+  recommendedAgent: string | null;
+  repoPath: string | null;
+  contextFiles: string[];
+  vaultContext: string[];
+  reasonForEscalation: string;
+  expectedOutput: string;
+  approvalRequired: boolean;
+  prompt: string;
+}
+
 export interface BusinessPipelineItem {
   id: string; name: string; status: string; description: string; created: string;
 }
@@ -441,10 +464,10 @@ export interface VaultTasksResponse {
   parseMode: 'markdown-table' | 'checklist' | 'preview-only';
 }
 
-export type TaskStatus   = 'todo' | 'in progress' | 'blocked' | 'done';
+export type TaskStatus   = 'todo' | 'in progress' | 'blocked' | 'done' | 'archived';
 export type TaskPriority = 'low' | 'medium' | 'high';
 
-export const TASK_STATUSES:   TaskStatus[]   = ['todo', 'in progress', 'blocked', 'done'];
+export const TASK_STATUSES:   TaskStatus[]   = ['todo', 'in progress', 'blocked', 'done', 'archived'];
 export const TASK_PRIORITIES: TaskPriority[] = ['low', 'medium', 'high'];
 
 export interface TaskStatusUpdateResponse {
@@ -594,7 +617,7 @@ export interface UpdateResumePipelineItemResponse {
 
 // ── backfill ──────────────────────────────────────────────────────────────────
 
-export type BackfillStatus = 'new' | 'triaged' | 'in-progress' | 'done' | 'skipped';
+export type BackfillStatus = 'new' | 'triaged' | 'queued' | 'in-progress' | 'done' | 'archived' | 'skipped' | 'escalated';
 export type BackfillType   = 'project' | 'repo' | 'hackathon' | 'course' | 'business' | 'other';
 export type BackfillAgent  = 'claude-code' | 'opencode' | 'manual';
 export type BackfillValue  = 'high' | 'medium' | 'low';
@@ -2370,6 +2393,10 @@ export const api = {
     fetchWithBody<BuildVaultIndexResponse>('POST', '/api/vault/search/index', {}),
 
   getBusinessPipeline: () => get<BusinessPipelineResponse>('/api/vault/business-pipeline'),
+
+  // PRD §29 handoff package. Generates TEXT for you to run; launches nothing.
+  buildHandoffPackage: (payload: HandoffPackageRequest) =>
+    fetchWithBody<HandoffPackageResponse>('POST', '/api/escalations/handoff', payload),
 
   // Vault graph (D3d). Read-only; derived from wikilinks.
   vaultGraph: (exportPath?: string) => {

@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 _VAULT_DEFAULT: str = r"D:\Hasnain\Personal\OneDrive - University of Toronto\AI-Command-Center"
 _BRAIN_CMD_DEFAULT: str = r"D:\Hasnain\Personal\bin\brain.cmd"
+# PRD §8.4 / §43. Reference only: the old repo is where the `brain` CLI itself
+# lives, and its path is worth surfacing in Settings. Nothing in this app reads
+# or writes inside it — it is not a second vault, and no code path targets it.
+_OLD_REPO_DEFAULT: str = r"D:\Hasnain\Personal\dev\ai-command-tools"
 
 CONFIG_FILE: Path = Path(__file__).parent.parent / "data" / "brain-ui-config.json"
 
@@ -35,6 +39,7 @@ CONFIG_FILE: Path = Path(__file__).parent.parent / "data" / "brain-ui-config.jso
 class RuntimeConfig:
     vault_path: str
     brain_cmd: str
+    old_repo_path: str = ""
     # "env" | "file" | "defaults" | "runtime"  (runtime = updated via API this session)
     source: str = "defaults"
     persisted: bool = False
@@ -73,6 +78,11 @@ def _load_startup_config() -> RuntimeConfig:
     # Per-field resolution: env > file > default
     vault = env_vault or (file_data.get("vaultPath", "") if file_data else "") or _VAULT_DEFAULT
     brain = env_brain or (file_data.get("brainCmd", "") if file_data else "") or _BRAIN_CMD_DEFAULT
+    old_repo = (
+        os.environ.get("OLD_BRAIN_REPO_PATH", "").strip()
+        or (file_data.get("oldRepoPath", "") if file_data else "")
+        or _OLD_REPO_DEFAULT
+    )
 
     # Source tag describes the dominant origin
     if env_vault or env_brain:
@@ -85,6 +95,7 @@ def _load_startup_config() -> RuntimeConfig:
     return RuntimeConfig(
         vault_path=vault,
         brain_cmd=brain,
+        old_repo_path=old_repo,
         source=source,
         persisted=file_data is not None,
         warning=file_warning,

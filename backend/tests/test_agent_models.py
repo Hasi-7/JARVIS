@@ -182,7 +182,10 @@ def test_classifier_is_everyday_only_and_uses_central_completion(monkeypatch):
         size_bytes=10, heuristic={},
     )
     assert result["domain"] == "unknown"
-    assert seen["messages"][1]["content"].startswith("UNTRUSTED CONTENT RULE:")
+    # PRD §44's rule, from the single shared constant rather than a per-module
+    # paraphrase. It must come FIRST, before any untrusted material.
+    from app.untrusted import UNTRUSTED_CONTENT_RULE
+    assert seen["messages"][1]["content"].startswith(UNTRUSTED_CONTENT_RULE)
     assert seen["kwargs"]["tier"] == "everyday"
     assert seen["kwargs"]["structured"] is True
 

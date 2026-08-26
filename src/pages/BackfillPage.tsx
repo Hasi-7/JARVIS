@@ -18,7 +18,11 @@ import { EmptyState } from '@/components/ui/EmptyState';
 
 // ── constants ────────────────────────────────────────────────────────────────
 
-const STATUSES: BackfillStatus[] = ['new', 'triaged', 'in-progress', 'done', 'skipped'];
+// PRD §27's full set. 'escalated' was missing despite a live escalation queue,
+// so an item handed to Claude Code or OpenCode had no state to sit in.
+const STATUSES: BackfillStatus[] = [
+  'new', 'triaged', 'queued', 'in-progress', 'escalated', 'done', 'archived', 'skipped',
+];
 const TYPES: BackfillType[]       = ['project', 'repo', 'hackathon', 'course', 'business', 'other'];
 const VALUES: BackfillValue[]     = ['high', 'medium', 'low'];
 const AGENTS: BackfillAgent[]     = ['claude-code', 'opencode', 'manual'];

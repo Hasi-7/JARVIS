@@ -249,3 +249,46 @@ def test_commands_taking_a_name_declare_an_arg_schema():
     # Commands that take no arguments must not silently accept them.
     for command in ("status", "today", "backup", "lint"):
         assert not supports_args(command), command
+
+
+# ── schema documents (PRD §19) ────────────────────────────────────────────────
+
+def test_classification_rules_document_ships_with_the_app():
+    """§19 requires this artifact. It was flagged missing in the June 2026
+    alignment report and stayed missing."""
+    from app.vault import _SCHEMA_SOURCE_DIR
+    doc = _SCHEMA_SOURCE_DIR / "classification-rules.md"
+    assert doc.is_file()
+    text = doc.read_text(encoding="utf-8")
+    # §19's required content headings.
+    for required in ("Domains", "Source types", "Confidence", "Routing defaults",
+                     "Review behaviour", "Safety rules"):
+        assert required in text, f"§19 requires a section on {required}"
+    assert "untrusted" in text.lower()
+
+
+def test_installing_a_schema_doc_does_not_clobber_an_edited_copy(tmp_path):
+    """The user may have annotated their copy; replacing it silently would
+    discard their notes."""
+    from app.vault import install_schema_doc, schema_doc_status
+    (tmp_path / "schema").mkdir()
+    target = tmp_path / "schema" / "classification-rules.md"
+    target.write_text("# My own edits\n", encoding="utf-8")
+
+    result = install_schema_doc(str(tmp_path), "classification-rules")
+    assert result["installed"] is False
+    assert target.read_text(encoding="utf-8") == "# My own edits\n"
+    assert schema_doc_status(str(tmp_path), "classification-rules")["installed"] is True
+
+
+def test_installing_into_a_fresh_vault_writes_the_document(tmp_path):
+    from app.vault import install_schema_doc
+    result = install_schema_doc(str(tmp_path), "classification-rules")
+    assert result["installed"] is True
+    assert (tmp_path / "schema" / "classification-rules.md").is_file()
+
+
+def test_unknown_schema_documents_are_refused(tmp_path):
+    from app.vault import install_schema_doc
+    with pytest.raises(ValueError, match="Unknown schema document"):
+        install_schema_doc(str(tmp_path), "../../etc/passwd")
