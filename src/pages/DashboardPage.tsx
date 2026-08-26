@@ -8,6 +8,7 @@ import { AgentSphere } from '@/components/ui/AgentSphere';
 import { ModeBadge } from '@/components/ui/ModeBadge';
 import { PanelHeader } from '@/components/ui/PanelHeader';
 import { StatusDot } from '@/components/ui/StatusDot';
+import { VaultGraph } from '@/components/graph/VaultGraph';
 import { Icon } from '@/components/ui/Icon';
 import { StatusCard } from '@/components/dashboard/StatusCard';
 import { SystemRow } from '@/components/dashboard/SystemRow';
@@ -978,6 +979,8 @@ export function DashboardPage() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s5)', maxWidth: 1320, margin: '0 auto' }}>
+
+      <VaultGraph />
 
       {/* ── header ── */}
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 'var(--s4)', flexWrap: 'wrap' }}>

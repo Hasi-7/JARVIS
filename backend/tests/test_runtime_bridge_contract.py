@@ -92,7 +92,12 @@ def test_browser_action_bridge_not_implemented():
     assert r["riskLevel"] == "medium"
     assert "Runtime bridge is not implemented." in r["blockers"]
     assert "Browser harness is disabled." in r["blockers"]
-    assert r["checks"]["permissionGatewayDecision"] == "disabled"
+    # C1b made page reads reachable through the APPROVAL QUEUE, not through this
+    # bridge — so the gateway now classifies them requires_approval, while the
+    # bridge itself remains unimplemented and the request stays blocked.
+    assert r["checks"]["permissionGatewayDecision"] in ("disabled", "requires_approval")
+    assert r["allowed"] is False
+    assert r["executionEnabled"] is False
 
 
 def test_computer_action_high_risk_blocked():

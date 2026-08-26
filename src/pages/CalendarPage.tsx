@@ -10,6 +10,136 @@ import type {
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
+import type {
+  GoogleCalendarStatusResponse,
+  CalendarReconcileResponse,
+  CalendarReconcileItem,
+} from '@/lib/api';
+
+// ── Google Calendar reconciliation (READ-ONLY) ───────────────────────────────────
+// Compares APPROVED vault candidates against real Google Calendar events. Reports
+// only — creates, moves and deletes no event, and writes no vault file.
+
+function ReconcileGroup({ label, items, tone }: {
+  label: string; items: CalendarReconcileItem[]; tone: 'green' | 'amber' | 'red' | 'live';
+}) {
+  if (items.length === 0) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+        <StatusDot tone={tone} />
+        <span style={{ fontSize: 11.5, fontWeight: 600 }}>{label}</span>
+        <span className="mono" style={{ fontSize: 10.5, color: 'var(--txt-3)' }}>{items.length}</span>
+      </div>
+      {items.map((it, i) => (
+        <div key={`${it.candidateId ?? i}`} style={{
+          padding: 'var(--s2) var(--s3)', background: 'var(--surface-2)',
+          border: '1px solid var(--line)', borderRadius: 'var(--r2)', fontSize: 11.5,
+        }}>
+          <div style={{ fontWeight: 600 }}>{it.title || '(untitled)'}</div>
+          <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-2)', marginTop: 2 }}>
+            {it.date ?? '—'}{it.time ? ` ${it.time}` : ''}{it.duration ? ` · ${it.duration}` : ''}
+          </div>
+          {it.eventTitle && (
+            <div style={{ fontSize: 11, color: 'var(--txt-1)', marginTop: 3 }}>
+              Calendar event: <strong>{it.eventTitle}</strong>
+              {it.htmlLink && (
+                <> · <a href={it.htmlLink} target="_blank" rel="noreferrer"
+                        style={{ color: 'var(--live)' }}>open</a></>
+              )}
+            </div>
+          )}
+          {it.note && (
+            <div style={{ fontSize: 10.5, color: 'var(--txt-2)', marginTop: 3 }}>{it.note}</div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GoogleCalendarReconcilePanel() {
+  const [status, setStatus] = useState<GoogleCalendarStatusResponse | null>(null);
+  const [result, setResult] = useState<CalendarReconcileResponse | null>(null);
+  const [busy, setBusy]     = useState(false);
+  const [error, setError]   = useState<string | null>(null);
+
+  useEffect(() => {
+    api.googleCalendarStatus().then(setStatus).catch(() => setStatus(null));
+  }, []);
+
+  const run = async () => {
+    setBusy(true); setError(null);
+    try {
+      setResult(await api.googleCalendarReconcile());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reconciliation failed.');
+      setResult(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ready = status?.readsEnabled === true;
+
+  return (
+    <div className="panel" style={{ padding: 'var(--s4) var(--s5)', display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <StatusDot tone={ready ? 'green' : 'amber'} />
+        <span style={{ fontSize: 13, fontWeight: 600 }}>Google Calendar reconciliation</span>
+        <span className="mono" style={{ fontSize: 10.5, color: 'var(--txt-2)' }}>
+          {ready ? 'read-only · authorized' : 'read-only · not authorized'}
+        </span>
+        <div style={{ flex: 1 }} />
+        {ready && (
+          <button className="btn btn-sm btn-primary" onClick={run} disabled={busy}>
+            <Icon name="sync" size={13} style={{ animation: busy ? 'spin 1s linear infinite' : undefined }} />
+            Reconcile
+          </button>
+        )}
+      </div>
+
+      <div style={{ fontSize: 11.5, color: 'var(--txt-1)', lineHeight: 1.5, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+        <Icon name="shield" size={13} style={{ color: ready ? 'var(--green)' : 'var(--amber)', marginTop: 2, flexShrink: 0 }} />
+        <span>
+          {status?.message ?? 'Checking Google Calendar authorization…'}{' '}
+          Comparison is <strong>read-only on both sides</strong> — no calendar event is created,
+          moved or deleted, and no vault file is written. Only <strong>approved</strong> candidates
+          are reconciled.
+        </span>
+      </div>
+
+      {error && (
+        <div style={{ fontSize: 11.5, color: 'var(--red)', padding: 'var(--s2) var(--s3)', background: 'var(--red-bg)', border: '1px solid var(--red-line)', borderRadius: 'var(--r2)' }}>
+          {error}
+        </div>
+      )}
+
+      {result && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
+          <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-2)' }}>
+            {result.counts.events} calendar event{result.counts.events === 1 ? '' : 's'} ·{' '}
+            {result.counts.matched} matched · {result.counts.conflicting} conflicting ·{' '}
+            {result.counts.missing} missing · {result.counts.unparseable} unparseable
+          </div>
+          {result.counts.matched + result.counts.conflicting +
+           result.counts.missing + result.counts.unparseable === 0 ? (
+            <div style={{ fontSize: 11.5, color: 'var(--txt-2)' }}>
+              No approved candidates to reconcile.
+            </div>
+          ) : (
+            <>
+              <ReconcileGroup label="Conflicts with an existing event" items={result.conflicting} tone="red" />
+              <ReconcileGroup label="Approved but not on the calendar" items={result.missing} tone="amber" />
+              <ReconcileGroup label="Already on the calendar" items={result.matched} tone="green" />
+              <ReconcileGroup label="Could not be parsed" items={result.unparseable} tone="live" />
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -917,6 +1047,8 @@ export function CalendarPage() {
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
+
+      <GoogleCalendarReconcilePanel />
 
       {/* ── header ── */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 'var(--s3)' }}>

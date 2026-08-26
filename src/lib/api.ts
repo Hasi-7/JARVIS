@@ -1600,6 +1600,324 @@ export type ConsolidationAssistPreview = DraftAssistPreview<ConsolidationAssistS
 export type ResearchAssistPreview      = DraftAssistPreview<ResearchAssistSuggestions>;
 export type EmailIntakeAssistPreview   = DraftAssistPreview<EmailIntakeAssistSuggestions>;
 
+// ── Computer-use harness (MVP v7) — PRIVILEGED, FULL DESKTOP ───────────────────
+// Every mutating call needs the operator token. Status and stop deliberately do
+// not, so the visible indicator always renders and Stop always works.
+
+export interface ComputerUseSessionSummary {
+  id:               string | null;
+  task:             string | null;
+  status:           string | null;
+  budgetSeconds:    number | null;
+  remainingSeconds: number;
+  allowedWindows:   string[];
+  actionCount:      number;
+  refusedCount:     number;
+  startedAt:        string | null;
+  endedAt:          string | null;
+}
+
+export interface ComputerUseStatusResponse {
+  enabled: boolean;
+  active:  ComputerUseSessionSummary | null;
+  message: string;
+}
+
+export interface ComputerUseSessionResponse {
+  session:  ComputerUseSessionSummary;
+  warnings: string[];
+}
+
+export interface ComputerUseObserveResponse {
+  window:           string;
+  width:            number;
+  height:           number;
+  screenshotBase64: string;
+  warnings:         string[];
+}
+
+export interface ComputerUseActionResponse {
+  ok:       boolean;
+  window:   string;
+  x:        number | null;
+  y:        number | null;
+  chars:    number | null;
+  warnings: string[];
+}
+
+// ── Vault graph / Graphify viewer (D3d) — READ-ONLY ────────────────────────────
+
+export interface GraphNode {
+  id:        string;
+  label:     string;
+  path:      string | null;
+  folder:    string;
+  exists:    boolean;
+  outDegree: number;
+  inDegree:  number;
+  fileCount: number;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+}
+
+export interface GraphStats {
+  files:     number;
+  nodes:     number;
+  edges:     number;
+  dangling:  number;
+  orphans:   number;
+  collapsed: number;
+  truncated: boolean;
+}
+
+export interface VaultGraphResponse {
+  nodes:    GraphNode[];
+  edges:    GraphEdge[];
+  stats:    GraphStats;
+  source:   string;
+  warnings: string[];
+}
+
+// ── Time-boxed browser research (C1) — GUARDRAILED ─────────────────────────────
+// Page fetches are gated: the Permission Gateway classifies them, and the driver
+// refuses unless the OpenShell sandbox guardrail is healthy. Browsing fails CLOSED.
+
+export interface ResearchCapture {
+  url:        string;
+  title:      string;
+  timestamp:  string;
+  snippet:    string;
+  textChars:  number;
+  httpStatus: number | null;
+}
+
+export interface ResearchSessionSummary {
+  id:               string | null;
+  topic:            string | null;
+  status:           string | null;
+  budgetSeconds:    number | null;
+  remainingSeconds: number;
+  captureCount:     number;
+  errorCount:       number;
+  allowedDomains:   string[];
+  startedAt:        string | null;
+  endedAt:          string | null;
+}
+
+export interface ResearchSessionResponse {
+  session:  ResearchSessionSummary;
+  captures: ResearchCapture[];
+  warnings: string[];
+}
+
+export interface ResearchSessionsResponse {
+  sessions: ResearchSessionSummary[];
+}
+
+export interface StartResearchSessionRequest {
+  topic:          string;
+  allowedDomains: string[];
+  budgetSeconds?: number;
+}
+
+export interface ChatCapturePayloadResponse {
+  sourceTool:        string;
+  conversationTitle: string;
+  domain:            string;
+  entity:            string | null;
+  transcript:        string;
+  turnCount:         number;
+  sourceUrl:         string;
+  capturedAt:        string | null;
+  warnings:          string[];
+}
+
+export interface SearchResultItem {
+  url:           string;
+  title:         string;
+  openable:      boolean;
+  blockedReason: string | null;
+}
+
+export interface ResearchSearchResponse {
+  query:         string;
+  results:       SearchResultItem[];
+  count:         number;
+  openableCount: number;
+  warnings:      string[];
+}
+
+export interface ResearchDraftPayloadResponse {
+  title:    string;
+  topic:    string;
+  sources:  { title?: string; url?: string; notes?: string }[];
+  rawNotes: string;
+  warnings: string[];
+}
+
+// ── Local voice transcription (D1) — ON-DEVICE ONLY ────────────────────────────
+// Audio is transcribed by faster-whisper in the backend process. It is never sent
+// to a cloud speech service.
+
+export interface VoiceStatusResponse {
+  available:       boolean;
+  model:           string;
+  device:          string;
+  computeType:     string;
+  localFilesOnly:  boolean;
+  maxUploadBytes:  number;
+  maxAudioSeconds: number;
+  message:         string;
+}
+
+export interface TranscriptSegment {
+  start: number;
+  end:   number;
+  text:  string;
+}
+
+export interface TranscribeResponse {
+  text:         string;
+  language:     string | null;
+  audioSeconds: number;
+  durationMs:   number;
+  segments:     TranscriptSegment[];
+  warnings:     string[];
+}
+
+// ── Google Calendar read + reconciliation (B2) — READ-ONLY ─────────────────────
+// No create/update/delete event type exists here. Event creation is Phase D2 and
+// requires an additional scope plus explicit re-consent.
+
+export interface GoogleCalendarEvent {
+  eventId:  string;
+  title:    string;
+  start:    string | null;
+  end:      string | null;
+  allDay:   boolean;
+  status:   string;
+  htmlLink: string | null;
+}
+
+export interface GoogleCalendarEventsResponse {
+  events:   GoogleCalendarEvent[];
+  count:    number;
+  timeMin:  string | null;
+  timeMax:  string | null;
+  decision: string;
+  logId:    string | null;
+  warnings: string[];
+}
+
+export interface CalendarReconcileCounts {
+  matched:     number;
+  conflicting: number;
+  missing:     number;
+  unparseable: number;
+  events:      number;
+}
+
+export interface CalendarReconcileItem {
+  candidateId: string | null;
+  title:       string;
+  date:        string | null;
+  time:        string | null;
+  duration:    string | null;
+  eventId:     string | null;
+  eventTitle:  string | null;
+  eventStart:  string | null;
+  htmlLink:    string | null;
+  note:        string | null;
+}
+
+export interface CalendarReconcileResponse {
+  counts:      CalendarReconcileCounts;
+  matched:     CalendarReconcileItem[];
+  conflicting: CalendarReconcileItem[];
+  missing:     CalendarReconcileItem[];
+  unparseable: CalendarReconcileItem[];
+  notes:       string[];
+  decision:    string;
+  logId:       string | null;
+}
+
+export interface GoogleCalendarStatusResponse {
+  configured:    boolean;
+  tokenPresent:  boolean;
+  scopes:        string[];
+  readsEnabled:  boolean;
+  writesEnabled: boolean;
+  message:       string;
+}
+
+// ── Gmail read intake (B1) — READ-ONLY ─────────────────────────────────────────
+// There is deliberately no send/delete/trash/archive/label type here: the backend
+// exposes no such endpoint, and Gmail mutations are permanently disabled.
+
+export interface GmailStatusResponse {
+  configured:       boolean;
+  clientConfigured: boolean;
+  tokenPresent:     boolean;
+  scopes:           string[];
+  readsEnabled:     boolean;
+  message:          string;
+}
+
+export interface GmailSearchRequest {
+  query:       string;
+  maxResults?: number;
+}
+
+export interface GmailThreadSummary {
+  threadId:  string;
+  messageId: string | null;
+  subject:   string;
+  sender:    string | null;
+  to:        string | null;
+  date:      string | null;
+  snippet:   string;
+}
+
+export interface GmailSearchResponse {
+  query:    string;
+  count:    number;
+  threads:  GmailThreadSummary[];
+  decision: string;
+  logId:    string | null;
+  warnings: string[];
+}
+
+export interface GmailMessageResponse {
+  messageId:     string;
+  threadId:      string | null;
+  subject:       string;
+  sender:        string | null;
+  to:            string | null;
+  date:          string | null;
+  snippet:       string;
+  body:          string;
+  bodyTruncated: boolean;
+  labelIds:      string[];
+  decision:      string;
+  logId:         string | null;
+  warnings:      string[];
+}
+
+export interface GmailImportRequest {
+  messageId: string;
+  domain?:   EmailIntakeDomain;
+  entity?:   string;
+}
+
+export interface GmailImportResponse {
+  ok:    boolean;
+  draft: EmailIntakeDraft;
+  logId: string | null;
+}
+
 export interface SaveEmailIntakeDraftResponse {
   ok:           boolean;
   draft:        EmailIntakeDraft;
@@ -1796,6 +2114,103 @@ export const api = {
     fetchWithBody<SaveEmailIntakeDraftResponse>('POST', `/api/email-intake/drafts/${id}/save`, {}),
   assistEmailIntakeDraft: (id: string, modelTier: DraftAssistModelTier) =>
     fetchWithBody<EmailIntakeAssistPreview>('POST', `/api/email-intake/drafts/${id}/assist`, { modelTier }),
+
+  // Gmail (READ-ONLY). No mutation endpoint exists on the backend.
+  gmailStatus:  ()                    => get<GmailStatusResponse>('/api/gmail/status'),
+  gmailSearch:  (payload: GmailSearchRequest) =>
+    fetchWithBody<GmailSearchResponse>('POST', '/api/gmail/search', payload),
+  gmailMessage: (messageId: string)   =>
+    get<GmailMessageResponse>(`/api/gmail/messages/${encodeURIComponent(messageId)}`),
+  gmailImport:  (payload: GmailImportRequest) =>
+    fetchWithBody<GmailImportResponse>('POST', '/api/gmail/import', payload),
+
+  // Google Calendar (READ-ONLY). No event create/update/delete function exists.
+  googleCalendarStatus: () => get<GoogleCalendarStatusResponse>('/api/calendar/google/status'),
+  googleCalendarEvents: (timeMin?: string, timeMax?: string) => {
+    const q = new URLSearchParams();
+    if (timeMin) q.set('timeMin', timeMin);
+    if (timeMax) q.set('timeMax', timeMax);
+    const suffix = q.toString() ? `?${q.toString()}` : '';
+    return get<GoogleCalendarEventsResponse>(`/api/calendar/google/events${suffix}`);
+  },
+  googleCalendarReconcile: (timeMin?: string, timeMax?: string) => {
+    const q = new URLSearchParams();
+    if (timeMin) q.set('timeMin', timeMin);
+    if (timeMax) q.set('timeMax', timeMax);
+    const suffix = q.toString() ? `?${q.toString()}` : '';
+    return get<CalendarReconcileResponse>(`/api/calendar/google/reconcile${suffix}`);
+  },
+
+  // Time-boxed browser research (C1). Guardrailed; fetches fail closed.
+  startResearchSession: (payload: StartResearchSessionRequest) =>
+    fetchWithBody<ResearchSessionResponse>('POST', '/api/research/sessions', payload),
+  listResearchSessions: () => get<ResearchSessionsResponse>('/api/research/sessions'),
+  getResearchSession: (id: string) =>
+    get<ResearchSessionResponse>(`/api/research/sessions/${encodeURIComponent(id)}`),
+  openResearchPage: (id: string, url: string) =>
+    fetchWithBody<ResearchSessionResponse>(
+      'POST', `/api/research/sessions/${encodeURIComponent(id)}/open`, { url }),
+  stopResearchSession: (id: string) =>
+    fetchWithBody<ResearchSessionResponse>(
+      'POST', `/api/research/sessions/${encodeURIComponent(id)}/stop`, {}),
+  searchInResearchSession: (id: string, query: string, limit?: number) =>
+    fetchWithBody<ResearchSearchResponse>(
+      'POST', `/api/research/sessions/${encodeURIComponent(id)}/search`, { query, limit }),
+  researchDraftPayload: (id: string) =>
+    get<ResearchDraftPayloadResponse>(
+      `/api/research/sessions/${encodeURIComponent(id)}/draft-payload`),
+
+  chatCapturePayload: (id: string, captureIndex?: number) => {
+    const q = captureIndex === undefined ? '' : `?captureIndex=${captureIndex}`;
+    return get<ChatCapturePayloadResponse>(
+      `/api/research/sessions/${encodeURIComponent(id)}/chat-payload${q}`);
+  },
+
+  // Computer-use (MVP v7). Mutating calls require the operator token.
+  computerUseStatus: () => get<ComputerUseStatusResponse>('/api/computer-use/status'),
+  stopComputerUseSession: (id: string) =>
+    fetchWithBody<ComputerUseSessionResponse>(
+      'POST', `/api/computer-use/sessions/${encodeURIComponent(id)}/stop`, {}),
+  startComputerUseSession: (
+    payload: { task: string; allowedWindows: string[]; budgetSeconds?: number },
+    token: string,
+  ) =>
+    fetchWithBody<ComputerUseSessionResponse>(
+      'POST', '/api/computer-use/sessions', payload, { 'X-Brain-Approval-Token': token }),
+  observeComputerUse: (id: string, token: string) =>
+    fetchWithBody<ComputerUseObserveResponse>(
+      'POST', `/api/computer-use/sessions/${encodeURIComponent(id)}/observe`, {},
+      { 'X-Brain-Approval-Token': token }),
+  clickComputerUse: (
+    id: string, x: number, y: number, token: string, confirmRisk?: string,
+  ) =>
+    fetchWithBody<ComputerUseActionResponse>(
+      'POST', `/api/computer-use/sessions/${encodeURIComponent(id)}/click`,
+      { x, y, confirmRisk }, { 'X-Brain-Approval-Token': token }),
+  typeComputerUse: (id: string, text: string, token: string, confirmRisk?: string) =>
+    fetchWithBody<ComputerUseActionResponse>(
+      'POST', `/api/computer-use/sessions/${encodeURIComponent(id)}/type`,
+      { text, confirmRisk }, { 'X-Brain-Approval-Token': token }),
+
+  // Vault graph (D3d). Read-only; derived from wikilinks.
+  vaultGraph: (exportPath?: string) => {
+    const q = exportPath ? `?exportPath=${encodeURIComponent(exportPath)}` : '';
+    return get<VaultGraphResponse>(`/api/vault/graph${q}`);
+  },
+
+  // Local voice (D1). Audio never leaves this machine.
+  voiceStatus: () => get<VoiceStatusResponse>('/api/agent/voice/status'),
+  transcribeAudio: async (blob: Blob, filename = 'clip.webm'): Promise<TranscribeResponse> => {
+    const form = new FormData();
+    form.append('file', blob, filename);
+    const res = await fetch(`${BASE}/api/agent/transcribe`, { method: 'POST', body: form });
+    if (!res.ok) {
+      let detail = `Transcription failed (${res.status})`;
+      try { const j = await res.json(); if (j?.detail) detail = j.detail; } catch { /* ignore */ }
+      throw new Error(detail);
+    }
+    return res.json();
+  },
 
   // health / config
   health:       ()                    => get<BackendHealth>('/api/health'),

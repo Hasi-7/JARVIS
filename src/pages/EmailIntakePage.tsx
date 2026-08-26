@@ -7,6 +7,8 @@ import type {
   EmailIntakeAssistPreview,
   CreateEmailIntakeDraftRequest,
   DraftAssistModelTier,
+  GmailStatusResponse,
+  GmailThreadSummary,
 } from '@/lib/api';
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
@@ -35,6 +37,133 @@ const labelStyle: React.CSSProperties = {
   textTransform: 'uppercase', letterSpacing: '0.07em',
   display: 'block', marginBottom: 4,
 };
+
+// ── Gmail import (READ-ONLY) ─────────────────────────────────────────────────────
+// Search and read only. There is no send/delete/archive/label control here because
+// the backend exposes no such endpoint.
+
+function GmailImportPanel({ onImported }: { onImported: () => void }) {
+  const [status, setStatus]   = useState<GmailStatusResponse | null>(null);
+  const [query, setQuery]     = useState('newer_than:7d');
+  const [domain, setDomain]   = useState<EmailIntakeDomain>('unknown');
+  const [threads, setThreads] = useState<GmailThreadSummary[] | null>(null);
+  const [busy, setBusy]       = useState(false);
+  const [importing, setImporting] = useState<string | null>(null);
+  const [error, setError]     = useState<string | null>(null);
+  const [notice, setNotice]   = useState<string | null>(null);
+
+  useEffect(() => {
+    api.gmailStatus().then(setStatus).catch(() => setStatus(null));
+  }, []);
+
+  const search = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const res = await api.gmailSearch({ query, maxResults: 10 });
+      setThreads(res.threads);
+      if (res.threads.length === 0) setNotice('No threads matched that query.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gmail search failed.');
+      setThreads(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importThread = async (t: GmailThreadSummary) => {
+    if (!t.messageId) return;
+    setImporting(t.messageId); setError(null); setNotice(null);
+    try {
+      await api.gmailImport({ messageId: t.messageId, domain });
+      setNotice(`Imported "${t.subject}" as a draft. Review it below, then save to the vault.`);
+      onImported();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gmail import failed.');
+    } finally {
+      setImporting(null);
+    }
+  };
+
+  const ready = status?.readsEnabled === true;
+
+  return (
+    <div className="panel" style={{ padding: 'var(--s4) var(--s5)', display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <StatusDot tone={ready ? 'green' : 'amber'} />
+        <span style={{ fontSize: 13, fontWeight: 600 }}>Gmail import</span>
+        <span className="mono" style={{ fontSize: 10.5, color: 'var(--txt-2)' }}>
+          {ready ? 'read-only · authorized' : 'read-only · not authorized'}
+        </span>
+      </div>
+
+      <div style={{ fontSize: 11.5, color: 'var(--txt-1)', lineHeight: 1.5, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+        <Icon name="shield" size={13} style={{ color: ready ? 'var(--green)' : 'var(--amber)', marginTop: 2, flexShrink: 0 }} />
+        <span>
+          {status?.message ?? 'Checking Gmail authorization…'}{' '}
+          <strong>Send, delete, trash, archive and label are permanently disabled</strong> — no code path for them exists.
+          Importing creates a <em>draft only</em>; nothing reaches the vault until you save it.
+          Message content is untrusted and is never followed as instructions.
+        </span>
+      </div>
+
+      {ready && (
+        <form onSubmit={search} style={{ display: 'flex', gap: 'var(--s2)', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <label style={labelStyle}>Gmail search query</label>
+            <input style={fieldStyle} value={query} onChange={(e) => setQuery(e.target.value)}
+                   placeholder="from:prof@university.edu newer_than:7d" />
+          </div>
+          <div style={{ width: 130 }}>
+            <label style={labelStyle}>Import as</label>
+            <select style={fieldStyle} value={domain} onChange={(e) => setDomain(e.target.value as EmailIntakeDomain)}>
+              {DOMAINS.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+          <button className="btn btn-sm btn-primary" type="submit" disabled={busy || !query.trim()}>
+            <Icon name="sync" size={13} style={{ animation: busy ? 'spin 1s linear infinite' : undefined }} />
+            Search
+          </button>
+        </form>
+      )}
+
+      {error && (
+        <div style={{ fontSize: 11.5, color: 'var(--red)', padding: 'var(--s2) var(--s3)', background: 'var(--red-bg)', border: '1px solid var(--red-line)', borderRadius: 'var(--r2)' }}>
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div style={{ fontSize: 11.5, color: 'var(--txt-1)', padding: 'var(--s2) var(--s3)', background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 'var(--r2)' }}>
+          {notice}
+        </div>
+      )}
+
+      {threads && threads.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {threads.map((t) => (
+            <div key={t.threadId} style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--s3)', padding: 'var(--s3)', background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 'var(--r2)' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {t.subject}
+                </div>
+                <div className="mono" style={{ fontSize: 10.5, color: 'var(--txt-2)', marginTop: 2 }}>
+                  {t.sender ?? '—'}{t.date ? ` · ${t.date}` : ''}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--txt-1)', marginTop: 4, lineHeight: 1.45 }}>
+                  {t.snippet}
+                </div>
+              </div>
+              <button className="btn btn-sm" disabled={!t.messageId || importing === t.messageId}
+                      onClick={() => importThread(t)}>
+                {importing === t.messageId ? 'Importing…' : 'Import as draft'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── new draft form ───────────────────────────────────────────────────────────────
 
@@ -602,15 +731,7 @@ export function EmailIntakePage() {
         </button>
       </div>
 
-      {/* gmail-not-wired banner */}
-      <div style={{ padding: 'var(--s3) var(--s4)', background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 'var(--r2)', fontSize: 12, color: 'var(--txt-1)', display: 'flex', alignItems: 'flex-start', gap: 8, lineHeight: 1.5 }}>
-        <Icon name="shield" size={14} style={{ color: 'var(--amber)', marginTop: 1, flexShrink: 0 }} />
-        <span>
-          <strong>Gmail MCP is not wired.</strong> This page uses <strong>manual paste/import only</strong> — there is no Gmail
-          connection, no email search/read, and Gmail mutations (send/delete/archive/labels) are <strong>disabled</strong>.
-          Nothing is written to the vault until you explicitly choose <em>Save to vault</em>. AI assist is opt-in and preview-only.
-        </span>
-      </div>
+      <GmailImportPanel onImported={load} />
 
       {savedNotice && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 'var(--s3) var(--s4)', borderRadius: 'var(--r2)', background: 'var(--green-bg)', border: '1px solid var(--green-line)', fontSize: 12 }}>

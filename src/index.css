@@ -218,3 +218,14 @@ body {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Shared utility keyframes.
+
+   `spin` is referenced by inline styles across the app (refresh/loading icons)
+   but was never defined, so those spinners were static. `pulse` drives the
+   computer-use session indicator, where drawing the eye is a safety affordance:
+   a session that can act on the desktop must be impossible to overlook.
+   ───────────────────────────────────────────────────────────────────────────── */
+@keyframes spin  { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }

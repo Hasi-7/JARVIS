@@ -156,11 +156,146 @@ from app.intake import (
     update_proposal,
     validate_destination,
 )
+from app.gmail import (
+    GmailError,
+    build_intake_draft as build_gmail_intake_draft,
+    get_message as gmail_get_message,
+    gmail_configured,
+    search_threads as gmail_search_threads,
+)
+from app.gcal import (
+    CalendarError,
+    list_events as gcal_list_events,
+    reconcile as gcal_reconcile,
+)
+from app.google_auth import GOOGLE_READONLY_SCOPES, oauth_status
+from app.browser import (
+    BrowserError,
+    GuardrailUnavailableError,
+    captures_for_research_draft as browser_draft_payload,
+    get_session as browser_get_session,
+    list_sessions as browser_list_sessions,
+    open_page as browser_open_page,
+    search as browser_search,
+    session_summary as browser_session_summary,
+    start_session as browser_start_session,
+    stop_session as browser_stop_session,
+)
+from app.chat_capture import (
+    ChatCaptureError,
+    build_consolidation_payload as build_chat_consolidation_payload,
+)
+from app.gdrive import (
+    DriveError,
+    get_file_text as drive_get_file_text,
+    list_files as drive_list_files,
+)
+from app.graph import (
+    GraphError,
+    build_graph as graph_build,
+    load_export as graph_load_export,
+)
+from app.computer_use import (
+    active_session as cu_active_session,
+    click as cu_click,
+    computer_use_enabled as cu_enabled,
+    observe as cu_observe,
+    session_summary as cu_session_summary,
+    start_session as cu_start_session,
+    stop_session as cu_stop_session,
+    type_text as cu_type_text,
+)
+from app.quercus import (
+    QuercusError,
+    list_announcements as quercus_list_announcements,
+    list_assignments as quercus_list_assignments,
+    list_courses as quercus_list_courses,
+    quercus_status,
+)
+from app.github import (
+    GitHubError,
+    github_status,
+    list_commits as github_list_commits,
+    list_issues as github_list_issues,
+    list_repos as github_list_repos,
+)
+from app.vector_search import (
+    VectorSearchError,
+    build_index as vector_build_index,
+    index_status as vector_index_status,
+    search as vector_search_query,
+)
+from app.voice import (
+    VoiceError,
+    VoiceUnavailableError,
+    transcribe as transcribe_audio,
+    voice_status,
+)
 from app.models import (
+    CalendarEvent,
+    CalendarEventsResponse,
+    CalendarReconcileCounts,
+    CalendarReconcileItem,
+    CalendarReconcileResponse,
+    BuildVaultIndexResponse,
+    CalendarStatusResponse,
+    ComputerUseActionResponse,
+    ComputerUseClickRequest,
+    ComputerUseObserveResponse,
+    ComputerUseSessionResponse,
+    ComputerUseSessionSummary,
+    ComputerUseStatusResponse,
+    ComputerUseTypeRequest,
+    StartComputerUseSessionRequest,
+    QuercusAnnouncement,
+    QuercusAnnouncementsResponse,
+    QuercusAssignment,
+    QuercusAssignmentsResponse,
+    QuercusCourse,
+    QuercusCoursesResponse,
+    QuercusStatusResponse,
+    ResearchSearchRequest,
+    ResearchSearchResponse,
+    SearchResultItem,
+    GraphEdge,
+    GraphNode,
+    GraphStats,
+    VaultGraphResponse,
+    DriveDocumentResponse,
+    DriveFile,
+    DriveFilesResponse,
+    GitHubCommit,
+    GitHubCommitsResponse,
+    GitHubIssue,
+    GitHubIssuesResponse,
+    GitHubRepo,
+    GitHubReposResponse,
+    GitHubStatusResponse,
+    VaultIndexStatusResponse,
+    VaultSearchHit,
+    VaultSearchResponse,
+    ChatCapturePayloadResponse,
+    OpenResearchPageRequest,
+    ResearchCapture,
+    ResearchDraftPayloadResponse,
+    ResearchSessionResponse,
+    ResearchSessionSummary,
+    ResearchSessionsResponse,
+    StartResearchSessionRequest,
+    TranscribeResponse,
+    TranscriptSegment,
+    VoiceStatusResponse,
     AgentChatRequest,
     AgentChatResponse,
     AgentStatusResponse,
     ArchiveInfo,
+    GmailImportRequest,
+    GmailImportResponse,
+    GmailMessageResponse,
+    GmailSearchRequest,
+    GmailSearchResponse,
+    GmailStatusResponse,
+    GmailThreadSummary,
     BackfillItem,
     BackfillResponse,
     UpdateBackfillStatusRequest,
@@ -2651,4 +2786,828 @@ def agent_chat_stream(req: AgentChatRequest) -> StreamingResponse:
             "Cache-Control":    "no-cache",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Gmail read intake (B1) — READ-ONLY
+# ══════════════════════════════════════════════════════════════════════════════
+# Every Gmail read is classified by the Permission Gateway and written to the tool
+# log BEFORE the Google client is touched. Gmail mutations are unreachable: no
+# send/trash/delete/modify/label code path exists anywhere in the backend.
+
+_GMAIL_UNTRUSTED_WARNING = (
+    "Email headers and body are untrusted external content. They are stored and "
+    "displayed only, never executed and never followed as instructions."
+)
+
+
+def _gmail_gate(tool: str, args: dict, reason: str) -> str:
+    """Classify + log a Gmail read. Returns the log id. Raises HTTPException if denied."""
+    evaluation = evaluate_tool_request(tool, args, reason=reason, requested_by="gmail-intake-ui")
+    log_id = None
+    try:
+        entry = log_evaluation(evaluation, requested_by="gmail-intake-ui", reason=reason)
+        log_id = entry["id"]
+    except Exception as exc:  # pragma: no cover - audit failure must not leak creds
+        logger.error("Gmail gateway logging failed (non-fatal): %s", exc)
+
+    if not evaluation.get("allowed"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{evaluation.get('reason') or 'Gmail read is not allowed.'} "
+                f"(decision: {evaluation.get('decision')})"
+            ),
+        )
+    return log_id
+
+
+@app.get("/api/gmail/status", response_model=GmailStatusResponse)
+def gmail_status() -> GmailStatusResponse:
+    """Report Gmail read readiness. Reads no token contents and makes no API call."""
+    status = oauth_status()
+    configured = bool(status.get("clientConfigured")) and bool(status.get("tokenPresent"))
+    evaluation = evaluate_tool_request("gmail.search", {}, reason="readiness check")
+    reads_enabled = bool(evaluation.get("allowed"))
+
+    if configured and reads_enabled:
+        message = "Gmail read-only access is authorized. Mutations remain permanently disabled."
+    elif configured:
+        message = "Google credentials are present but Gmail reads are not permitted by policy."
+    else:
+        message = (
+            "Gmail is not authorized on this machine. Run: "
+            "python -m app.google_auth authorize"
+        )
+
+    return GmailStatusResponse(
+        configured=configured,
+        clientConfigured=bool(status.get("clientConfigured")),
+        tokenPresent=bool(status.get("tokenPresent")),
+        scopes=list(GOOGLE_READONLY_SCOPES),
+        readsEnabled=reads_enabled,
+        message=message,
+    )
+
+
+@app.post("/api/gmail/search", response_model=GmailSearchResponse)
+def gmail_search(req: GmailSearchRequest) -> GmailSearchResponse:
+    """Search Gmail threads (read-only, metadata only)."""
+    log_id = _gmail_gate("gmail.search", {"query": req.query}, "Gmail thread search")
+    try:
+        threads = gmail_search_threads(req.query, req.maxResults)
+    except GmailError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    return GmailSearchResponse(
+        query=req.query,
+        count=len(threads),
+        threads=[GmailThreadSummary(**t) for t in threads],
+        decision="allowed",
+        logId=log_id,
+        warnings=[_GMAIL_UNTRUSTED_WARNING],
+    )
+
+
+@app.get("/api/gmail/messages/{message_id}", response_model=GmailMessageResponse)
+def gmail_message(message_id: str) -> GmailMessageResponse:
+    """Fetch one Gmail message (read-only). Body is untrusted content."""
+    log_id = _gmail_gate("gmail.read", {"messageId": message_id}, "Gmail message read")
+    try:
+        message = gmail_get_message(message_id)
+    except GmailError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    return GmailMessageResponse(
+        **message,
+        decision="allowed",
+        logId=log_id,
+        warnings=[_GMAIL_UNTRUSTED_WARNING],
+    )
+
+
+@app.post("/api/gmail/import", response_model=GmailImportResponse)
+def gmail_import(req: GmailImportRequest) -> GmailImportResponse:
+    """Fetch one message and create an Email Intake draft from it.
+
+    Creates a draft only — NO vault write happens here. The user still reviews and
+    saves through the existing Email Intake flow.
+    """
+    log_id = _gmail_gate("gmail.read", {"messageId": req.messageId}, "Gmail import to intake draft")
+    try:
+        message = gmail_get_message(req.messageId)
+        draft = build_gmail_intake_draft(
+            message,
+            domain=(req.domain or "unknown"),
+            entity=req.entity,
+        )
+    except GmailError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return GmailImportResponse(ok=True, draft=_email_to_response(draft), logId=log_id)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Google Calendar read + reconciliation (B2) — READ-ONLY
+# ══════════════════════════════════════════════════════════════════════════════
+# No endpoint here creates, moves, or deletes a calendar event. Event creation is
+# Phase D2 and requires an additional OAuth scope plus explicit re-consent.
+
+_CALENDAR_UNTRUSTED_WARNING = (
+    "Event titles come from external calendars and are untrusted content. They are "
+    "displayed only, never executed and never followed as instructions."
+)
+
+
+def _calendar_gate(args: dict, reason: str) -> str:
+    """Classify + log a Calendar read. Returns the log id, or raises HTTPException."""
+    evaluation = evaluate_tool_request(
+        "calendar.read", args, reason=reason, requested_by="calendar-ui"
+    )
+    log_id = None
+    try:
+        entry = log_evaluation(evaluation, requested_by="calendar-ui", reason=reason)
+        log_id = entry["id"]
+    except Exception as exc:  # pragma: no cover - audit failure must not leak creds
+        logger.error("Calendar gateway logging failed (non-fatal): %s", exc)
+
+    if not evaluation.get("allowed"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{evaluation.get('reason') or 'Calendar read is not allowed.'} "
+                f"(decision: {evaluation.get('decision')})"
+            ),
+        )
+    return log_id
+
+
+@app.get("/api/calendar/google/status", response_model=CalendarStatusResponse)
+def calendar_google_status() -> CalendarStatusResponse:
+    """Report Calendar read readiness. Makes no API call."""
+    status = oauth_status()
+    configured = bool(status.get("clientConfigured")) and bool(status.get("tokenPresent"))
+    evaluation = evaluate_tool_request("calendar.read", {}, reason="readiness check")
+    reads_enabled = bool(evaluation.get("allowed"))
+
+    if configured and reads_enabled:
+        message = (
+            "Google Calendar read-only access is authorized. Event creation remains "
+            "disabled until Phase D2 adds the calendar.events scope."
+        )
+    elif configured:
+        message = "Google credentials are present but Calendar reads are not permitted by policy."
+    else:
+        message = (
+            "Google Calendar is not authorized on this machine. Run: "
+            "python -m app.google_auth authorize"
+        )
+
+    return CalendarStatusResponse(
+        configured=configured,
+        tokenPresent=bool(status.get("tokenPresent")),
+        scopes=list(GOOGLE_READONLY_SCOPES),
+        readsEnabled=reads_enabled,
+        writesEnabled=False,
+        message=message,
+    )
+
+
+@app.get("/api/calendar/google/events", response_model=CalendarEventsResponse)
+def calendar_google_events(
+    timeMin: Optional[str] = None,
+    timeMax: Optional[str] = None,
+) -> CalendarEventsResponse:
+    """List real Google Calendar events in a window (read-only)."""
+    log_id = _calendar_gate(
+        {"timeMin": timeMin, "timeMax": timeMax}, "Google Calendar event list"
+    )
+    try:
+        events = gcal_list_events(timeMin, timeMax)
+    except CalendarError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    return CalendarEventsResponse(
+        events=[CalendarEvent(**e) for e in events],
+        count=len(events),
+        timeMin=timeMin,
+        timeMax=timeMax,
+        decision="allowed",
+        logId=log_id,
+        warnings=[_CALENDAR_UNTRUSTED_WARNING],
+    )
+
+
+@app.get("/api/calendar/google/reconcile", response_model=CalendarReconcileResponse)
+def calendar_google_reconcile(
+    timeMin: Optional[str] = None,
+    timeMax: Optional[str] = None,
+) -> CalendarReconcileResponse:
+    """Compare approved vault calendar candidates against real Calendar events.
+
+    Read-only on BOTH sides: no calendar event is created/moved/deleted and no
+    vault file is written. Findings are reported for the user to act on.
+    """
+    log_id = _calendar_gate(
+        {"timeMin": timeMin, "timeMax": timeMax}, "Calendar candidate reconciliation"
+    )
+
+    cfg = get_config()
+    try:
+        candidates_result = get_calendar_candidates(cfg.vault_path)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read calendar candidates: {exc}")
+    candidates = candidates_result.get("candidates") or []
+
+    try:
+        events = gcal_list_events(timeMin, timeMax)
+    except CalendarError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    result = gcal_reconcile(candidates, events)
+    return CalendarReconcileResponse(
+        counts=CalendarReconcileCounts(**result["counts"]),
+        matched=[CalendarReconcileItem(**i) for i in result["matched"]],
+        conflicting=[CalendarReconcileItem(**i) for i in result["conflicting"]],
+        missing=[CalendarReconcileItem(**i) for i in result["missing"]],
+        unparseable=[CalendarReconcileItem(**i) for i in result["unparseable"]],
+        notes=result["notes"],
+        decision="allowed",
+        logId=log_id,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Local voice transcription (D1) — ON-DEVICE ONLY
+# ══════════════════════════════════════════════════════════════════════════════
+# Audio is transcribed by faster-whisper in this process. It is never uploaded to
+# a cloud speech service, never written to the vault, and the transcript is never
+# auto-executed — the user reviews it and sends it deliberately.
+
+_TRANSCRIPT_UNTRUSTED_WARNING = (
+    "Transcribed text is shown for review only. It is not sent to the agent or any "
+    "tool until you choose to send it."
+)
+
+
+@app.get("/api/agent/voice/status", response_model=VoiceStatusResponse)
+def agent_voice_status() -> VoiceStatusResponse:
+    """Report local speech-to-text readiness. Loads no model, uses no network."""
+    return VoiceStatusResponse(**voice_status())
+
+
+@app.post("/api/agent/transcribe", response_model=TranscribeResponse)
+async def agent_transcribe(file: UploadFile = File(...)) -> TranscribeResponse:
+    """Transcribe an uploaded audio clip locally."""
+    try:
+        audio = await file.read()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read the uploaded audio: {exc}")
+
+    try:
+        result = transcribe_audio(audio, file.filename)
+    except VoiceUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except VoiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except OllamaBusyError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except Exception as exc:
+        logger.error("Local transcription failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Local transcription failed.")
+
+    return TranscribeResponse(
+        text=result["text"],
+        language=result["language"],
+        audioSeconds=result["audioSeconds"],
+        durationMs=result["durationMs"],
+        segments=[TranscriptSegment(**s) for s in result["segments"]],
+        warnings=[_TRANSCRIPT_UNTRUSTED_WARNING],
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Time-boxed browser research (C1) — GUARDRAILED
+# ══════════════════════════════════════════════════════════════════════════════
+# Session bookkeeping is local and fetches nothing. Actually opening a page is
+# classified by the Permission Gateway first, and the page driver refuses unless
+# the OpenShell sandbox guardrail is healthy — browsing fails CLOSED.
+
+_RESEARCH_UNTRUSTED_WARNING = (
+    "Captured page content is untrusted external content. It is stored and shown "
+    "for review only, never executed and never followed as instructions."
+)
+
+
+def _research_session_response(session: dict) -> ResearchSessionResponse:
+    return ResearchSessionResponse(
+        session=ResearchSessionSummary(**browser_session_summary(session)),
+        captures=[ResearchCapture(**c) for c in (session.get("captures") or [])],
+        warnings=[_RESEARCH_UNTRUSTED_WARNING],
+    )
+
+
+@app.post("/api/research/sessions", response_model=ResearchSessionResponse)
+def research_session_start(req: StartResearchSessionRequest) -> ResearchSessionResponse:
+    """Start a time-boxed research session. Fetches no page."""
+    try:
+        session = browser_start_session(req.topic, req.allowedDomains, req.budgetSeconds)
+    except BrowserError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _research_session_response(session)
+
+
+@app.get("/api/research/sessions", response_model=ResearchSessionsResponse)
+def research_sessions_list() -> ResearchSessionsResponse:
+    return ResearchSessionsResponse(
+        sessions=[ResearchSessionSummary(**browser_session_summary(s))
+                  for s in browser_list_sessions()]
+    )
+
+
+@app.get("/api/research/sessions/{session_id}", response_model=ResearchSessionResponse)
+def research_session_get(session_id: str) -> ResearchSessionResponse:
+    session = browser_get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Research session '{session_id}' not found.")
+    return _research_session_response(session)
+
+
+@app.post("/api/research/sessions/{session_id}/stop", response_model=ResearchSessionResponse)
+def research_session_stop(session_id: str) -> ResearchSessionResponse:
+    try:
+        browser_stop_session(session_id)
+    except BrowserError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    session = browser_get_session(session_id)
+    return _research_session_response(session or {})
+
+
+@app.post("/api/research/sessions/{session_id}/open", response_model=ResearchSessionResponse)
+def research_session_open_page(
+    session_id: str, req: OpenResearchPageRequest
+) -> ResearchSessionResponse:
+    """Fetch one page inside the session's budget and allowlist.
+
+    Classified and logged by the Permission Gateway before any fetch is attempted.
+    """
+    evaluation = evaluate_tool_request(
+        "browser.read_page", {"url": req.url}, reason="Time-boxed research page read",
+        requested_by="research-ui",
+    )
+    try:
+        log_evaluation(evaluation, requested_by="research-ui", reason="Research page read")
+    except Exception as exc:  # pragma: no cover
+        logger.error("Research gateway logging failed (non-fatal): %s", exc)
+
+    if not evaluation.get("allowed"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{evaluation.get('reason') or 'Browsing is not allowed.'} "
+                f"(decision: {evaluation.get('decision')})"
+            ),
+        )
+
+    try:
+        browser_open_page(session_id, req.url)
+    except GuardrailUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except BrowserError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    session = browser_get_session(session_id)
+    return _research_session_response(session or {})
+
+
+@app.get("/api/research/sessions/{session_id}/draft-payload",
+         response_model=ResearchDraftPayloadResponse)
+def research_session_draft_payload(session_id: str) -> ResearchDraftPayloadResponse:
+    """Shape a session's captures for the existing Research draft form.
+
+    Returns fields only — creates no draft and writes no vault file.
+    """
+    session = browser_get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Research session '{session_id}' not found.")
+    payload = browser_draft_payload(session)
+    return ResearchDraftPayloadResponse(**payload, warnings=[_RESEARCH_UNTRUSTED_WARNING])
+
+
+@app.get("/api/research/sessions/{session_id}/chat-payload",
+         response_model=ChatCapturePayloadResponse)
+def research_session_chat_payload(
+    session_id: str, captureIndex: Optional[int] = None
+) -> ChatCapturePayloadResponse:
+    """Shape a captured chat page into Consolidation draft fields (C2).
+
+    Creates no draft and writes no vault file — the user reviews these fields and
+    saves through the existing Chat/AI Consolidation flow.
+    """
+    session = browser_get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Research session '{session_id}' not found.")
+    try:
+        payload = build_chat_consolidation_payload(session, capture_index=captureIndex)
+    except ChatCaptureError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return ChatCapturePayloadResponse(**payload)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Local vault semantic search (D3) — READ-ONLY, ON-DEVICE
+# ══════════════════════════════════════════════════════════════════════════════
+# Indexing reads the vault and writes only to backend app-data. Embeddings come
+# from the local Ollama instance; no vault text is sent to a cloud service. When
+# no embedding model is available, search degrades to lexical and says so.
+
+@app.get("/api/vault/search/status", response_model=VaultIndexStatusResponse)
+def vault_search_status() -> VaultIndexStatusResponse:
+    try:
+        return VaultIndexStatusResponse(**vector_index_status())
+    except VectorSearchError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/vault/search/index", response_model=BuildVaultIndexResponse)
+def vault_search_build_index() -> BuildVaultIndexResponse:
+    """Rebuild the local vault index. Reads the vault; never writes to it."""
+    cfg = get_config()
+    try:
+        return BuildVaultIndexResponse(**vector_build_index(cfg.vault_path))
+    except VectorSearchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/vault/search", response_model=VaultSearchResponse)
+def vault_search(q: str, limit: Optional[int] = None) -> VaultSearchResponse:
+    try:
+        result = vector_search_query(q, limit)
+    except VectorSearchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return VaultSearchResponse(
+        query=result["query"],
+        results=[VaultSearchHit(**h) for h in result["results"]],
+        count=result["count"],
+        degraded=result["degraded"],
+        mode=result["mode"],
+        builtAt=result["builtAt"],
+        warnings=result["warnings"],
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GitHub + Drive read-only integrations (D3)
+# ══════════════════════════════════════════════════════════════════════════════
+# Both are classified and logged by the Permission Gateway before any request.
+# Neither has a write path anywhere in the backend.
+
+_EXTERNAL_UNTRUSTED_WARNING = (
+    "Titles, messages, and document text come from external services and are "
+    "untrusted. They are displayed for review only, never executed."
+)
+
+
+def _external_gate(tool: str, args: dict, reason: str, requested_by: str) -> str:
+    evaluation = evaluate_tool_request(tool, args, reason=reason, requested_by=requested_by)
+    log_id = None
+    try:
+        log_id = log_evaluation(evaluation, requested_by=requested_by, reason=reason)["id"]
+    except Exception as exc:  # pragma: no cover
+        logger.error("Gateway logging failed (non-fatal): %s", exc)
+    if not evaluation.get("allowed"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{evaluation.get('reason') or 'Not allowed.'} "
+                   f"(decision: {evaluation.get('decision')})",
+        )
+    return log_id
+
+
+@app.get("/api/github/status", response_model=GitHubStatusResponse)
+def github_status_endpoint() -> GitHubStatusResponse:
+    return GitHubStatusResponse(**github_status())
+
+
+@app.get("/api/github/repos", response_model=GitHubReposResponse)
+def github_repos(limit: Optional[int] = None) -> GitHubReposResponse:
+    log_id = _external_gate("github.read", {"limit": limit}, "GitHub repo list", "github-ui")
+    try:
+        repos = github_list_repos(limit)
+    except GitHubError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return GitHubReposResponse(
+        repos=[GitHubRepo(**r) for r in repos], logId=log_id,
+        warnings=[_EXTERNAL_UNTRUSTED_WARNING],
+    )
+
+
+@app.get("/api/github/commits", response_model=GitHubCommitsResponse)
+def github_commits(repo: str, limit: Optional[int] = None) -> GitHubCommitsResponse:
+    log_id = _external_gate("github.read", {"repo": repo}, "GitHub commit list", "github-ui")
+    try:
+        commits = github_list_commits(repo, limit)
+    except GitHubError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return GitHubCommitsResponse(
+        repo=repo, commits=[GitHubCommit(**c) for c in commits], logId=log_id,
+        warnings=[_EXTERNAL_UNTRUSTED_WARNING],
+    )
+
+
+@app.get("/api/github/issues", response_model=GitHubIssuesResponse)
+def github_issues(repo: str, state: str = "open",
+                  limit: Optional[int] = None) -> GitHubIssuesResponse:
+    log_id = _external_gate("github.read", {"repo": repo, "state": state},
+                            "GitHub issue list", "github-ui")
+    try:
+        issues = github_list_issues(repo, state, limit)
+    except GitHubError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return GitHubIssuesResponse(
+        repo=repo, issues=[GitHubIssue(**i) for i in issues], logId=log_id,
+        warnings=[_EXTERNAL_UNTRUSTED_WARNING],
+    )
+
+
+@app.get("/api/drive/files", response_model=DriveFilesResponse)
+def drive_files(q: Optional[str] = None, limit: Optional[int] = None) -> DriveFilesResponse:
+    log_id = _external_gate("drive.read", {"q": q}, "Drive file list", "drive-ui")
+    try:
+        files = drive_list_files(q, limit)
+    except DriveError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return DriveFilesResponse(
+        files=[DriveFile(**f) for f in files], logId=log_id,
+        warnings=[_EXTERNAL_UNTRUSTED_WARNING],
+    )
+
+
+@app.get("/api/drive/files/{file_id}", response_model=DriveDocumentResponse)
+def drive_document(file_id: str) -> DriveDocumentResponse:
+    log_id = _external_gate("drive.read", {"fileId": file_id}, "Drive document read", "drive-ui")
+    try:
+        document = drive_get_file_text(file_id)
+    except DriveError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return DriveDocumentResponse(**document, logId=log_id,
+                                warnings=[_EXTERNAL_UNTRUSTED_WARNING])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Vault graph / Graphify viewer (D3d) — READ-ONLY
+# ══════════════════════════════════════════════════════════════════════════════
+# Derived from Obsidian wikilinks, which is a well-defined data source. If a real
+# `brain graphify-setup` export exists, pass its path to read that instead.
+
+@app.get("/api/vault/graph", response_model=VaultGraphResponse)
+def vault_graph(exportPath: Optional[str] = None) -> VaultGraphResponse:
+    try:
+        if exportPath:
+            result = graph_load_export(exportPath)
+        else:
+            result = graph_build(get_config().vault_path)
+    except GraphError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return VaultGraphResponse(
+        nodes=[GraphNode(**n) for n in result["nodes"]],
+        edges=[GraphEdge(**e) for e in result["edges"]],
+        stats=GraphStats(**result["stats"]),
+        source=result["source"],
+        warnings=result["warnings"],
+    )
+
+
+@app.post("/api/research/sessions/{session_id}/search", response_model=ResearchSearchResponse)
+def research_session_search(
+    session_id: str, req: ResearchSearchRequest
+) -> ResearchSearchResponse:
+    """Search within a session (PRD §13.2).
+
+    Classified as `browser.search` and logged before any request is made. Results
+    are untrusted; each is marked openable only if its host passes the session's
+    domain allowlist.
+    """
+    evaluation = evaluate_tool_request(
+        "browser.search", {"query": req.query}, reason="Time-boxed research search",
+        requested_by="research-ui",
+    )
+    try:
+        log_evaluation(evaluation, requested_by="research-ui", reason="Research search")
+    except Exception as exc:  # pragma: no cover
+        logger.error("Research search logging failed (non-fatal): %s", exc)
+
+    if not evaluation.get("allowed"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{evaluation.get('reason') or 'Search is not allowed.'} "
+                   f"(decision: {evaluation.get('decision')})",
+        )
+
+    try:
+        result = browser_search(session_id, req.query, req.limit)
+    except GuardrailUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except BrowserError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return ResearchSearchResponse(
+        query=result["query"],
+        results=[SearchResultItem(**r) for r in result["results"]],
+        count=result["count"],
+        openableCount=result["openableCount"],
+        warnings=result["warnings"],
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Canvas / Quercus intake (MVP v10) — READ-ONLY
+# ══════════════════════════════════════════════════════════════════════════════
+# Classified and logged like every other external read. There is no submit,
+# upload, or grade path anywhere in the backend.
+
+@app.get("/api/quercus/status", response_model=QuercusStatusResponse)
+def quercus_status_endpoint() -> QuercusStatusResponse:
+    return QuercusStatusResponse(**quercus_status())
+
+
+@app.get("/api/quercus/courses", response_model=QuercusCoursesResponse)
+def quercus_courses(limit: Optional[int] = None) -> QuercusCoursesResponse:
+    log_id = _external_gate("drive.read", {"limit": limit}, "Quercus course list", "quercus-ui")
+    try:
+        courses = quercus_list_courses(limit)
+    except QuercusError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return QuercusCoursesResponse(
+        courses=[QuercusCourse(**c) for c in courses], logId=log_id,
+        warnings=[_EXTERNAL_UNTRUSTED_WARNING],
+    )
+
+
+@app.get("/api/quercus/assignments", response_model=QuercusAssignmentsResponse)
+def quercus_assignments(courseId: str, limit: Optional[int] = None) -> QuercusAssignmentsResponse:
+    log_id = _external_gate("drive.read", {"courseId": courseId},
+                            "Quercus assignment list", "quercus-ui")
+    try:
+        items = quercus_list_assignments(courseId, limit)
+    except QuercusError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return QuercusAssignmentsResponse(
+        courseId=str(courseId), assignments=[QuercusAssignment(**a) for a in items],
+        logId=log_id, warnings=[_EXTERNAL_UNTRUSTED_WARNING],
+    )
+
+
+@app.get("/api/quercus/announcements", response_model=QuercusAnnouncementsResponse)
+def quercus_announcements(courseId: str, limit: Optional[int] = None) -> QuercusAnnouncementsResponse:
+    log_id = _external_gate("drive.read", {"courseId": courseId},
+                            "Quercus announcement list", "quercus-ui")
+    try:
+        items = quercus_list_announcements(courseId, limit)
+    except QuercusError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return QuercusAnnouncementsResponse(
+        courseId=str(courseId), announcements=[QuercusAnnouncement(**a) for a in items],
+        logId=log_id, warnings=[_EXTERNAL_UNTRUSTED_WARNING],
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Computer-use harness (MVP v7) — PRIVILEGED, FULL DESKTOP
+# ══════════════════════════════════════════════════════════════════════════════
+# This can click and type on the real desktop. Every mutating endpoint requires
+# the operator token AND the kill switch AND an active session AND a matching
+# foreground window. Stopping is deliberately NOT gated — it is the emergency
+# control and must always work.
+
+_COMPUTER_USE_WARNING = (
+    "This session can act on your real desktop. Actions are refused if focus "
+    "moves off an allowed window, and risky actions need explicit confirmation."
+)
+
+
+def _computer_use_http_error(exc: Exception) -> HTTPException:
+    from app.computer_use import (
+        ComputerUseDisabled, RiskyActionRequiresConfirmation, WindowNotAllowed,
+    )
+    if isinstance(exc, ComputerUseDisabled):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, WindowNotAllowed):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, RiskyActionRequiresConfirmation):
+        return HTTPException(status_code=428, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+def _authorize_computer_use(token):
+    """Reuse the A3 operator token — computer-use is at least as privileged."""
+    try:
+        authorize_approval_token(token)
+    except (ApprovalAuthNotConfigured, ApprovalUnauthorized, ApprovalForbidden) as exc:
+        raise _approval_http_error(exc)
+
+
+@app.get("/api/computer-use/status", response_model=ComputerUseStatusResponse)
+def computer_use_status() -> ComputerUseStatusResponse:
+    """Readiness plus the live session, for the always-visible indicator.
+
+    Deliberately unauthenticated and read-only: the UI must be able to show that
+    a session is running, and offer Stop, without holding a token.
+    """
+    enabled = cu_enabled()
+    live = cu_active_session()
+    return ComputerUseStatusResponse(
+        enabled=enabled,
+        active=ComputerUseSessionSummary(**cu_session_summary(live)) if live else None,
+        message=(
+            "A computer-use session is ACTIVE and can act on your desktop."
+            if live else
+            "Computer-use is enabled but no session is active." if enabled else
+            "Computer-use is disabled. It is off by default."
+        ),
+    )
+
+
+@app.post("/api/computer-use/sessions", response_model=ComputerUseSessionResponse)
+def computer_use_start(
+    req: StartComputerUseSessionRequest,
+    x_brain_approval_token: Optional[str] = Header(default=None, alias="X-Brain-Approval-Token"),
+) -> ComputerUseSessionResponse:
+    _authorize_computer_use(x_brain_approval_token)
+    try:
+        session = cu_start_session(req.task, req.allowedWindows, req.budgetSeconds)
+    except Exception as exc:
+        raise _computer_use_http_error(exc)
+    return ComputerUseSessionResponse(
+        session=ComputerUseSessionSummary(**cu_session_summary(session)),
+        warnings=[_COMPUTER_USE_WARNING],
+    )
+
+
+@app.post("/api/computer-use/sessions/{session_id}/stop",
+          response_model=ComputerUseSessionResponse)
+def computer_use_stop(session_id: str) -> ComputerUseSessionResponse:
+    """Stop a session. NOT token-gated: this is the emergency stop (PRD 13.3)."""
+    try:
+        session = cu_stop_session(session_id)
+    except Exception as exc:
+        raise _computer_use_http_error(exc)
+    return ComputerUseSessionResponse(
+        session=ComputerUseSessionSummary(**cu_session_summary(session)),
+    )
+
+
+@app.post("/api/computer-use/sessions/{session_id}/observe",
+          response_model=ComputerUseObserveResponse)
+def computer_use_observe(
+    session_id: str,
+    x_brain_approval_token: Optional[str] = Header(default=None, alias="X-Brain-Approval-Token"),
+) -> ComputerUseObserveResponse:
+    _authorize_computer_use(x_brain_approval_token)
+    try:
+        result = cu_observe(session_id)
+    except Exception as exc:
+        raise _computer_use_http_error(exc)
+    return ComputerUseObserveResponse(
+        window=result["window"], width=result["width"], height=result["height"],
+        screenshotBase64=result["screenshotBase64"], warnings=result["warnings"],
+    )
+
+
+@app.post("/api/computer-use/sessions/{session_id}/click",
+          response_model=ComputerUseActionResponse)
+def computer_use_click(
+    session_id: str,
+    req: ComputerUseClickRequest,
+    x_brain_approval_token: Optional[str] = Header(default=None, alias="X-Brain-Approval-Token"),
+) -> ComputerUseActionResponse:
+    _authorize_computer_use(x_brain_approval_token)
+    try:
+        result = cu_click(session_id, req.x, req.y, confirm_risk=req.confirmRisk)
+    except Exception as exc:
+        raise _computer_use_http_error(exc)
+    return ComputerUseActionResponse(
+        ok=True, window=result["window"], x=result["x"], y=result["y"],
+        warnings=[_COMPUTER_USE_WARNING],
+    )
+
+
+@app.post("/api/computer-use/sessions/{session_id}/type",
+          response_model=ComputerUseActionResponse)
+def computer_use_type(
+    session_id: str,
+    req: ComputerUseTypeRequest,
+    x_brain_approval_token: Optional[str] = Header(default=None, alias="X-Brain-Approval-Token"),
+) -> ComputerUseActionResponse:
+    _authorize_computer_use(x_brain_approval_token)
+    try:
+        result = cu_type_text(session_id, req.text, confirm_risk=req.confirmRisk)
+    except Exception as exc:
+        raise _computer_use_http_error(exc)
+    return ComputerUseActionResponse(
+        ok=True, window=result["window"], chars=result["chars"],
+        warnings=[_COMPUTER_USE_WARNING],
     )

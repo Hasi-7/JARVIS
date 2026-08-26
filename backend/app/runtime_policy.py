@@ -62,16 +62,37 @@ except Exception:  # pragma: no cover - PyYAML absent
     _yaml = None
 
 # Top-level policy keys we recognize; everything else is surfaced as an unknown key.
-KNOWN_KEYS = {
+# Real NVIDIA OpenShell `SandboxPolicy` keys, taken from the vendored
+# proto/openshell/sandbox.proto (the YAML uses `filesystem_policy` where the proto
+# field is `filesystem` — serde renaming, both are accepted here).
+OPENSHELL_KEYS = {
+    "version",
+    "filesystem_policy", "filesystem",
+    "landlock",
+    "process", "process_policy",
+    "network_policies", "network_middlewares",
+}
+
+# Speculative keys kept from before the real schema was known, so a hand-written
+# or non-OpenShell policy still summarizes rather than reading as all-unknown.
+LEGACY_KEYS = {
     "modes", "declaredModes", "declared_modes",
     "network", "network_policy", "networkPolicy",
-    "filesystem", "filesystem_scopes", "filesystemScopes",
+    "filesystem_scopes", "filesystemScopes",
     "browser", "browser_harness", "browserAllowed",
     "computer_use", "computerUse", "computerUseAllowed",
     "mcp", "mcpAllowed",
     "credentials", "credential_access", "credentialAccess",
     "allow", "deny", "blocked",
 }
+
+KNOWN_KEYS = OPENSHELL_KEYS | LEGACY_KEYS
+
+# Landlock compatibility modes. `best_effort` fails OPEN: it applies what the host
+# supports and only warns otherwise, so filesystem isolation can silently not take
+# effect. `hard_requirement` fails CLOSED by aborting sandbox startup.
+LANDLOCK_FAIL_OPEN = "best_effort"
+LANDLOCK_FAIL_CLOSED = "hard_requirement"
 
 _TRUTHY = {"allow", "allowed", "true", "enabled", "enable", "on", "yes"}
 _FALSY = {
@@ -156,10 +177,30 @@ def _summarize(data: dict) -> dict:
     else:
         network_policy = _as_str(net_raw)
 
+    # OpenShell declares outbound access via `network_policies` (a map keyed by
+    # name). Absent or empty means DENY — surface that instead of reporting null,
+    # which reads as "no policy" when the truth is "nothing is permitted".
+    # Only infer for documents that actually look like OpenShell policies — a
+    # foreign document missing this key means "unknown", not "deny".
+    looks_like_openshell = any(k in data for k in OPENSHELL_KEYS)
+    if network_policy is None and looks_like_openshell:
+        rules = data.get("network_policies")
+        names = sorted(rules.keys()) if isinstance(rules, dict) else []
+        network_policy = (
+            f"allow ({', '.join(names)})" if names
+            else "deny (no network_policies declared)"
+        )
+
     # filesystem scopes may be a list, or nested {scopes: [...]}.
-    fs_raw = _first(data, "filesystem_scopes", "filesystemScopes", "filesystem")
+    fs_raw = _first(data, "filesystem_scopes", "filesystemScopes", "filesystem_policy", "filesystem")
     if isinstance(fs_raw, dict):
         fs_scopes = _as_str_list(_first(fs_raw, "scopes", "paths", "allow", "read"))
+        # OpenShell FilesystemPolicy: include_workdir + read_only[] + read_write[].
+        if not fs_scopes:
+            for field, label in (("read_only", "ro"), ("read_write", "rw")):
+                fs_scopes.extend(f"{label}: {p}" for p in _as_str_list(fs_raw.get(field)))
+            if fs_raw.get("include_workdir") is True:
+                fs_scopes.append("rw: <workdir> (include_workdir)")
     else:
         fs_scopes = _as_str_list(fs_raw)
 
@@ -418,6 +459,21 @@ def inspect_nemoclaw_policy(env: Optional[dict] = None) -> dict:
             "Some policy keys were not recognized and are shown as-is: "
             + ", ".join(summary["unknownKeys"])
         )
+
+    # Landlock fail-open advisory. `best_effort` applies whatever the host supports
+    # and only warns otherwise, so filesystem isolation can silently not take effect
+    # — notably under container runtimes whose seccomp profile blocks the Landlock
+    # syscalls. A deny-by-default policy should fail closed instead.
+    landlock = data.get("landlock")
+    if isinstance(landlock, dict):
+        compatibility = _as_str(landlock.get("compatibility")) or ""
+        if compatibility.strip().lower() == LANDLOCK_FAIL_OPEN:
+            warnings.append(
+                f"landlock.compatibility is '{LANDLOCK_FAIL_OPEN}', which fails OPEN: "
+                f"if the host or container runtime cannot apply Landlock, the sandbox "
+                f"still starts with filesystem isolation silently reduced or absent. "
+                f"Use '{LANDLOCK_FAIL_CLOSED}' to abort startup instead."
+            )
     recognized = (
         summary["declaredModes"] or summary["networkPolicy"] or summary["filesystemScopes"]
         or summary["browserAllowed"] is not None or summary["computerUseAllowed"] is not None

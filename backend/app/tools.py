@@ -14,19 +14,38 @@ Honesty guarantees — this module:
   * launches NO OpenClaw / NemoClaw / OpenShell runtime,
   * executes NO tools and performs NO writes.
 
-It only returns the readiness inventory. Nothing here is marked `available`
-because nothing performs a real check yet. Privileged systems are reported as
-`not_configured`, `planned`, or `disabled` per the PRD permission model.
+Entries are static EXCEPT where a real backend capability now exists. Gmail
+read-only (B1) is the first such entry: it reports `available` only when local
+OAuth credentials are actually present, and its mutations stay blocked forever.
+Every other privileged system remains `not_configured`, `planned`, or `disabled`
+per the PRD permission model.
 
-Future wiring (real MCP/Gmail/browser gateways) should replace individual static
-entries with backend-derived status — and only then may a system report
-`available`, after a genuine check.
+Future wiring (real MCP/browser gateways) should follow the same rule — a system
+may report `available` only after a genuine check.
 """
 
 import logging
 from typing import List
 
 logger = logging.getLogger(__name__)
+
+
+def _computer_use_ready() -> bool:
+    """Kill-switch check only. Reads no screen and starts no session."""
+    try:
+        from app.computer_use import computer_use_enabled
+        return computer_use_enabled()
+    except Exception:
+        return False
+
+
+def _gmail_reads_ready() -> bool:
+    """Configuration-only check. Reads no token contents and makes no API call."""
+    try:
+        from app.gmail import gmail_configured
+        return gmail_configured()
+    except Exception:
+        return False
 
 # ── category ids (display names are mapped in the frontend) ─────────────────────
 #   runtime   → Agent Runtime
@@ -59,20 +78,27 @@ _TOOL_SYSTEMS: List[dict] = [
     },
     {
         "id": "gmail-mcp",
-        "name": "Gmail MCP",
-        "category": "mcp",
-        "status": "not_configured",
-        "enabled": False,
-        "riskLevel": "high",
-        "capabilities": ["search_email_planned", "read_email_planned", "intake_to_vault_planned"],
-        "allowedNow": [],
-        "blockedNow": ["search", "read", "draft", "send", "delete", "archive", "modify_labels"],
-        "requires": ["Gmail auth via backend gateway", "NemoClaw/OpenShell runtime", "approval rules"],
+        "name": "Gmail (read-only)",
+        "category": "external",
+        "status": "available" if _gmail_reads_ready() else "not_configured",
+        "enabled": _gmail_reads_ready(),
+        "riskLevel": "medium",
+        "capabilities": ["search_threads", "read_message", "import_to_email_intake_draft"],
+        "allowedNow": ["search", "read"] if _gmail_reads_ready() else [],
+        "blockedNow": ["draft", "send", "delete", "trash", "archive", "modify_labels"],
+        "requires": ["Local Google OAuth (gmail.readonly)", "Permission Gateway classification + tool log"],
         "lastCheckedAt": None,
         "lastError": None,
         "notes": (
-            "Gmail is not connected. Email search/read/intake is planned through the "
-            "backend gateway. Gmail mutations remain disabled."
+            "Read-only Gmail via local OAuth (gmail.readonly). Search and message "
+            "reads are classified and logged by the Permission Gateway, and feed "
+            "Email Intake drafts (no vault write). Message bodies are untrusted "
+            "content. Send/delete/trash/archive/label are permanently disabled and "
+            "no code path for them exists."
+            if _gmail_reads_ready() else
+            "Gmail read-only support is implemented but not authorized on this "
+            "machine. Run: python -m app.google_auth authorize. Gmail mutations "
+            "remain permanently disabled."
         ),
     },
     {
@@ -104,12 +130,20 @@ _TOOL_SYSTEMS: List[dict] = [
         "capabilities": ["open_page_planned", "read_page_planned", "capture_source_planned"],
         "allowedNow": [],
         "blockedNow": ["navigate", "read_page", "capture", "fill_form", "click"],
-        "requires": ["NemoClaw/OpenShell runtime", "browser harness controller", "approval rules"],
+        "requires": [
+            "NemoClaw/OpenShell runtime (wired)",
+            "sandbox policy with landlock.compatibility: hard_requirement",
+            "a created sandbox (NEMOCLAW_SANDBOX_ID)",
+        ],
         "lastCheckedAt": None,
         "lastError": None,
         "notes": (
-            "Browser and computer-use actions are disabled until NemoClaw/OpenShell or "
-            "equivalent runtime safety is wired."
+            "Page reads and searches are implemented and run INSIDE the OpenShell "
+            "sandbox through the approval queue. They stay disabled here because "
+            "sandboxed execution refuses a fail-open policy: set "
+            "landlock.compatibility: hard_requirement and create a sandbox. Reported "
+            "disabled rather than available because this module performs no live "
+            "health check."
         ),
     },
     {
@@ -231,5 +265,75 @@ def list_tool_connections() -> List[dict]:
 
     Returns fresh copies so callers cannot mutate the module-level inventory.
     Performs no external calls, no shell, no `brain`, and no credential reads.
+
+    The Gmail entry is resolved on every call (not at import time) so it reflects
+    the machine's current authorization state rather than whatever was true when
+    the module was first imported.
     """
-    return [dict(item) for item in _TOOL_SYSTEMS]
+    items = [dict(item) for item in _TOOL_SYSTEMS]
+    ready = _gmail_reads_ready()
+    cu_ready = _computer_use_ready()
+    for item in items:
+        if item["id"] == "computer-use":
+            # MVP v7 is implemented, but it stays `disabled` until the operator
+            # turns the kill switch on — reporting otherwise would overstate it.
+            item["status"] = "available" if cu_ready else "disabled"
+            item["enabled"] = cu_ready
+            item["capabilities"] = ["observe_screen", "click", "type"]
+            item["allowedNow"] = (
+                ["screenshot", "click", "type"] if cu_ready else []
+            )
+            item["blockedNow"] = (
+                ["credential_typing"] if cu_ready
+                else ["screenshot", "click", "type", "copy", "navigate_apps"]
+            )
+            item["requires"] = [
+                "BRAIN_UI_COMPUTER_USE_ENABLED=true",
+                "BRAIN_UI_APPROVAL_TOKEN",
+                "scoped session with a window allowlist",
+                "foreground window match on every action",
+            ]
+            item["notes"] = (
+                "Full desktop control, gated by a kill switch, the operator token, "
+                "a scoped session, a wall-clock budget, and a foreground-window "
+                "check that REFUSES rather than retargets. Risky actions need "
+                "per-action confirmation; typing into a credential window is "
+                "refused outright."
+                if cu_ready else
+                "Computer-use is implemented but the kill switch is off. Start the "
+                "backend with BRAIN_UI_COMPUTER_USE_ENABLED=true to enable it."
+            )
+            continue
+        if item["id"] == "google-calendar-api":
+            item["status"] = "available" if ready else "not_configured"
+            item["enabled"] = ready
+            item["allowedNow"] = ["read_events", "reconcile_candidates"] if ready else []
+            item["blockedNow"] = ["create_event", "update_event", "delete_event", "move_event"]
+            item["notes"] = (
+                "Read-only Google Calendar via local OAuth (calendar.readonly). "
+                "Reconciles approved vault candidates against real events; writes "
+                "nothing on either side. Event creation requires the calendar.events "
+                "scope and explicit re-consent (Phase D2) and is not available."
+                if ready else
+                "Google Calendar read-only support is implemented but not authorized "
+                "on this machine. Run: python -m app.google_auth authorize. Calendar "
+                "writes remain unavailable."
+            )
+            continue
+        if item["id"] != "gmail-mcp":
+            continue
+        item["status"] = "available" if ready else "not_configured"
+        item["enabled"] = ready
+        item["allowedNow"] = ["search", "read"] if ready else []
+        item["notes"] = (
+            "Read-only Gmail via local OAuth (gmail.readonly). Search and message "
+            "reads are classified and logged by the Permission Gateway, and feed "
+            "Email Intake drafts (no vault write). Message bodies are untrusted "
+            "content. Send/delete/trash/archive/label are permanently disabled and "
+            "no code path for them exists."
+            if ready else
+            "Gmail read-only support is implemented but not authorized on this "
+            "machine. Run: python -m app.google_auth authorize. Gmail mutations "
+            "remain permanently disabled."
+        )
+    return items

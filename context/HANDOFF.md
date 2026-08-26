@@ -18,8 +18,49 @@ the **privileged execution layer** (PRD MVP v4–v10) in phases.
 - **Ollama:** installed (`0.32.7`); both configured Gemma 4 models are pulled and live-tested.
 - **B0 complete:** local OAuth authorized with Gmail readonly + Calendar readonly;
   credentials and token are under gitignored `backend/data/google/`.
-- **Next up:** **B1 Gmail read intake**.
-- **Test baseline:** **654 backend tests pass**, `npm run build` clean (90 modules).
+- **B1 complete (2026-08-23):** read-only Gmail search/read/import, live-verified.
+- **B2 complete (2026-08-23):** read-only Calendar events + candidate reconciliation,
+  live-verified. **Phase B is done.**
+- **C0 complete (2026-08-23):** real NVIDIA OpenShell 0.0.111 gateway running in
+  WSL2, reached over typed gRPC + mTLS from the Windows backend. Read-only client
+  at `app/openshell_client.py`; `runtime_probe.py` now probes via the gRPC
+  `Health` RPC instead of a plain GET.
+- **D1 complete (2026-08-23):** local faster-whisper transcription, live-verified;
+  audio never leaves the machine.
+- **C1/C2/D1/D2/D3 complete (2026-08-24).** Research sessions, chat capture, local
+  voice, approval-gated Calendar writes, GitHub + Drive reads, local vault search.
+- **C1b + D3d complete (2026-08-24).** Every planned phase is implemented.
+- **All PRD gap items closed (2026-08-24).** Every MVP tier v1-v10 is now
+  implemented, including v7 computer-use (full desktop, per the user's choice).
+- **Test baseline:** **1331 backend tests pass**, `npm run build` clean (94 modules).
+
+> **Computer-use is OFF by default and should stay off unless in active use.**
+> It can click and type on the real desktop. Enable with
+> `BRAIN_UI_COMPUTER_USE_ENABLED=true` plus `BRAIN_UI_APPROVAL_TOKEN`. The
+> load-bearing guard is the foreground-window check: if focus moves off an
+> allowlisted window the action is refused, never retargeted.
+
+> **Before enabling real browsing:** the sandbox policy still uses
+> `landlock.compatibility: best_effort`, and `openshell_exec` REFUSES to execute
+> under it by design. Set `hard_requirement` and create a sandbox
+> (`NEMOCLAW_SANDBOX_ID`). If it then refuses to start, that is the correct
+> outcome — it means Docker's seccomp is blocking Landlock, which is exactly the
+> silent-failure this guard exists to prevent.
+
+> **OAuth publishing note:** the Google Cloud app is now **In production** (was
+> Testing, which expired refresh tokens after 7 days). It is *unverified*, so the
+> consent screen shows "Google hasn't verified this app" → **Advanced → Go to
+> (unsafe)**. Do not pursue verification: `gmail.readonly` is a restricted scope
+> and would require a CASA assessment for a single-user app.
+
+> **OpenShell gateway facts (verified 2026-08-23).** gRPC over HTTP/2 + mTLS at
+> `https://localhost:17670` — **no REST API**, and server reflection is disabled,
+> so the vendored protos in `backend/proto/openshell/` (pinned to the *installed*
+> version tag) are the only contract. Regenerate per that folder's
+> `REGENERATE.md`. WSL2 forwards localhost, so the gateway stays loopback from
+> Windows — do **not** set `NEMOCLAW_ALLOW_REMOTE_PROBE`. If the gateway refuses
+> connections, check `journalctl --user -u openshell-gateway`: it exits
+> immediately without a Docker/Podman compute driver.
 
 ### How to run / verify
 ```bash

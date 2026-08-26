@@ -596,6 +596,19 @@ def _dispatch(tool: str, args: dict) -> dict:
         return create_task(vault_path=cfg.vault_path, **args)
     if tool == "calendar.create_candidate":
         return create_calendar_candidate(cfg.vault_path, {**args, "approved": "No"})
+    if tool == "browser.search":
+        from app.browser import search as browser_search
+        return browser_search(args.get("sessionId", ""), args.get("query", ""),
+                              args.get("limit"))
+    if tool == "browser.read_page":
+        # Runs curl INSIDE the OpenShell sandbox; never on the host.
+        from app.openshell_exec import fetch_page_in_sandbox
+        return fetch_page_in_sandbox(args.get("url", ""), args.get("timeoutSeconds") or 20)
+    if tool == "calendar.create_event":
+        # The ONLY external write in this app. Reached only after the full A3 flow:
+        # Assist mode -> operator token -> kill switch -> approve -> execute.
+        from app.gcal_write import create_event
+        return create_event(args)
     raise ApprovalError("Tool has no approval dispatcher.")
 
 
@@ -617,6 +630,32 @@ def _execution_summary(tool: str, result: Optional[dict], ok: bool) -> Optional[
             "message": "Task created." if ok else "Task creation failed.",
             "path": _safe_result_path(result.get("path")),
             "id": _safe_result_id((result.get("task") or {}).get("id"), "t"),
+        }
+    if tool == "browser.search":
+        return {
+            "ok": ok,
+            "resultType": "sandboxed_search",
+            "message": "Search completed inside the sandbox." if ok else "Search failed.",
+            "path": None,
+            "id": None,
+        }
+    if tool == "browser.read_page":
+        return {
+            "ok": ok,
+            "resultType": "sandboxed_page_read",
+            "message": ("Page read inside the sandbox." if ok
+                        else "Sandboxed page read failed."),
+            "path": None,
+            "id": None,
+        }
+    if tool == "calendar.create_event":
+        return {
+            "ok": ok,
+            "resultType": "calendar_event_created",
+            "message": ("Google Calendar event created." if ok
+                        else "Google Calendar event creation failed."),
+            "path": None,
+            "id": _safe_result_id(result.get("eventId"), "e"),
         }
     if tool == "calendar.create_candidate":
         return {

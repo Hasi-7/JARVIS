@@ -116,8 +116,24 @@ def test_browser_and_computer_use_disabled(sid):
     assert sysinfo["status"] == "disabled"
     assert sysinfo["enabled"] is False
     assert sysinfo["allowedNow"] == []
-    # NemoClaw/OpenShell runtime must be a stated requirement.
-    assert any("NemoClaw" in r for r in sysinfo["requires"]), sysinfo["requires"]
+
+
+def test_browser_harness_requires_the_sandbox_runtime():
+    """Browsing runs INSIDE OpenShell, so the runtime is a real prerequisite."""
+    sysinfo = _by_id(list_tool_connections())["browser-harness"]
+    assert any("NemoClaw" in r or "OpenShell" in r for r in sysinfo["requires"]), \
+        sysinfo["requires"]
+
+
+def test_computer_use_requires_the_kill_switch_not_the_sandbox():
+    """Full desktop control (the chosen design) runs on the HOST, so its
+    prerequisite is the operator kill switch and token — not a sandbox. Claiming
+    NemoClaw gates it would misdescribe what actually protects the user."""
+    sysinfo = _by_id(list_tool_connections())["computer-use"]
+    joined = " ".join(sysinfo["requires"])
+    assert "BRAIN_UI_COMPUTER_USE_ENABLED" in joined
+    assert "BRAIN_UI_APPROVAL_TOKEN" in joined
+    assert "foreground window" in joined.lower()
 
 
 # ── OpenClaw / NemoClaw: planned / not wired ────────────────────────────────────

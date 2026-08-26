@@ -1593,3 +1593,537 @@ class SaveEmailIntakeDraftResponse(BaseModel):
     draft:        EmailIntakeDraftResponse
     relativePath: str
     absolutePath: str
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Gmail read intake (B1) — READ-ONLY
+# ══════════════════════════════════════════════════════════════════════════════
+
+class GmailStatusResponse(BaseModel):
+    configured:   bool          # OAuth client + token both present on disk
+    clientConfigured: bool
+    tokenPresent: bool
+    scopes:       List[str] = []
+    readsEnabled: bool          # gateway would allow a read right now
+    message:      str
+
+
+class GmailSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    query:      str
+    maxResults: Optional[int] = None
+
+
+class GmailThreadSummary(BaseModel):
+    threadId:  str
+    messageId: Optional[str] = None
+    subject:   str
+    sender:    Optional[str] = None
+    to:        Optional[str] = None
+    date:      Optional[str] = None
+    snippet:   str = ""
+
+
+class GmailSearchResponse(BaseModel):
+    query:    str
+    count:    int
+    threads:  List[GmailThreadSummary] = []
+    decision: str
+    logId:    Optional[str] = None
+    warnings: List[str] = []
+
+
+class GmailMessageResponse(BaseModel):
+    messageId:     str
+    threadId:      Optional[str] = None
+    subject:       str
+    sender:        Optional[str] = None
+    to:            Optional[str] = None
+    date:          Optional[str] = None
+    snippet:       str = ""
+    body:          str = ""
+    bodyTruncated: bool = False
+    labelIds:      List[str] = []
+    decision:      str
+    logId:         Optional[str] = None
+    warnings:      List[str] = []
+
+
+class GmailImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    messageId: str
+    domain:    Optional[str] = None   # course | business | personal | unknown
+    entity:    Optional[str] = None
+
+
+class GmailImportResponse(BaseModel):
+    ok:     bool
+    draft:  EmailIntakeDraftResponse
+    logId:  Optional[str] = None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Google Calendar read + reconciliation (B2) — READ-ONLY
+# ══════════════════════════════════════════════════════════════════════════════
+# There is deliberately no create/update/delete event model here. Event creation
+# is Phase D2 and requires an additional scope plus explicit re-consent.
+
+class CalendarEvent(BaseModel):
+    eventId:  str
+    title:    str
+    start:    Optional[str] = None
+    end:      Optional[str] = None
+    allDay:   bool = False
+    status:   str = ""
+    htmlLink: Optional[str] = None
+
+
+class CalendarEventsResponse(BaseModel):
+    events:   List[CalendarEvent] = []
+    count:    int
+    timeMin:  Optional[str] = None
+    timeMax:  Optional[str] = None
+    decision: str
+    logId:    Optional[str] = None
+    warnings: List[str] = []
+
+
+class CalendarReconcileCounts(BaseModel):
+    matched:     int
+    conflicting: int
+    missing:     int
+    unparseable: int
+    events:      int
+
+
+class CalendarReconcileItem(BaseModel):
+    candidateId: Optional[str] = None
+    title:       str = ""
+    date:        Optional[str] = None
+    time:        Optional[str] = None
+    duration:    Optional[str] = None
+    eventId:     Optional[str] = None
+    eventTitle:  Optional[str] = None
+    eventStart:  Optional[str] = None
+    htmlLink:    Optional[str] = None
+    note:        Optional[str] = None
+
+
+class CalendarReconcileResponse(BaseModel):
+    counts:      CalendarReconcileCounts
+    matched:     List[CalendarReconcileItem] = []
+    conflicting: List[CalendarReconcileItem] = []
+    missing:     List[CalendarReconcileItem] = []
+    unparseable: List[CalendarReconcileItem] = []
+    notes:       List[str] = []
+    decision:    str
+    logId:       Optional[str] = None
+
+
+class CalendarStatusResponse(BaseModel):
+    configured:   bool
+    tokenPresent: bool
+    scopes:       List[str] = []
+    readsEnabled: bool
+    writesEnabled: bool = False   # permanently False until D2
+    message:      str
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Local voice transcription (D1) — ON-DEVICE ONLY
+# ══════════════════════════════════════════════════════════════════════════════
+
+class VoiceStatusResponse(BaseModel):
+    available:       bool
+    model:           str
+    device:          str
+    computeType:     str
+    localFilesOnly:  bool
+    maxUploadBytes:  int
+    maxAudioSeconds: int
+    message:         str
+
+
+class TranscriptSegment(BaseModel):
+    start: float
+    end:   float
+    text:  str
+
+
+class TranscribeResponse(BaseModel):
+    text:         str
+    language:     Optional[str] = None
+    audioSeconds: float = 0.0
+    durationMs:   int = 0
+    segments:     List[TranscriptSegment] = []
+    warnings:     List[str] = []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Time-boxed browser research (C1) — GUARDRAILED
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ResearchCapture(BaseModel):
+    url:        str
+    title:      str = ""
+    timestamp:  str
+    snippet:    str = ""
+    textChars:  int = 0
+    httpStatus: Optional[int] = None
+
+
+class ResearchSessionSummary(BaseModel):
+    id:               Optional[str] = None
+    topic:            Optional[str] = None
+    status:           Optional[str] = None
+    budgetSeconds:    Optional[int] = None
+    remainingSeconds: float = 0.0
+    captureCount:     int = 0
+    errorCount:       int = 0
+    allowedDomains:   List[str] = []
+    startedAt:        Optional[str] = None
+    endedAt:          Optional[str] = None
+
+
+class ResearchSessionResponse(BaseModel):
+    session:  ResearchSessionSummary
+    captures: List[ResearchCapture] = []
+    warnings: List[str] = []
+
+
+class ResearchSessionsResponse(BaseModel):
+    sessions: List[ResearchSessionSummary] = []
+
+
+class StartResearchSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    topic:          str
+    allowedDomains: List[str]
+    budgetSeconds:  Optional[int] = None
+
+
+class OpenResearchPageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str
+
+
+class ResearchDraftPayloadResponse(BaseModel):
+    title:     str
+    topic:     str
+    sources:   List[Dict[str, Any]] = []
+    rawNotes:  str = ""
+    warnings:  List[str] = []
+
+
+class ChatCapturePayloadResponse(BaseModel):
+    sourceTool:        str
+    conversationTitle: str
+    domain:            str
+    entity:            Optional[str] = None
+    transcript:        str
+    turnCount:         int = 0
+    sourceUrl:         str = ""
+    capturedAt:        Optional[str] = None
+    warnings:          List[str] = []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Local vault semantic search (D3) — READ-ONLY, ON-DEVICE
+# ══════════════════════════════════════════════════════════════════════════════
+
+class VaultSearchHit(BaseModel):
+    path:    str
+    heading: str = ""
+    score:   float = 0.0
+    snippet: str = ""
+
+
+class VaultSearchResponse(BaseModel):
+    query:    str
+    results:  List[VaultSearchHit] = []
+    count:    int = 0
+    degraded: bool = False
+    mode:     str = "lexical"
+    builtAt:  Optional[str] = None
+    warnings: List[str] = []
+
+
+class VaultIndexStatusResponse(BaseModel):
+    built:     bool = False
+    builtAt:   Optional[str] = None
+    chunks:    int = 0
+    embedded:  bool = False
+    degraded:  bool = True
+    vaultPath: Optional[str] = None
+
+
+class BuildVaultIndexResponse(BaseModel):
+    files:    int = 0
+    chunks:   int = 0
+    embedded: bool = False
+    degraded: bool = True
+    builtAt:  Optional[str] = None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GitHub + Drive read-only integrations (D3)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class GitHubStatusResponse(BaseModel):
+    configured: bool
+    readOnly:   bool = True
+    message:    str
+
+
+class GitHubRepo(BaseModel):
+    fullName:    str
+    description: str = ""
+    private:     bool = False
+    language:    Optional[str] = None
+    pushedAt:    Optional[str] = None
+    htmlUrl:     Optional[str] = None
+    openIssues:  int = 0
+
+
+class GitHubReposResponse(BaseModel):
+    repos:    List[GitHubRepo] = []
+    logId:    Optional[str] = None
+    warnings: List[str] = []
+
+
+class GitHubCommit(BaseModel):
+    sha:     str
+    message: str = ""
+    author:  Optional[str] = None
+    date:    Optional[str] = None
+    htmlUrl: Optional[str] = None
+
+
+class GitHubCommitsResponse(BaseModel):
+    repo:     str
+    commits:  List[GitHubCommit] = []
+    logId:    Optional[str] = None
+    warnings: List[str] = []
+
+
+class GitHubIssue(BaseModel):
+    number:        int
+    title:         str = ""
+    state:         str = ""
+    isPullRequest: bool = False
+    updatedAt:     Optional[str] = None
+    htmlUrl:       Optional[str] = None
+
+
+class GitHubIssuesResponse(BaseModel):
+    repo:     str
+    issues:   List[GitHubIssue] = []
+    logId:    Optional[str] = None
+    warnings: List[str] = []
+
+
+class DriveFile(BaseModel):
+    fileId:       str
+    name:         str = ""
+    mimeType:     str = ""
+    modifiedTime: Optional[str] = None
+    webViewLink:  Optional[str] = None
+    readable:     bool = False
+
+
+class DriveFilesResponse(BaseModel):
+    files:    List[DriveFile] = []
+    logId:    Optional[str] = None
+    warnings: List[str] = []
+
+
+class DriveDocumentResponse(BaseModel):
+    fileId:      str
+    name:        str = ""
+    mimeType:    str = ""
+    webViewLink: Optional[str] = None
+    text:        str = ""
+    truncated:   bool = False
+    logId:       Optional[str] = None
+    warnings:    List[str] = []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Vault graph / Graphify viewer (D3d) — READ-ONLY
+# ══════════════════════════════════════════════════════════════════════════════
+
+class GraphNode(BaseModel):
+    id:         str
+    label:      str = ""
+    path:       Optional[str] = None
+    folder:     str = ""
+    exists:     bool = True
+    outDegree:  int = 0
+    inDegree:   int = 0
+    fileCount:  int = 0
+
+
+class GraphEdge(BaseModel):
+    source: str
+    target: str
+
+
+class GraphStats(BaseModel):
+    files:     int = 0
+    nodes:     int = 0
+    edges:     int = 0
+    dangling:  int = 0
+    orphans:   int = 0
+    collapsed: int = 0
+    truncated: bool = False
+
+
+class VaultGraphResponse(BaseModel):
+    nodes:    List[GraphNode] = []
+    edges:    List[GraphEdge] = []
+    stats:    GraphStats
+    source:   str
+    warnings: List[str] = []
+
+
+class SearchResultItem(BaseModel):
+    url:           str
+    title:         str = ""
+    openable:      bool = False
+    blockedReason: Optional[str] = None
+
+
+class ResearchSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    query: str
+    limit: Optional[int] = None
+
+
+class ResearchSearchResponse(BaseModel):
+    query:         str
+    results:       List[SearchResultItem] = []
+    count:         int = 0
+    openableCount: int = 0
+    warnings:      List[str] = []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Canvas / Quercus intake (MVP v10) — READ-ONLY
+# ══════════════════════════════════════════════════════════════════════════════
+
+class QuercusStatusResponse(BaseModel):
+    configured: bool
+    host:       str
+    readOnly:   bool = True
+    message:    str
+
+
+class QuercusCourse(BaseModel):
+    courseId:   str
+    name:       str = ""
+    courseCode: str = ""
+    term:       Optional[str] = None
+
+
+class QuercusCoursesResponse(BaseModel):
+    courses:  List[QuercusCourse] = []
+    logId:    Optional[str] = None
+    warnings: List[str] = []
+
+
+class QuercusAssignment(BaseModel):
+    assignmentId:   str
+    courseId:       str
+    name:           str = ""
+    dueAt:          Optional[str] = None
+    pointsPossible: Optional[float] = None
+    htmlUrl:        Optional[str] = None
+    description:    str = ""
+
+
+class QuercusAssignmentsResponse(BaseModel):
+    courseId:    str
+    assignments: List[QuercusAssignment] = []
+    logId:       Optional[str] = None
+    warnings:    List[str] = []
+
+
+class QuercusAnnouncement(BaseModel):
+    announcementId: str
+    courseId:       str
+    title:          str = ""
+    postedAt:       Optional[str] = None
+    htmlUrl:        Optional[str] = None
+    message:        str = ""
+
+
+class QuercusAnnouncementsResponse(BaseModel):
+    courseId:      str
+    announcements: List[QuercusAnnouncement] = []
+    logId:         Optional[str] = None
+    warnings:      List[str] = []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Computer-use harness (MVP v7) — PRIVILEGED, FULL DESKTOP
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ComputerUseSessionSummary(BaseModel):
+    id:               Optional[str] = None
+    task:             Optional[str] = None
+    status:           Optional[str] = None
+    budgetSeconds:    Optional[int] = None
+    remainingSeconds: float = 0.0
+    allowedWindows:   List[str] = []
+    actionCount:      int = 0
+    refusedCount:     int = 0
+    startedAt:        Optional[str] = None
+    endedAt:          Optional[str] = None
+
+
+class ComputerUseStatusResponse(BaseModel):
+    enabled: bool
+    active:  Optional[ComputerUseSessionSummary] = None
+    message: str
+
+
+class StartComputerUseSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    task:           str
+    allowedWindows: List[str]
+    budgetSeconds:  Optional[int] = None
+
+
+class ComputerUseSessionResponse(BaseModel):
+    session:  ComputerUseSessionSummary
+    warnings: List[str] = []
+
+
+class ComputerUseObserveResponse(BaseModel):
+    window:           str = ""
+    width:            int = 0
+    height:           int = 0
+    screenshotBase64: str = ""
+    warnings:         List[str] = []
+
+
+class ComputerUseClickRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    x:           int
+    y:           int
+    confirmRisk: Optional[str] = None
+
+
+class ComputerUseTypeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text:        str
+    confirmRisk: Optional[str] = None
+
+
+class ComputerUseActionResponse(BaseModel):
+    ok:       bool
+    window:   str = ""
+    x:        Optional[int] = None
+    y:        Optional[int] = None
+    chars:    Optional[int] = None
+    warnings: List[str] = []

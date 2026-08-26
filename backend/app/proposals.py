@@ -106,7 +106,11 @@ def _raw_inbox_proposals() -> List[dict]:
 _APPLYABLE_STATUSES = {"pending", "approved"}
 
 # Normalized-id prefixes → source label, for messages.
-_KNOWN_PREFIXES = {"raw-inbox", "consolidation", "research", "email-intake"}
+_KNOWN_PREFIXES = {
+    "raw-inbox", "consolidation", "research", "email-intake",
+    # MVP v8: an Email Intake draft's proposed rows applied into the vault.
+    "email-task", "email-calendar",
+}
 
 
 def _split_proposal_id(proposal_id: str) -> Tuple[str, str]:
@@ -159,6 +163,10 @@ def apply_proposal(proposal_id: str, vault_path: str) -> dict:
     prefix, related = _split_proposal_id(proposal_id)
     if prefix == "raw-inbox":
         result = _apply_raw_inbox(related, vault_path)
+    elif prefix == "email-task":
+        result = apply_email_task_rows(related, vault_path)
+    elif prefix == "email-calendar":
+        result = apply_email_calendar_rows(related, vault_path)
     else:
         result = _apply_draft(prefix, related, vault_path)
     result["id"] = proposal_id
@@ -241,3 +249,198 @@ def list_normalized_proposals() -> Tuple[List[dict], List[dict]]:
         errors.append({"source": "email-intake", "message": str(exc)})
 
     return items, errors
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Email Intake proposed rows → vault (MVP v8)
+# ══════════════════════════════════════════════════════════════════════════════
+# Email Intake records proposed task and calendar rows as free text. This turns
+# them into real vault rows through the SAME adapters the A3 approval queue uses
+# (`vault.create_task`, `calendar.create_calendar_candidate`), so backup-before-
+# write, conflict re-check, pipe sanitisation and traversal rejection are all
+# inherited unchanged — no new write primitive is introduced here.
+#
+# Parsing is deliberately conservative. A calendar candidate REQUIRES a date, and
+# this never invents one: a row with no recognisable date is reported as skipped
+# rather than being placed on an arbitrary day.
+
+import re as _re
+
+_MAX_ROWS_PER_APPLY = 25
+_MAX_TITLE_CHARS = 200
+
+# ISO first (unambiguous), then common written forms. Deliberately no bare
+# numeric D/M vs M/D form — that is ambiguous and guessing would be worse than
+# skipping the row.
+_DATE_PATTERNS = (
+    (_re.compile(r"\b(\d{4}-\d{2}-\d{2})\b"), "%Y-%m-%d"),
+    (_re.compile(r"\b(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})\b", _re.I), "%d %b %Y"),
+    (_re.compile(r"\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})\b", _re.I), "%b %d %Y"),
+)
+_TIME_RE = _re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm)?\b", _re.I)
+_DURATION_RE = _re.compile(r"\b(\d+(?:\.\d+)?\s*(?:h|hr|hrs|hour|hours|m|min|mins|minutes))\b", _re.I)
+
+
+def _clean_row(text: str) -> str:
+    """Collapse whitespace and strip list markers. Newlines would break a table."""
+    cleaned = " ".join(str(text or "").split())
+    return _re.sub(r"^[-*\u2022]\s*", "", cleaned).strip()
+
+
+def parse_task_row(text: str) -> Optional[dict]:
+    """Parse a proposed task row into a `vault.create_task` payload, or None."""
+    row = _clean_row(text)
+    if not row:
+        return None
+
+    due = ""
+    for pattern, fmt in _DATE_PATTERNS:
+        match = pattern.search(row)
+        if match:
+            from datetime import datetime as _dt
+            raw = match.group(1).replace(",", "")
+            try:
+                due = _dt.strptime(raw, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                due = ""
+            break
+
+    return {"title": row[:_MAX_TITLE_CHARS], "due": due}
+
+
+def parse_calendar_row(text: str) -> Optional[dict]:
+    """Parse a proposed calendar row, or None when it carries no usable date.
+
+    Returning None is the correct outcome for a dateless row: a calendar
+    candidate without a date cannot be scheduled, and inventing one would put a
+    fabricated commitment in the user's calendar file.
+    """
+    row = _clean_row(text)
+    if not row:
+        return None
+
+    date = ""
+    for pattern, fmt in _DATE_PATTERNS:
+        match = pattern.search(row)
+        if match:
+            from datetime import datetime as _dt
+            raw = match.group(1).replace(",", "")
+            try:
+                date = _dt.strptime(raw, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                date = ""
+            break
+    if not date:
+        return None
+
+    time_match = _TIME_RE.search(row)
+    time_value = ""
+    if time_match:
+        hour, minute, meridiem = int(time_match.group(1)), time_match.group(2), time_match.group(3)
+        if meridiem:
+            meridiem = meridiem.lower()
+            if meridiem == "pm" and hour != 12:
+                hour += 12
+            elif meridiem == "am" and hour == 12:
+                hour = 0
+        if 0 <= hour <= 23:
+            time_value = f"{hour:02d}:{minute}"
+
+    duration_match = _DURATION_RE.search(row)
+    return {
+        "title": row[:_MAX_TITLE_CHARS],
+        "date": date,
+        "time": time_value,
+        "duration": duration_match.group(1).replace(" ", "") if duration_match else "",
+        "source": "email-intake",
+        # Never pre-approved: an emailed suggestion is a proposal, not a decision.
+        "approved": "No",
+    }
+
+
+def _load_email_draft(draft_id: str):
+    from app.email_intake import get_draft
+    draft = get_draft(draft_id)
+    if draft is None:
+        raise ValueError(f"Email intake draft '{draft_id}' not found.")
+    return draft
+
+
+def apply_email_task_rows(draft_id: str, vault_path: str) -> dict:
+    """Create one vault task per parseable proposed task row."""
+    from app.vault import create_task
+
+    draft = _load_email_draft(draft_id)
+    rows = list(draft.proposed_task_rows or [])[:_MAX_ROWS_PER_APPLY]
+    if not rows:
+        raise ValueError("This email draft has no proposed task rows.")
+
+    created: List[str] = []
+    skipped: List[str] = []
+    for row in rows:
+        payload = parse_task_row(row)
+        if payload is None:
+            skipped.append(_clean_row(row) or "(blank row)")
+            continue
+        try:
+            create_task(
+                vault_path=vault_path,
+                title=payload["title"],
+                status="todo",
+                source="email-intake",
+                due=payload["due"] or None,
+            )
+            created.append(payload["title"])
+        except ValueError as exc:
+            skipped.append(f"{payload['title']} — {exc}")
+
+    if not created:
+        raise ValueError(
+            "No task rows could be applied. " + ("; ".join(skipped) if skipped else "")
+        )
+
+    message = f"Created {len(created)} task(s)."
+    if skipped:
+        message += f" Skipped {len(skipped)}: " + "; ".join(skipped[:3])
+    return {
+        "ok": True, "status": "applied", "alreadyApplied": False,
+        "message": message, "targetPath": "ops/task-db.md",
+        "created": created, "skipped": skipped,
+    }
+
+
+def apply_email_calendar_rows(draft_id: str, vault_path: str) -> dict:
+    """Create one calendar candidate per proposed row that carries a date."""
+    from app.calendar import create_calendar_candidate
+
+    draft = _load_email_draft(draft_id)
+    rows = list(draft.proposed_calendar_rows or [])[:_MAX_ROWS_PER_APPLY]
+    if not rows:
+        raise ValueError("This email draft has no proposed calendar rows.")
+
+    created: List[str] = []
+    skipped: List[str] = []
+    for row in rows:
+        payload = parse_calendar_row(row)
+        if payload is None:
+            skipped.append(f"{_clean_row(row) or '(blank row)'} — no date found")
+            continue
+        try:
+            create_calendar_candidate(vault_path, payload)
+            created.append(payload["title"])
+        except ValueError as exc:
+            skipped.append(f"{payload['title']} — {exc}")
+
+    if not created:
+        raise ValueError(
+            "No calendar rows could be applied. " + ("; ".join(skipped) if skipped else "")
+        )
+
+    message = f"Created {len(created)} calendar candidate(s), all Approved=No."
+    if skipped:
+        message += f" Skipped {len(skipped)}: " + "; ".join(skipped[:3])
+    return {
+        "ok": True, "status": "applied", "alreadyApplied": False,
+        "message": message, "targetPath": "ops/calendar-candidates.md",
+        "created": created, "skipped": skipped,
+    }

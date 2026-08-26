@@ -2,6 +2,377 @@
 
 ## Current State
 
+**All five PRD gap items complete (2026-08-24). 1331 backend tests pass; build
+clean (94 modules). Every MVP tier v1–v10 is now implemented.**
+
+**Computer-use harness (MVP v7) — the last unbuilt tier.** New
+`backend/app/computer_use.py`. The user chose **full desktop control** over
+browser-only (PRD §41 Q5/Q6, previously unanswered); the advice on record was
+browser-only, because host control has no sandbox boundary. That decision means
+the guards ARE the safety:
+1. Assist mode · 2. operator token (`X-Brain-Approval-Token`) · 3.
+`BRAIN_UI_COMPUTER_USE_ENABLED` kill switch, default OFF · 4. an active session
+within its wall-clock budget · 5. **the foreground window must match the session
+allowlist — if focus moved, the action is REFUSED, never retargeted.**
+PRD §13.4's nine risky categories need per-action confirmation (never sticky —
+a test asserts a confirmed action does not unlock the next one). Typing into a
+credential window is **refused outright and cannot be confirmed away**.
+Also: typed text capped and control-characters rejected, a system-hotkey denylist,
+`pyautogui.FAILSAFE` on, screenshots downscaled and stored backend-local only
+(never the vault), and typed CONTENT never logged — only its length.
+`computer.click`/`computer.type` are approval-gated and `computer.screenshot`
+added. Frontend `ComputerUseBanner` is mounted app-wide with a Stop control;
+both status and stop are deliberately unauthenticated so the indicator always
+renders and the emergency stop always works.
+
+**A false positive the tests caught, which would have made the tool useless
+here:** the credential-detection pattern matched the bare word "vault" — and this
+entire app is built around an Obsidian *vault*, so every ordinary window would
+have been flagged as a password surface. Password managers are now matched by
+name instead.
+
+**Vault tool-log mirror (PRD §32, closes acceptance criterion #19).** Every
+gateway entry is mirrored append-only to `ops/tool-logs/YYYY-MM-DD-tool-log.md`
+through `vault.py`'s `_safe_subpath`. JSON stays the queryable source; a mirror
+failure is swallowed so it can never break the action it records. Pipes are
+escaped and newlines flattened so untrusted values cannot break the table.
+**Caught during implementation:** the first full test run wrote 395 rows of
+synthetic log data into the REAL vault, because the mirror resolves the live
+config. Removed, and `conftest.py` now pins the mirror off for the whole suite.
+
+**Email → task / calendar apply (closes MVP v8).** `proposals.py` gained
+`email-task:` / `email-calendar:` id prefixes dispatching to `vault.create_task`
+and `calendar.create_calendar_candidate` — the same adapters A3 uses, so backup /
+conflict-check / traversal rejection are inherited. Calendar candidates are always
+written `Approved=No`. Row parsing **refuses to invent dates**: a calendar row with
+no recognisable date is reported skipped rather than scheduled on a guessed day,
+and ambiguous numeric forms like `03/04/2026` are deliberately not parsed.
+
+**Browser search (closes MVP v4 / §13.2).** One fixed privacy-respecting provider
+(host pinned as a constant, never caller-supplied); every result is then run
+through the same `validate_url()` allowlist that guards `open_page`, so appearing
+in results grants a URL nothing. Provider redirect wrappers are unwrapped.
+
+**Canvas/Quercus intake (closes MVP v10).** `backend/app/quercus.py`: read-only
+Canvas REST, GET-only, host pinned, redirects disabled, numeric course-id
+validation, HTML stripped from untrusted descriptions, token never logged or
+returned. Assignment SUBMISSION is deliberately out of scope. Needs
+`BRAIN_UI_QUERCUS_TOKEN` to run live.
+
+**Two latent bugs found and fixed:** `strip_html`/`_truncate` bound their size cap
+as a default argument, freezing it at import so the limit was not actually
+configurable (same pattern previously fixed in `graph.py`). And `spin` — referenced
+by inline styles across the app for loading indicators — was never defined in CSS,
+so every spinner was static; added alongside the new `pulse` keyframe.
+
+**C1b + D3d complete (2026-08-24). Every planned task is now implemented.
+1130 backend tests pass; `npm run build` clean (93 modules).**
+
+**C1b sandboxed fetch driver.** New `backend/app/openshell_exec.py` — the one place
+that runs a command inside an OpenShell sandbox, kept separate from the
+provably-read-only `openshell_client.py`. `browser.sandboxed_fetch` now really
+fetches, via `curl` executed INSIDE the sandbox over the streaming `ExecSandbox`
+RPC. `browser.read_page` moved from `disabled` to approval-gated and joined
+`_APPROVAL_REQUIRED_TOOLS`, so a page read runs only after the full A3 flow.
+**The fail-open policy concern is now enforced in code, not just advised:**
+`assert_policy_enforces()` REFUSES to execute when the sandbox policy sets
+`landlock.compatibility: best_effort`, because isolation may silently not apply
+(OpenShell#803, NemoClaw#1739; Docker's seccomp blocks the Landlock syscalls).
+Override is explicit and logged: `BRAIN_UI_ALLOW_FAIL_OPEN_SANDBOX=true`.
+Commands are an argv allowlist (`curl` only) — never a shell string, no `sh -c`.
+Two bugs my own tests caught: the `--write-out` value contained a newline that
+failed the argv validator, and the validator itself was over-broad — it rejected
+`&`, which would have broken every URL with a query string. Since argv goes
+straight to exec over gRPC and no shell ever interprets it, the guard is now
+control-characters-only, with the reasoning recorded in the code.
+
+**D3d vault graph viewer.** The PRD names a "Graphify viewer" once, with no data
+format, and `brain graphify-setup` is not in the brain allowlist — so rather than
+guess, `backend/app/graph.py` derives the graph from a source that IS well
+defined: **Obsidian wikilinks**. Links inside code fences and inline code are
+ignored; dangling links become real (hollow) nodes rather than being hidden;
+resolution is case-insensitive by note name, matching Obsidian. `load_export()`
+additionally reads standard node-link JSON if a real export ever appears, and
+reports an unrecognized shape instead of rendering it wrongly.
+Frontend `VaultGraph.tsx` renders it as an SVG force-directed graph with a
+deterministic layout (no external graph library), click-to-focus neighbourhoods,
+and an orphan filter.
+
+**Honest-reporting fix found by running it live:** the real vault has 245 files but
+only 94 nodes, because **151 files share a note name with another file** (one name
+occurs 99 times). Collapsing them is correct for link resolution, but silently
+showing 245 files as 94 notes misrepresents the vault — so `fileCount` per node and
+a `collapsed` stat are now surfaced, with a warning and a per-node note in the UI.
+
+**Real bug found by the same live run:** three endpoints I added (calendar
+reconcile, vault index, vault graph) called `cfg.vaultPath`, but `RuntimeConfig`
+exposes `vault_path` — they would have raised `AttributeError` in production. The
+tests passed only because I had stubbed the config with the wrong attribute name,
+so they validated my mistake rather than the real contract. Endpoints fixed and
+the stubs corrected to match `RuntimeConfig`.
+
+**C1 / C2 / D1 / D2 / D3 complete (2026-08-24). 1051 backend tests pass; build clean.**
+
+**C1 time-boxed research (session layer).** `backend/app/browser.py`: sessions with a
+wall-clock budget, a MANDATORY domain allowlist (empty = deny everything, and a
+dot-boundary suffix match so `evil-rust-lang.org` never matches `rust-lang.org`),
+SSRF guards (non-http(s), embedded credentials, and loopback/private/link-local
+literals all rejected), page/char caps, and stop-now. Page text is untrusted:
+scripts/styles stripped, size-capped, stored for review only. **Browsing fails
+CLOSED** — `sandboxed_fetch` refuses when the OpenShell guardrail is unhealthy AND
+still refuses when it is healthy, because ExecSandbox must route through the
+approval queue first. There is deliberately no direct-HTTP fallback (source-guard
+test). Endpoints `POST/GET /api/research/sessions...`; opening a page is classified
+as `browser.read_page`, which is `disabled`, so fetches correctly 409 today.
+Frontend `ResearchSessionPanel`. **Remaining: the real fetch driver — tracked as C1b.**
+
+**C2 chat capture.** `backend/app/chat_capture.py` maps captured pages to
+Consolidation draft fields: host→sourceTool detection (lookalike hosts like
+`evil-claude.ai` correctly fall through to `other`), speaker-label parsing into
+user/assistant turns, and an honest single `unknown` turn when no labels are found
+rather than inventing structure. Creates no draft, writes no vault file.
+
+**D1 voice.** `backend/app/voice.py` + faster-whisper, fully on-device. Validation
+runs BEFORE decode; uploaded filenames are reduced to a basename so
+`../../../etc/passwd.wav` cannot build a path; temp files are deleted even when
+decode raises; transcription shares `agent.py`'s inference gate so speech never
+races the LLM for the GPU (busy → HTTP 429). **Live-verified**: Windows SAPI spoke
+a sentence, local Whisper returned it verbatim.
+
+**D2 approved Calendar writes — THE ONLY EXTERNAL WRITE.** `backend/app/gcal_write.py`
+is a SEPARATE module so `gcal.py` stays provably read-only. Create-only; update/
+patch/delete/move are absent and source-guarded. The request body is REBUILT from a
+fixed allowlist, so a candidate row cannot smuggle in attendees, conferencing, or
+reminder overrides; `sendUpdates` is forced to `none`, so creating an event can
+never email anyone. Reached only through the A3 approval queue. Requires the
+opt-in `calendar.events` scope (`BRAIN_UI_CALENDAR_WRITE_ENABLED` + re-consent).
+NOTE: granting that scope would have BROKEN Gmail reads, because
+`_assert_readonly_scopes` rejected any extra scope — now it allows exactly
+calendar.events and drive.readonly while still refusing every Gmail write scope.
+
+**D3.** `github.py` (read-only: GET-only, host-pinned to api.github.com, redirects
+disabled, `owner/name` validated, token never logged/echoed/returned even in
+errors), `gdrive.py` (read-only listing + text export; binary types refused rather
+than downloaded; trashed files never listed; Drive query apostrophes escaped),
+`vector_search.py` (local Ollama embeddings, vault read-only, and **honest
+degradation** — with no embedding model it reports `mode: lexical, degraded: true`
+instead of pretending results are semantic).
+
+**Test hermeticity, again.** `vector_search` tests were taking 19 s because
+`embedder=None` fell through to a live Ollama call; pinned in the fixture → 0.42 s.
+`conftest.py` also pins `github_read_ready_fn`, so GitHub policy results no longer
+depend on whether the dev machine has a token.
+
+**D1 Voice I/O complete (2026-08-23, LOCAL-ONLY, live-verified).** New
+`backend/app/voice.py` wraps faster-whisper 1.2.1 for fully on-device speech-to-text.
+The user chose local Whisper over the browser Web Speech API precisely so audio
+never leaves the machine — Chrome streams mic audio to Google's servers; this does
+not, and a source-guard test asserts the module references no HTTP client, socket,
+or cloud speech vendor.
+Endpoints `GET /api/agent/voice/status` (loads no model, no network) and
+`POST /api/agent/transcribe` (multipart upload).
+**Safety:** size cap 25 MB and extension allowlist enforced BEFORE any decode (test
+asserts the model is never touched for a rejected upload); uploaded filenames are
+reduced to their basename so `../../../etc/passwd.wav` cannot build a path; audio
+length capped at 300 s; segments capped 500; text capped 20 000 chars; the temp file
+used for decoding is deleted in a `finally` (test asserts deletion even when decode
+raises). Transcripts are UNTRUSTED — returned for review, never auto-sent, never
+routed to a tool (test feeds a command-shaped transcript and asserts it is only echoed).
+**GPU contention:** transcription shares `agent.py`'s single `_INFERENCE_GATE`, so
+speech and the local LLM never compete; the gate is released on both success and
+failure, and a busy LLM yields HTTP 429 rather than a stall. Device defaults to
+**cpu** — the RX 7900 GRE is AMD, so faster-whisper's CUDA path does not apply.
+Model is cached and re-loaded only when config changes.
+Frontend: `src/components/ui/VoiceControls.tsx` (MediaRecorder capture, elapsed
+timer with auto-stop at the cap, transcript appended to the composer for review,
+`Speak replies` toggle using the browser's local SpeechSynthesis voices) mounted
+above the AgentPage composer, driving real `AgentSphere` states
+(listening → thinking → idle) via the existing store `setAgentState`.
+**Live end-to-end proof:** Windows SAPI synthesized "Add a task to review the
+calendar tomorrow morning"; local transcription returned that sentence exactly
+(3.5 s audio, 3.8 s including first-run model load, language `en`).
+40 new tests → **841/841 backend pass**, `npm run build` clean.
+
+**Policy inspector aligned to the real OpenShell schema (2026-08-23).** The
+sandbox policy `backend/policies/jarvis-deny-by-default.yaml` is written and
+`NEMOCLAW_POLICY_PATH` is set, but `runtime_policy.py`'s `_summarize()` predated
+the real schema: it reported `filesystem_policy`, `landlock`, and `version` as
+*unrecognized*, and showed `networkPolicy: null` / `filesystemScopes: []` for a
+policy that actually denies all outbound traffic and restricts the filesystem —
+i.e. the UI displayed nothing about a genuinely restrictive policy.
+
+Schema taken from the vendored `proto/openshell/sandbox.proto` (`SandboxPolicy`:
+`version`, `filesystem`/`filesystem_policy`, `landlock`, `process`,
+`network_policies`, `network_middlewares`). Note the YAML key is
+`filesystem_policy` while the proto field is `filesystem` — serde renaming; both
+are accepted. `KNOWN_KEYS` is now `OPENSHELL_KEYS | LEGACY_KEYS` so hand-written
+or non-OpenShell policies still summarize.
+- `filesystemScopes` now renders `FilesystemPolicy` as `ro:`/`rw:` entries plus
+  `include_workdir`.
+- `networkPolicy` now reports `deny (no network_policies declared)` when the key
+  is absent/empty, or `allow (<names>)` when rules exist — but **only** for
+  documents that look like OpenShell policies, so a foreign document reads
+  `unknown` rather than falsely reading `deny`.
+- New **fail-open advisory**: `landlock.compatibility: best_effort` applies only
+  what the host supports and otherwise just warns, so filesystem isolation can
+  silently not take effect (see NVIDIA/OpenShell#803 and NemoClaw#1739 — and
+  Docker's default seccomp profile blocks the Landlock syscalls 444–446). The
+  inspector now warns and points at `hard_requirement`, which aborts sandbox
+  startup instead. **The current policy uses `best_effort` and should move to
+  `hard_requirement` before anything privileged runs in a sandbox.**
+
+Inspection still enables nothing — capabilities stay `unknown`/disabled even for
+a permissive policy (test asserts it). 9 new tests → **801/801 backend pass**.
+The policy has NOT been applied to a sandbox (none exists yet).
+
+**C0 OpenShell runtime RESOLVED (2026-08-23, READ-ONLY, live-verified).** The
+NemoClaw/OpenShell guardrail is no longer hypothetical — a real NVIDIA OpenShell
+0.0.111 gateway is running in WSL2 and the Windows backend talks to it over
+typed gRPC.
+
+*Setup:* user installed OpenShell in WSL2 Ubuntu 26.04 (kernel 6.6.114, so
+Landlock is available). The `openshell sandbox list` "connection refused" was NOT
+networking — the gateway crash-looped 28× with `no compute driver configured`;
+OpenShell needs Docker/Podman underneath. Resolved with a compute driver
+(gateway now reports `docker 29.7.2`).
+
+*Verified connection facts (all tested from Windows):* endpoint
+`https://127.0.0.1:17670`, `auth_mode: mtls`; **transport is gRPC over HTTP/2**
+(ALPN negotiates `h2`, TLS 1.3) — every REST path returns 404 and server
+reflection is `UNIMPLEMENTED`. Reachable from Windows at `localhost:17670` via
+WSL2 localhost forwarding, so **the probe's loopback-only default is correct and
+`NEMOCLAW_ALLOW_REMOTE_PROBE` is NOT needed** (earlier guidance to set it was
+wrong). Client certs live under the WSL path and are readable from Windows over
+`\\wsl.localhost\...`. Server cert SAN covers `localhost`, `127.0.0.1`, and
+`host.openshell.internal`. Note for any stdlib-`ssl` consumer: the gateway CA
+omits an Authority Key Identifier, so OpenSSL 3.x rejects it under
+`VERIFY_X509_STRICT` — clear that flag rather than disabling verification.
+
+*Protos:* vendored to `backend/proto/openshell/` from NVIDIA/OpenShell at tag
+**v0.0.111** (matched to the installed binary, not `main` — wire format drifts
+between releases). Stubs generated into `backend/app/openshell_pb/`;
+`protoc`'s flat imports are rewritten to package-relative or they only import
+with that directory on `sys.path`. Full procedure in
+`backend/proto/openshell/REGENERATE.md`.
+
+*New module `backend/app/openshell_client.py` — READ-ONLY.* Exposes only
+`health()`, `gateway_info()`, `list_sandboxes()`, `current_user()`. **Privileged
+RPCs are unreachable**: it never calls CreateSandbox/DeleteSandbox/Stop/Start/
+ExecSandbox/ExecSandboxInteractive/CreateSshSession/ForwardTcp/UpdateConfig/
+ExposeService/IssueSandboxToken, and a source-guard test asserts it — those
+belong behind the approval queue in C1. mTLS material is read for the handshake
+only and never logged, echoed, or returned (test asserts key bytes never reach an
+error string). URL validation rejects embedded credentials, non-http(s)/grpc
+schemes, and missing ports; timeouts clamp to [0.1, 15]s.
+
+*`runtime_probe.py` fixed.* It did a plain HTTP GET with no client cert, which
+against a gRPC+mTLS gateway would report a perfectly healthy runtime as
+`unavailable` — exactly the dishonest status the module exists to prevent. The
+default transport now calls the typed `openshell.v1.OpenShell/Health` RPC and
+maps healthy→200, falling back to the old plain GET (`_plain_http_get`) when
+grpcio/stubs are unusable so non-gRPC runtimes still probe as before. The
+injection point is unchanged, so all 22 existing probe tests pass untouched.
+
+*Deps:* added `grpcio`, `grpcio-tools`, and `PyYAML` (the latter so
+`runtime_policy.py` can actually parse OpenShell's YAML policies — it was
+previously optional and reported YAML as unsupported). `.env.example` documents
+`NEMOCLAW_RUNTIME_URL`, new `NEMOCLAW_MTLS_DIR`, new `NEMOCLAW_TLS_SERVER_NAME`,
+and `NEMOCLAW_POLICY_PATH`.
+
+*Live results:* `Health` → `SERVICE_STATUS_HEALTHY` v0.0.111; `GetGatewayInfo` →
+docker 29.7.2; `ListSandboxes` → 0; `GetCurrentUser` → role `openshell-user`.
+42 new tests → **792/792 backend pass**, `npm run build` clean (90 modules).
+
+**Still open before C1:** `backend/policies/jarvis-deny-by-default.yaml` now
+provides an OpenShell v1 policy with no outbound network grants, and the
+gitignored `backend/.env` points `NEMOCLAW_POLICY_PATH` to it. The policy is not
+applied because `openshell sandbox list` currently returns no sandboxes; apply it
+to the intended sandbox with `openshell policy set <name> --policy
+/mnt/d/Hasnain/Personal/dev/JARVIS/backend/policies/jarvis-deny-by-default.yaml
+--wait` after that sandbox exists. C1 must decide how `ExecSandbox`
+(server-streaming) is gated — it is the first genuinely privileged RPC and must
+route through the Permission Gateway approval queue, never through
+`openshell_client.py`.
+
+**B2 Calendar read + reconciliation complete (2026-08-23, READ-ONLY, live-verified).
+Phase B is done.** New `backend/app/gcal.py`: `list_events(time_min, time_max)`
+(events.list, `singleEvents=True`, cancelled filtered, cap 250) and `reconcile(
+candidates, events)` — a **PURE** function (no I/O, no network, no writes) that
+compares vault calendar candidates to real events. Only **approved** candidates
+reconcile; each lands in exactly one bucket: `matched` (same normalized title +
+same date), `conflicting` (no title match but time windows overlap), `missing`
+(approved, parseable, nothing matches), `unparseable` (date/time unreadable).
+Helpers `parse_duration_minutes` ('1h'/'90m'/'1h30m'/'1.5h'/'45'→minutes, default
+60, capped 24h), `parse_candidate_window` (4 date formats × 6 time formats;
+date-only rows are whole-day and therefore cannot conflict), `parse_event_window`
+(all-day vs timed, `Z` suffix handled), `normalize_title`.
+Endpoints `GET /api/calendar/google/{status,events,reconcile}`, each classified
+through `evaluate_tool_request("calendar.read")` + tool-logged before the Google
+client is touched. `calendar.read` policy flipped `not_wired → available` and
+joined `_EXTERNAL_READ_TOOLS` (readiness hook renamed `_gmail_ready` →
+`_google_reads_ready`; Gmail and Calendar share one token). `executionEnabled`
+stays False. **Writes unreachable:** `gcal.py` never references insert/update/
+patch/delete/move/import (source-guard test); `calendar.create_event` stays
+`disabled`; `calendar.create_candidate` remains a separate vault-only,
+approval-gated tool. `tools.py` `google-calendar-api` entry now resolves per call
+with writes always in `blockedNow`. `CalendarStatusResponse.writesEnabled` is
+hardcoded False until D2.
+**Live-verified bug the mocks could not catch:** `datetime.now()` is naive, so
+`timeMin`/`timeMax` had no UTC offset and Google returned **HTTP 400**. Added
+`_rfc3339()` + `_utc_now()` normalizing datetimes *and* caller-supplied strings
+(offset-less → `Z`, existing offsets preserved), plus 4 regression tests. Live
+read then returned 2 events (1 all-day, 1 timed) and reconciliation ran clean.
+Frontend: `api.ts` Calendar types + `googleCalendarStatus/Events/Reconcile` (no
+event-write function exists); `CalendarPage.tsx` `GoogleCalendarReconcilePanel`
+above the candidates table — authorization state, **Reconcile** button, counts
+line, and four grouped result sections (conflicts red / missing amber / matched
+green / unparseable). 56 new tests → **750/750 backend pass**, `npm run build`
+clean (90 modules).
+
+**B1 Gmail read intake complete (2026-08-23, READ-ONLY, live-verified).** New
+`backend/app/gmail.py`: `search_threads(query, max_results)` (threads.list +
+threads.get metadata) and `get_message(id)` (messages.get, format=full), plus
+`build_intake_draft()` which reuses `email_intake.create_draft` unchanged — so
+importing creates a **backend draft only, NO vault write**, and the existing
+never-overwrite/stay-in-vault/untrusted-fence guarantees are inherited. Endpoints
+`GET /api/gmail/status`, `POST /api/gmail/search`, `GET /api/gmail/messages/{id}`,
+`POST /api/gmail/import`; every one classifies through
+`permission_gateway.evaluate_tool_request` and writes a `gateway_eval` tool-log
+entry **before** the Google client is touched, and returns the `logId`.
+**Mutations are unreachable:** `gmail.py` never references send/trash/delete/
+modify/batchModify/insert/labels/drafts, and a source-guard test asserts it.
+`gmail.send` stays `disabled`; `trash` was added to `_DANGEROUS_SUBSTRINGS` so
+`gmail.trash` classifies `disabled` rather than merely `denied`.
+**Gateway:** `gmail.search`/`gmail.read` policies flipped `not_wired → available`
+(requiresApproval False — they mutate nothing) behind a new
+`_EXTERNAL_READ_TOOLS` branch. These are `allowed` **only when credentials exist
+on disk** (`external_read_ready_fn`, default `gmail_configured()`), and
+`executionEnabled` stays **False** — they run on their own read endpoints, never
+through `/permissions/execute` (which remains brain-only). `list_policies()` and
+`tools.py` resolve Gmail state **per call**, not at import time.
+**Safety:** scopes re-asserted before every call (non-readonly scope → refuse);
+query single-line + length-capped; `maxResults` clamped [1,50]; body capped at
+100 KB with `bodyTruncated`; headers capped 500 chars; MIME walk has a 200-node
+budget; malformed base64 never raises; one bad thread degrades to
+`(metadata unavailable)` instead of failing the search. Bodies/headers are
+UNTRUSTED — stored and displayed only, never followed as instructions, never
+auto-routed to a tool.
+**Also fixed:** `google_auth.authorize_google()` dead-ended when a refresh token
+was revoked/expired/scope-changed, forcing the operator to hand-delete
+`token.json`. It now falls back to browser consent (matters for D2, where adding
+`calendar.events` invalidates the token the same way).
+**Test hermeticity:** `conftest.py` gained an autouse fixture pinning
+`permission_gateway.external_read_ready_fn` and `tools._gmail_reads_ready` to
+False, because Gmail policy decisions otherwise depended on whether the dev
+machine happened to be authorized — the same test passed before `authorize` and
+failed after. All 654 pre-existing tests pass **unmodified**.
+Frontend: `api.ts` Gmail types + `gmailStatus/gmailSearch/gmailMessage/gmailImport`
+(no mutation function exists); `EmailIntakePage.tsx` `GmailImportPanel` replaces
+the old static "Gmail MCP is not wired" banner with real authorization state,
+search, and per-thread **Import as draft**. 40 new tests → **694/694 backend
+pass**, `npm run build` clean (90 modules). Live smoke test against real Gmail
+confirmed search + message read (3 threads, 1208-char body).
+
 **A2 + A3 complete (2026-08-10).** Brain UI now uses a fixed dual Gemma 4 setup:
 `gemma4:12b-it-qat` for everyday work and `gemma4:26b-a4b-it-qat` for explicit heavy
 assistance. Consolidation, Research, and Email Intake expose opt-in preview-only AI assist;

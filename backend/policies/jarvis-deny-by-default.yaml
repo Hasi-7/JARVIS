@@ -1,0 +1,21 @@
+# OpenShell v1 policy for the initial JARVIS sandbox.
+# Outbound network access is denied because no network_policies are declared.
+version: 1
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /app
+    - /etc
+    - /var/log
+  read_write:
+    - /sandbox
+    - /tmp
+    - /dev/null
+
+landlock:
+  compatibility: best_effort

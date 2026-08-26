@@ -558,7 +558,11 @@ def normalized_proposals() -> List[dict]:
             "createdAt":  d.created_at,
             "updatedAt":  d.updated_at,
             "relatedId":  d.id,
-            "actions":    ["open_email_intake"],
+            "actions":    (
+                ["open_email_intake"]
+                + (["apply_email_tasks"] if d.proposed_task_rows else [])
+                + (["apply_email_calendar"] if d.proposed_calendar_rows else [])
+            ),
             "details": {
                 "filename":   Path(d.proposed_destination).name,
                 "domain":     d.domain,

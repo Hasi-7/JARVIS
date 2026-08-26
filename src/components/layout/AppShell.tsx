@@ -6,6 +6,7 @@ import { TopCommandBar } from './TopCommandBar';
 import { CommandPalette } from '@/components/ui/CommandPalette';
 import { Icon } from '@/components/ui/Icon';
 import { QUICK_ACTIONS } from '@/data/mock';
+import { ComputerUseBanner } from '@/components/ui/ComputerUseBanner';
 
 // brain subcommands that can be executed via backend (mirrors backend allowlist subset)
 const BRAIN_ACTION_MAP: Record<string, string> = {
@@ -70,6 +71,9 @@ export function AppShell({ children, scrollable = true }: AppShellProps) {
       <Sidebar route={route} onNavigate={(r: RouteId) => navigate(r)} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        {/* Above everything: a live computer-use session must be impossible to
+            miss from any page, with Stop always one click away (PRD §13.3). */}
+        <ComputerUseBanner />
         <TopCommandBar route={route} />
         <main
           style={{

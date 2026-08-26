@@ -11,6 +11,7 @@ import type {
 import { Icon } from '@/components/ui/Icon';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { ResearchSessionPanel } from '@/components/research/ResearchSessionPanel';
 import { DraftAssistPreview as DraftAssistPreviewPanel } from '@/components/ui/DraftAssistPreview';
 import { useAppStore } from '@/store/useAppStore';
 
@@ -541,6 +542,8 @@ export function ResearchPage() {
 
   return (
     <div style={{ maxWidth: 980, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--s5)' }}>
+
+      <ResearchSessionPanel />
 
       {/* header */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 'var(--s3)' }}>

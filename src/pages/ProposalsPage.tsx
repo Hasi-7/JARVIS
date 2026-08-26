@@ -56,10 +56,11 @@ function isSafeForBatch(p: ProposalItem): boolean {
 
 // ── proposal card ──────────────────────────────────────────────────────────────
 
-function ProposalCard({ p, onOpen, onApply, onReject, busy, result }: {
+function ProposalCard({ p, onOpen, onApply, onApplyRows, onReject, busy, result }: {
   p: ProposalItem;
   onOpen: (p: ProposalItem) => void;
   onApply: (p: ProposalItem) => void;
+  onApplyRows: (p: ProposalItem, prefix: 'email-task' | 'email-calendar') => void;
   onReject: (p: ProposalItem) => void;
   busy: boolean;
   result?: ApplyProposalResult;
@@ -68,6 +69,8 @@ function ProposalCard({ p, onOpen, onApply, onReject, busy, result }: {
   const canOpenConsolidation = p.actions.includes('open_consolidation');
   const canOpenResearch      = p.actions.includes('open_research');
   const canOpenEmailIntake   = p.actions.includes('open_email_intake');
+  const canApplyEmailTasks    = p.actions.includes('apply_email_tasks');
+  const canApplyEmailCalendar = p.actions.includes('apply_email_calendar');
   const applyable   = isApplyable(p);
   const canReject   = p.source === 'raw-inbox' && applyable;
   return (
@@ -145,6 +148,18 @@ function ProposalCard({ p, onOpen, onApply, onReject, busy, result }: {
         {canOpenEmailIntake && (
           <button className="btn btn-sm btn-ghost" onClick={() => onOpen(p)} title="Open the Email Intake page to review / edit">
             Open in Email Intake <Icon name="chevron" size={12} />
+          </button>
+        )}
+        {canApplyEmailTasks && (
+          <button className="btn btn-sm btn-ghost" onClick={() => onApplyRows(p, 'email-task')} disabled={busy}
+            title="Create vault tasks from this email's proposed task rows">
+            Apply task rows
+          </button>
+        )}
+        {canApplyEmailCalendar && (
+          <button className="btn btn-sm btn-ghost" onClick={() => onApplyRows(p, 'email-calendar')} disabled={busy}
+            title="Create calendar candidates (Approved=No) from this email's proposed rows">
+            Apply calendar rows
           </button>
         )}
         {applyable && (
@@ -240,6 +255,28 @@ export function ProposalsPage() {
       const res = await api.applyProposal(p.id);
       setResults((r) => ({ ...r, [p.id]: res }));
       await load(); // reflect new backend status
+    } catch (err) {
+      setResults((r) => ({
+        ...r,
+        [p.id]: { id: p.id, ok: false, status: 'error', targetPath: null, alreadyApplied: false,
+          message: err instanceof Error ? err.message : 'Apply failed.' },
+      }));
+    } finally {
+      markBusy(p.id, false);
+    }
+  }
+
+  // The proposed task/calendar rows apply through the SAME endpoint, addressed by
+  // their own id prefix, so no new mutation path is introduced on the frontend.
+  async function handleApplyRows(p: ProposalItem, prefix: 'email-task' | 'email-calendar') {
+    if (!p.relatedId) return;
+    const id = `${prefix}:${p.relatedId}`;
+    setActionError(null);
+    markBusy(p.id, true);
+    try {
+      const res = await api.applyProposal(id);
+      setResults((r) => ({ ...r, [p.id]: { ...res, id: p.id } }));
+      await load();
     } catch (err) {
       setResults((r) => ({
         ...r,
@@ -452,7 +489,7 @@ export function ProposalsPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s3)' }}>
           {filtered.map((p) => (
             <ProposalCard key={p.id} p={p} onOpen={handleOpen}
-              onApply={handleApply} onReject={handleReject}
+              onApply={handleApply} onApplyRows={handleApplyRows} onReject={handleReject}
               busy={busyIds.has(p.id)} result={results[p.id]} />
           ))}
         </div>

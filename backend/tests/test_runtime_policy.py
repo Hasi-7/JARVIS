@@ -317,3 +317,90 @@ def test_endpoint_summarizes_configured_policy(monkeypatch, tmp_policy):
     assert res.status == "loaded"
     assert res.summary.declaredModes == ["observe"]
     assert res.summary.browserAllowed is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Real NVIDIA OpenShell SandboxPolicy schema (proto/openshell/sandbox.proto)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_OPENSHELL_POLICY = """version: 1
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /etc
+  read_write:
+    - /sandbox
+    - /tmp
+
+landlock:
+  compatibility: best_effort
+"""
+
+
+def _inspect_yaml(tmp_path, text, name="policy.yaml"):
+    from app.runtime_policy import inspect_nemoclaw_policy
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return inspect_nemoclaw_policy({"NEMOCLAW_POLICY_PATH": str(path)})
+
+
+def test_official_openshell_keys_are_recognized(tmp_path):
+    result = _inspect_yaml(tmp_path, _OPENSHELL_POLICY)
+    assert result["status"] == "loaded"
+    # Regression: these were reported as unknown before the real schema was known.
+    assert result["summary"]["unknownKeys"] == []
+
+
+def test_filesystem_policy_scopes_are_surfaced(tmp_path):
+    scopes = _inspect_yaml(tmp_path, _OPENSHELL_POLICY)["summary"]["filesystemScopes"]
+    assert "ro: /usr" in scopes
+    assert "rw: /sandbox" in scopes
+    assert any("include_workdir" in s for s in scopes)
+
+
+def test_absent_network_policies_reads_as_deny(tmp_path):
+    net = _inspect_yaml(tmp_path, _OPENSHELL_POLICY)["summary"]["networkPolicy"]
+    assert net == "deny (no network_policies declared)"
+
+
+def test_declared_network_policies_are_named(tmp_path):
+    text = _OPENSHELL_POLICY + "\nnetwork_policies:\n  gitlab:\n    allow: true\n"
+    net = _inspect_yaml(tmp_path, text)["summary"]["networkPolicy"]
+    assert net.startswith("allow (")
+    assert "gitlab" in net
+
+
+def test_foreign_document_does_not_infer_deny(tmp_path):
+    """A non-OpenShell document missing the key means unknown, not deny."""
+    result = _inspect_yaml(tmp_path, "some_other_tool:\n  enabled: true\n")
+    assert result["summary"]["networkPolicy"] is None
+
+
+def test_best_effort_landlock_raises_fail_open_warning(tmp_path):
+    warnings = _inspect_yaml(tmp_path, _OPENSHELL_POLICY)["warnings"]
+    joined = " ".join(warnings).lower()
+    assert "fails open" in joined
+    assert "hard_requirement" in joined
+
+
+def test_hard_requirement_landlock_has_no_fail_open_warning(tmp_path):
+    text = _OPENSHELL_POLICY.replace("best_effort", "hard_requirement")
+    warnings = _inspect_yaml(tmp_path, text)["warnings"]
+    assert not any("fails open" in w.lower() for w in warnings)
+
+
+def test_recognized_policy_does_not_warn_about_missing_scopes(tmp_path):
+    warnings = _inspect_yaml(tmp_path, _OPENSHELL_POLICY)["warnings"]
+    assert not any("No recognized policy scopes" in w for w in warnings)
+
+
+def test_inspection_still_enables_nothing(tmp_path):
+    """Reading a permissive policy must not flip any capability on."""
+    text = _OPENSHELL_POLICY + "\nnetwork_policies:\n  everything:\n    allow: true\n"
+    summary = _inspect_yaml(tmp_path, text)["summary"]
+    assert summary["browserAllowed"] is None
+    assert summary["computerUseAllowed"] is None
+    assert summary["mcpAllowed"] is None
+    assert summary["credentialAccess"] == "unknown"

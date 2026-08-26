@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 
 GOOGLE_DATA_DIR = Path(__file__).parent.parent / "data" / "google"
@@ -15,6 +18,40 @@ GOOGLE_READONLY_SCOPES = (
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/calendar.readonly",
 )
+
+# The ONLY write scope this app will ever request (D2). Gmail mutation scopes are
+# permanently excluded — there is no code path that would use them.
+CALENDAR_WRITE_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+CALENDAR_WRITE_ENV = "BRAIN_UI_CALENDAR_WRITE_ENABLED"
+
+# Read-only Drive intake (D3). Opt-in, and read-only forever — there is no Drive
+# write, delete, or share code path anywhere in this app.
+DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+DRIVE_READ_ENV = "BRAIN_UI_DRIVE_INTAKE_ENABLED"
+
+
+def drive_read_requested(env: dict | None = None) -> bool:
+    """True when the operator has opted in to requesting read-only Drive access."""
+    import os as _os
+    source = _os.environ if env is None else env
+    return str(source.get(DRIVE_READ_ENV, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def calendar_write_requested(env: dict | None = None) -> bool:
+    """True when the operator has opted in to requesting the Calendar write scope."""
+    import os as _os
+    source = _os.environ if env is None else env
+    return str(source.get(CALENDAR_WRITE_ENV, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def requested_scopes(env: dict | None = None) -> list[str]:
+    """Scopes to request at consent: read-only, plus calendar.events when opted in."""
+    scopes = list(GOOGLE_READONLY_SCOPES)
+    if calendar_write_requested(env):
+        scopes.append(CALENDAR_WRITE_SCOPE)
+    if drive_read_requested(env):
+        scopes.append(DRIVE_READONLY_SCOPE)
+    return scopes
 
 
 class GoogleAuthSetupError(RuntimeError):
@@ -57,7 +94,7 @@ def oauth_status(data_dir: Path = GOOGLE_DATA_DIR) -> dict[str, Any]:
         "clientConfigured": client_configured,
         "clientFile": client_file_name,
         "tokenPresent": (data_dir / TOKEN_FILE.name).is_file(),
-        "scopes": list(GOOGLE_READONLY_SCOPES),
+        "scopes": requested_scopes(),
         "error": error,
     }
 
@@ -102,24 +139,37 @@ def authorize_google(
     credentials = None
     if token_path.is_file():
         try:
-            credentials = credentials_loader(str(token_path), list(GOOGLE_READONLY_SCOPES))
-        except Exception as exc:
-            raise GoogleAuthSetupError(
-                f"The saved Google token is unreadable. Remove {token_path.name} and authorize again."
-            ) from exc
+            credentials = credentials_loader(str(token_path), requested_scopes())
+        except Exception:
+            # A corrupt/unreadable token must not strand the operator. Re-consent
+            # overwrites it anyway, so fall through instead of dead-ending.
+            logger.warning(
+                "Saved Google token %s is unreadable; falling back to browser consent.",
+                token_path.name,
+            )
+            credentials = None
 
     if credentials and credentials.valid:
         return credentials
 
+    refreshed = False
     if credentials and credentials.expired and credentials.refresh_token:
         try:
             credentials.refresh(request_factory())
-        except Exception as exc:
-            raise GoogleAuthSetupError(
-                f"Google token refresh failed. Remove {token_path.name} and authorize again."
-            ) from exc
-    else:
-        flow = flow_factory(str(client_file), list(GOOGLE_READONLY_SCOPES))
+            refreshed = True
+        except Exception:
+            # Refresh tokens die for routine reasons: revoked in the Google account,
+            # expired past a Testing-mode window, or invalidated by a scope change
+            # (which is exactly what adding calendar.events will do). None of those
+            # should require the operator to hand-delete a file — re-consent instead.
+            logger.warning(
+                "Google token refresh was rejected (revoked, expired, or scopes changed); "
+                "falling back to browser consent."
+            )
+            credentials = None
+
+    if not refreshed:
+        flow = flow_factory(str(client_file), requested_scopes())
         credentials = flow.run_local_server(
             host="localhost",
             port=0,
@@ -152,7 +202,10 @@ def main() -> int:
         return 1
 
     print(f"Google OAuth authorized. Token saved to {TOKEN_FILE}.")
-    print("Authorized scopes: Gmail readonly, Calendar readonly.")
+    granted = requested_scopes()
+    print("Authorized scopes: " + ", ".join(granted))
+    if CALENDAR_WRITE_SCOPE in granted:
+        print("Calendar event CREATION is now possible, still gated by the approval queue.")
     return 0
 
 

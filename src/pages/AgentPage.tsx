@@ -7,6 +7,7 @@ import { useRuntimeStatus } from '@/lib/runtimeStatus';
 import { RuntimeGuardrailNote } from '@/components/runtime/RuntimeStatus';
 import { AGENT_MODES, AGENT_STATES } from '@/data/mock';
 import { AgentSphere } from '@/components/ui/AgentSphere';
+import { VoiceControls } from '@/components/ui/VoiceControls';
 import { ModeBadge } from '@/components/ui/ModeBadge';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { Icon } from '@/components/ui/Icon';
@@ -407,6 +408,17 @@ export function AgentPage() {
   // ── chat state ─────────────────────────────────────────────────────────────
   const [messages,     setMessages]     = useState<ChatMessage[]>([]);
   const [draft,        setDraft]        = useState('');
+  const [speakReplies, setSpeakReplies] = useState(false);
+
+  // Latest completed assistant reply, used for local text-to-speech. Only
+  // finished messages are spoken so streaming does not stutter the voice.
+  const lastAssistantText = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === 'assistant' && m.content.trim()) return m.content;
+    }
+    return null;
+  })();
   const [error,        setError]        = useState<string | null>(null);
   // null = idle; '' = waiting for first token; non-empty = streaming
   const [streamingMsg, setStreamingMsg] = useState<string | null>(null);
@@ -1005,6 +1017,20 @@ export function AgentPage() {
               </button>
             </div>
           )}
+
+          {/* voice controls — local transcription, never auto-sent */}
+          <div style={{ padding: 'var(--s2) var(--s4) 0' }}>
+            <VoiceControls
+              disabled={isGenerating || !available}
+              speakEnabled={speakReplies}
+              onToggleSpeak={() => setSpeakReplies((v) => !v)}
+              speakText={lastAssistantText}
+              onStateChange={(s) => setAgentState(s)}
+              onTranscript={(text) =>
+                setDraft((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text))
+              }
+            />
+          </div>
 
           {/* composer */}
           <div style={{

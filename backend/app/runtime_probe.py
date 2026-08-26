@@ -135,15 +135,44 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _default_http_get(url: str, timeout_s: float) -> int:
+def _plain_http_get(url: str, timeout_s: float) -> int:
     """
     Bounded GET to `url`. Returns the HTTP status code. No redirects, no cookies, no
     auth headers. Raises on connection/timeout/HTTP error (caller treats as unreachable).
+
+    Retained as a fallback for non-gRPC runtimes. The real NVIDIA OpenShell gateway
+    is gRPC-only, so this path cannot verify it — see `_default_http_get`.
     """
     opener = urllib.request.build_opener(_NoRedirect)
     req = urllib.request.Request(url, method="GET", headers={"Accept": "*/*"})
     with opener.open(req, timeout=timeout_s) as resp:
         return int(getattr(resp, "status", None) or resp.getcode())
+
+
+def _default_http_get(url: str, timeout_s: float) -> int:
+    """
+    Probe the configured runtime, returning an HTTP-shaped status code.
+
+    The NVIDIA OpenShell gateway speaks **gRPC over HTTP/2 with mTLS** and answers
+    every plain REST path with 404 — so a plain GET would report a perfectly
+    healthy gateway as `unavailable`, exactly the dishonest status this module
+    exists to avoid. We therefore call the typed `openshell.v1.OpenShell/Health`
+    RPC and map healthy → 200.
+
+    Falls back to a plain GET only when the gRPC client is unusable (stubs or
+    grpcio missing), so non-gRPC runtimes still probe as before.
+    """
+    try:
+        from app.openshell_client import health_status_code
+    except Exception:  # pragma: no cover - client module unavailable
+        return _plain_http_get(url, timeout_s)
+
+    try:
+        return health_status_code(url, timeout_s)
+    except Exception:
+        # Configuration/transport failure. Fall back so a non-OpenShell runtime
+        # configured at this URL is still probed honestly.
+        return _plain_http_get(url, timeout_s)
 
 
 # ── result helper ───────────────────────────────────────────────────────────────

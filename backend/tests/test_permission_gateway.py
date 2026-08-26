@@ -85,9 +85,19 @@ def test_privileged_tools_not_wired_or_disabled():
     by_tool = {p["tool"]: p for p in list_policies()}
     for t in ("obsidian.search", "gmail.search", "gmail.read", "gmail.draft", "calendar.read"):
         assert by_tool[t]["status"] == "not_wired", t
-    for t in ("gmail.send", "calendar.create_event", "browser.search",
-              "browser.read_page", "computer.click", "computer.type"):
+    for t in ("gmail.send", "computer.click", "computer.type"):
         assert by_tool[t]["status"] == "disabled", t
+    # C1b made the browser reads reachable, but ONLY inside the sandbox and ONLY
+    # through the approval queue — never immediately executable.
+    for t in ("browser.read_page", "browser.search"):
+        assert by_tool[t]["requiresApproval"] is True, t
+        assert by_tool[t]["executionEnabled"] is False, t
+    # D2 made calendar.create_event reachable, but ONLY through the approval queue:
+    # never immediately executable, and always requiring explicit approval.
+    create_event = by_tool["calendar.create_event"]
+    assert create_event["requiresApproval"] is True
+    assert create_event["executionEnabled"] is False
+    assert create_event["riskLevel"] == "high"
 
 
 # ── evaluate: not-wired gmail ───────────────────────────────────────────────────
@@ -112,7 +122,7 @@ def test_endpoint_evaluate_gmail_search():
 
 # ── evaluate: disabled dangerous ────────────────────────────────────────────────
 
-@pytest.mark.parametrize("tool", ["gmail.send", "calendar.create_event", "computer.type", "computer.click"])
+@pytest.mark.parametrize("tool", ["gmail.send", "computer.type", "computer.click"])
 def test_evaluate_known_dangerous_disabled(tool):
     r = evaluate_tool_request(tool, {})
     assert r["decision"] == "disabled"
